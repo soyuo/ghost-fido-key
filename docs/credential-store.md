@@ -22,8 +22,14 @@ Service is unavailable, the key cannot be unlocked, or duplicate key items are
 found. On macOS, `MacOsCredentialProtector` stores its random key in the
 default Keychain and uses the same bounded AES-256-GCM envelope with a
 macOS-specific associated-data prefix. It fails closed when the Keychain item
-cannot be read or created. The desktop app does not yet open this persistent
-store automatically.
+cannot be read or created. The Tauri desktop app creates its application data
+directory and opens `credentials.sqlite3` there at startup. It keeps the store
+for the application lifetime and reports initialization status to the UI. If
+the directory or OS protection provider is unavailable, the app remains open
+but protected storage is unavailable; it never substitutes an in-memory or
+plaintext store. The SQLite file alone is not a backup: Windows recovery depends
+on the original user profile, Linux on the same Secret Service key item, and
+macOS on access to the same default Keychain item.
 
 Schema version 3 stores a single CBOR-encoded record set, including optional
 user name and display name hints and the store-assigned credential creation
