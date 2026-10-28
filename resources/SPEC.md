@@ -91,6 +91,7 @@ macOS entitlement와 가상 HID 공개 API의 실제 배포 가능성을 검증�
 - [Windows UDE driver boundary scaffold](../platforms/windows/ude/README.md)
 - [Apple CoreHID HIDVirtualDevice](https://developer.apple.com/documentation/corehid/hidvirtualdevice)
 - [Apple 가상 HID entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.hid.virtual.device)
+- [macOS CoreHID driver boundary scaffold](../platforms/macos/corehid/README.md)
 - [Windows UDE 드라이버 개요](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/developing-windows-drivers-for-emulated-usb-host-controllers-and-devices)
 - [Windows ARM 드라이버 요건](https://learn.microsoft.com/en-us/windows/arm/faq)
 - [Windows ARM64 WDK 지원](https://learn.microsoft.com/en-us/windows-hardware/drivers/develop/building-arm64-drivers)

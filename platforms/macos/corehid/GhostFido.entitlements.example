@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Copy into a signed target only after Apple grants the capability. -->
+	<key>com.apple.developer.hid.virtual.device</key>
+	<true/>
+</dict>
+</plist>
