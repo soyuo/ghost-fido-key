@@ -195,6 +195,15 @@ pub enum GetAssertionResponseError {
     InvalidUserHandle,
 }
 
+#[must_use]
+pub fn get_assertion_authenticator_data(rp_id_hash: RpIdHash, sign_count: u32) -> [u8; 37] {
+    let mut data = [0; 37];
+    data[..32].copy_from_slice(&rp_id_hash);
+    data[32] = 0x01; // UP; UV and extensions are not asserted.
+    data[33..].copy_from_slice(&sign_count.to_be_bytes());
+    data
+}
+
 /// Encodes one successful CTAP2 `authenticatorGetAssertion` response.
 ///
 /// The caller supplies an already-created signature. The response sets UP and
@@ -224,10 +233,7 @@ pub fn encode_get_assertion_response(
         return Err(GetAssertionResponseError::InvalidUserHandle);
     }
 
-    let mut authenticator_data = Vec::with_capacity(37);
-    authenticator_data.extend_from_slice(&rp_id_hash);
-    authenticator_data.push(0x01); // UP; UV and extensions are not asserted.
-    authenticator_data.extend_from_slice(&sign_count.to_be_bytes());
+    let authenticator_data = get_assertion_authenticator_data(rp_id_hash, sign_count);
 
     let credential = CborValue::Map(vec![
         (
@@ -241,7 +247,10 @@ pub fn encode_get_assertion_response(
     ]);
     let mut response = vec![
         (CborValue::Unsigned(1), credential),
-        (CborValue::Unsigned(2), CborValue::Bytes(authenticator_data)),
+        (
+            CborValue::Unsigned(2),
+            CborValue::Bytes(authenticator_data.to_vec()),
+        ),
         (CborValue::Unsigned(3), CborValue::Bytes(signature.to_vec())),
     ];
     if let Some(user_handle) = user_handle {

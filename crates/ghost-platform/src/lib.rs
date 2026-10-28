@@ -10,11 +10,13 @@ use std::{fmt, time::Duration};
 #[cfg(target_os = "linux")]
 mod linux_uhid;
 
+mod assertion;
 mod registration;
 
 #[cfg(target_os = "linux")]
 pub use linux_uhid::LinuxUhidBackend;
 
+pub use assertion::{GetAssertionExecutionError, execute_get_assertion};
 pub use registration::{
     MakeCredentialExecutionError, check_credential_exclusion, register_make_credential,
 };
@@ -298,7 +300,9 @@ pub trait KeyStore: Send + Sync {
         consent: Option<SoftwareKeyConsent>,
     ) -> Result<CreatedSigningKey, PlatformError>;
 
-    /// Signs a precomputed digest. For ES256 the input must be a 32-byte SHA-256 digest.
+    /// Signs a precomputed digest. For ES256, the input is a 32-byte SHA-256
+    /// digest and the result must be the fixed-width IEEE P1363 `r || s` form
+    /// (32-byte big-endian scalar each). Protocol adapters encode it as DER.
     fn sign(
         &self,
         key: &KeyReference,

@@ -24,7 +24,7 @@ pub use ctap2::{
     MakeCredentialOptions, MakeCredentialRequest, MakeCredentialResponseError, MakeCredentialRp,
     MakeCredentialUser, PublicKeyCredentialParameter, encode_es256_cose_public_key,
     encode_get_assertion_response, encode_get_info, encode_make_credential_response,
-    encode_response,
+    encode_response, get_assertion_authenticator_data,
 };
 pub use ctaphid::{
     BROADCAST_CHANNEL, ChannelError, CtapHidAssembler, CtapHidChannelAllocator, CtapHidCommand,

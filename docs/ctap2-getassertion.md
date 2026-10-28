@@ -26,3 +26,10 @@ signature counter; it does not assert UV or extensions. The user entity is
 included only when a discoverable credential's user handle is supplied. The
 encoder rejects empty or oversized credential IDs and signatures. It does not
 perform approval, signing, or selection among multiple eligible credentials.
+
+`execute_get_assertion` currently supports exactly one matching credential. It
+rejects requests that disable UP or require unavailable UV, requests explicit
+local approval before signing, hashes `authenticatorData || clientDataHash`,
+converts the provider's fixed-width ES256 signature to DER, and commits the next
+signature counter before returning the encoded response. Ambiguous matches fail
+closed until a credential chooser and GetNextAssertion flow are implemented.

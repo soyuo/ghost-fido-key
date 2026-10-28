@@ -1139,6 +1139,7 @@ dependencies = [
  "getrandom 0.3.4",
  "ghost-fido-core",
  "libc",
+ "sha2",
  "uhid-virt",
  "uuid",
  "windows",
