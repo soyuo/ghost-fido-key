@@ -3,6 +3,8 @@ use ghost_platform::{
     CapabilityState, HostPlatform, PlatformError, PlatformErrorKind, UserVerification,
     VerificationAction, VerificationDecision, VerificationRequest,
 };
+#[cfg(target_os = "linux")]
+use ghost_platform::{KeyReference, KeyStore, LinuxKeyStore};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::{
@@ -67,6 +69,18 @@ struct PlatformStatus {
     credential_store_status: String,
     status_message: String,
     authenticator_running: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CredentialSummary {
+    creation_order: u64,
+    relying_party_id: Option<String>,
+    user_name: Option<String>,
+    user_display_name: Option<String>,
+    key_protection: &'static str,
+    exportable: bool,
+    discoverable: bool,
 }
 
 #[cfg(target_os = "windows")]
@@ -364,6 +378,112 @@ fn stop_runtime(state: &DesktopState) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+fn with_stopped_credential_store<T>(
+    state: &DesktopState,
+    operation: impl FnOnce(&mut CredentialStore) -> Result<T, String>,
+) -> Result<T, String> {
+    let mut runtime = state
+        .runtime
+        .lock()
+        .map_err(|_| "Runtime state is unavailable.")?;
+    if runtime
+        .as_ref()
+        .is_some_and(|runtime| !runtime.worker.is_finished())
+    {
+        return Err("Stop the authenticator before managing credentials.".into());
+    }
+    if let Some(runtime) = runtime.take() {
+        runtime
+            .worker
+            .join()
+            .map_err(|_| "The authenticator stopped unexpectedly.".to_owned())?;
+    }
+    let mut store_slot = state
+        .credential_store
+        .lock()
+        .map_err(|_| "Credential storage is unavailable.")?;
+    let store = store_slot
+        .as_mut()
+        .ok_or_else(|| state.credential_store_status.clone())?;
+    operation(store)
+}
+
+#[tauri::command]
+fn list_credentials(
+    state: tauri::State<'_, DesktopState>,
+) -> Result<Vec<CredentialSummary>, String> {
+    #[cfg(target_os = "linux")]
+    {
+        return with_stopped_credential_store(&state, |store| {
+            Ok(store
+                .managed_credentials()
+                .into_iter()
+                .map(|credential| CredentialSummary {
+                    creation_order: credential.creation_order,
+                    relying_party_id: credential.relying_party_id,
+                    user_name: credential.user_name,
+                    user_display_name: credential.user_display_name,
+                    key_protection: match credential.key_metadata.protection {
+                        ghost_fido_core::CredentialKeyProtection::HardwareBacked => {
+                            "Hardware-backed"
+                        }
+                        ghost_fido_core::CredentialKeyProtection::OsProtected => "OS-protected",
+                        ghost_fido_core::CredentialKeyProtection::Software => "Software key",
+                    },
+                    exportable: credential.key_metadata.exportable,
+                    discoverable: credential.discoverable,
+                })
+                .collect())
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = state;
+        Err("Credential management is currently implemented on Linux only.".into())
+    }
+}
+
+#[tauri::command]
+fn delete_credential(
+    state: tauri::State<'_, DesktopState>,
+    creation_order: u64,
+    confirmed: bool,
+) -> Result<(), String> {
+    if !confirmed {
+        return Err("Explicit confirmation is required to delete a credential.".into());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return with_stopped_credential_store(&state, |store| {
+            let credential = store
+                .by_creation_order(creation_order)
+                .ok_or_else(|| "The credential no longer exists.".to_owned())?;
+            let reference = String::from_utf8(credential.key_handle.as_bytes().to_vec())
+                .map_err(|_| "The credential key reference is invalid.".to_owned())?;
+            LinuxKeyStore::new()
+                .delete_key(&KeyReference::new(reference))
+                .map_err(|error| {
+                    format!(
+                        "The credential was kept because its signing key could not be deleted: {}",
+                        error.detail
+                    )
+                })?;
+            store
+                .remove_by_creation_order(creation_order)
+                .map(|_| ())
+                .map_err(|_| {
+                    "The signing key was deleted, but credential metadata could not be removed. Retry deletion to finish cleanup.".to_owned()
+                })
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (state, creation_order);
+        Err("Credential management is currently implemented on Linux only.".into())
+    }
+}
+
 #[tauri::command]
 fn respond_approval(
     state: tauri::State<'_, DesktopState>,
@@ -426,7 +546,9 @@ pub fn run() {
             platform_status,
             respond_approval,
             start_authenticator,
-            stop_authenticator
+            stop_authenticator,
+            list_credentials,
+            delete_credential
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

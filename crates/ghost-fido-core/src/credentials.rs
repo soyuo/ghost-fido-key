@@ -11,14 +11,16 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 
 use crate::cbor::{CborLimits, CborValue, decode_with_limits, encode as encode_cbor};
 
-const STORAGE_SCHEMA_VERSION: i64 = 3;
+const STORAGE_SCHEMA_VERSION: i64 = 4;
 const STORAGE_AAD_V1: &[u8] = b"ghost-fido/credential-store/v1";
 const STORAGE_AAD_V2: &[u8] = b"ghost-fido/credential-store/v2";
 const STORAGE_AAD_V3: &[u8] = b"ghost-fido/credential-store/v3";
+const STORAGE_AAD_V4: &[u8] = b"ghost-fido/credential-store/v4";
 const MAX_PERSISTED_RECORDS: usize = 4096;
 const MAX_PERSISTED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PROTECTED_BYTES: usize = MAX_PERSISTED_BYTES + 4096;
 const MAX_USER_LABEL_BYTES: usize = 256;
+const MAX_RP_ID_BYTES: usize = 253;
 
 pub type RpIdHash = [u8; 32];
 
@@ -90,6 +92,9 @@ impl fmt::Debug for KeyHandle {
 pub struct CredentialRecord {
     pub id: CredentialId,
     pub rp_id_hash: RpIdHash,
+    /// Plain relying-party identifier for the local management UI. Legacy
+    /// records remain unidentified until they are re-created.
+    pub relying_party_id: Option<String>,
     pub user_handle: Vec<u8>,
     pub user_name: Option<String>,
     pub user_display_name: Option<String>,
@@ -99,6 +104,17 @@ pub struct CredentialRecord {
     /// Store-assigned monotonic ordering used for discoverable credential selection.
     pub creation_order: u64,
     pub sign_count: u32,
+}
+
+/// Safe local-management projection of one credential record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedCredential {
+    pub creation_order: u64,
+    pub relying_party_id: Option<String>,
+    pub user_name: Option<String>,
+    pub user_display_name: Option<String>,
+    pub key_metadata: CredentialKeyMetadata,
+    pub discoverable: bool,
 }
 
 impl fmt::Debug for CredentialRecord {
@@ -125,6 +141,7 @@ pub enum CredentialError {
     EmptyUserHandle,
     EmptyKeyHandle,
     UserLabelTooLong,
+    InvalidRelyingPartyId,
     DuplicateIdentifier,
     NotFound,
     CounterOverflow,
@@ -144,7 +161,7 @@ pub enum CredentialProtectionError {
 ///
 /// Implementations must authenticate ciphertext and associated data, and must
 /// return an error if either is invalid. The plaintext contains credential IDs,
-/// RP hashes, user handles, and opaque provider key references.
+/// RP identifiers and hashes, user handles, and opaque provider key references.
 pub trait CredentialProtector: Send + Sync {
     fn protect(
         &self,
@@ -208,7 +225,7 @@ impl CredentialStore {
                 }
                 let payload = encode_records(&BTreeMap::new())?;
                 let protected = protector
-                    .protect(&payload, STORAGE_AAD_V3)
+                    .protect(&payload, STORAGE_AAD_V4)
                     .map_err(|_| CredentialError::ProtectedDataInvalid)?;
                 if protected.is_empty() || protected.len() > MAX_PROTECTED_BYTES {
                     return Err(CredentialError::ProtectedDataInvalid);
@@ -238,15 +255,15 @@ impl CredentialStore {
                     .map_err(|_| CredentialError::StorageFailure)?;
                 BTreeMap::new()
             }
-            old_version @ (1 | 2) => {
+            old_version @ (1 | 2 | 3) => {
                 let transaction = connection
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(|_| CredentialError::StorageFailure)?;
                 let protected = read_protected_payload(&transaction)?;
-                let old_aad = if old_version == 1 {
-                    STORAGE_AAD_V1
-                } else {
-                    STORAGE_AAD_V2
+                let old_aad = match old_version {
+                    1 => STORAGE_AAD_V1,
+                    2 => STORAGE_AAD_V2,
+                    _ => STORAGE_AAD_V3,
                 };
                 let plaintext = protector
                     .unprotect(&protected, old_aad)
@@ -255,7 +272,7 @@ impl CredentialStore {
                 assign_legacy_creation_order(&mut records)?;
                 let migrated_plaintext = encode_records(&records)?;
                 let migrated_protected = protector
-                    .protect(&migrated_plaintext, STORAGE_AAD_V3)
+                    .protect(&migrated_plaintext, STORAGE_AAD_V4)
                     .map_err(|_| CredentialError::ProtectedDataInvalid)?;
                 validate_protected_payload(&migrated_protected)?;
 
@@ -268,12 +285,12 @@ impl CredentialStore {
                     .map_err(|_| CredentialError::StorageFailure)?;
                 records
             }
-            STORAGE_SCHEMA_VERSION => {
+            4 => {
                 let protected = read_protected_payload(&connection)?;
                 let plaintext = protector
-                    .unprotect(&protected, STORAGE_AAD_V3)
+                    .unprotect(&protected, STORAGE_AAD_V4)
                     .map_err(|_| CredentialError::ProtectedDataInvalid)?;
-                decode_records(&plaintext, 3)?
+                decode_records(&plaintext, 4)?
             }
             other => return Err(CredentialError::UnsupportedSchemaVersion(other)),
         };
@@ -294,6 +311,11 @@ impl CredentialStore {
     }
 
     pub fn register(&mut self, mut record: CredentialRecord) -> Result<(), CredentialError> {
+        if record.relying_party_id.as_ref().is_some_and(|rp_id| {
+            rp_id.is_empty() || rp_id.len() > MAX_RP_ID_BYTES || !rp_id.is_ascii()
+        }) {
+            return Err(CredentialError::InvalidRelyingPartyId);
+        }
         if record.user_handle.is_empty() {
             return Err(CredentialError::EmptyUserHandle);
         }
@@ -380,6 +402,57 @@ impl CredentialStore {
                     .any(|id| id.as_slice() == record.id.as_bytes())
         })
     }
+
+    /// Returns only fields intended for local credential management. Protocol
+    /// credential IDs, user handles, and provider key references are omitted.
+    #[must_use]
+    pub fn managed_credentials(&self) -> Vec<ManagedCredential> {
+        let mut credentials = self
+            .records
+            .values()
+            .map(|record| ManagedCredential {
+                creation_order: record.creation_order,
+                relying_party_id: record.relying_party_id.clone(),
+                user_name: record.user_name.clone(),
+                user_display_name: record.user_display_name.clone(),
+                key_metadata: record.key_metadata,
+                discoverable: record.discoverable,
+            })
+            .collect::<Vec<_>>();
+        credentials.sort_by_key(|credential| credential.creation_order);
+        credentials
+    }
+
+    /// Removes a credential by its stable, non-secret store-assigned selector.
+    /// Returns the removed record so the caller can delete its provider key.
+    pub fn remove_by_creation_order(
+        &mut self,
+        creation_order: u64,
+    ) -> Result<CredentialRecord, CredentialError> {
+        let id = self
+            .records
+            .values()
+            .find(|record| record.creation_order == creation_order)
+            .map(|record| record.id.clone())
+            .ok_or(CredentialError::NotFound)?;
+        let removed = self
+            .records
+            .get(&id)
+            .cloned()
+            .ok_or(CredentialError::NotFound)?;
+        let mut next_records = self.records.clone();
+        next_records.remove(&id);
+        self.persist(&next_records)?;
+        self.records = next_records;
+        Ok(removed)
+    }
+
+    #[must_use]
+    pub fn by_creation_order(&self, creation_order: u64) -> Option<&CredentialRecord> {
+        self.records
+            .values()
+            .find(|record| record.creation_order == creation_order)
+    }
     pub fn increment_sign_count(&mut self, id: &CredentialId) -> Result<u32, CredentialError> {
         let record = self.records.get(id).ok_or(CredentialError::NotFound)?;
         let sign_count = record
@@ -414,7 +487,7 @@ impl CredentialStore {
         let plaintext = encode_records(records)?;
         let protected = backend
             .protector
-            .protect(&plaintext, STORAGE_AAD_V3)
+            .protect(&plaintext, STORAGE_AAD_V4)
             .map_err(|_| CredentialError::ProtectedDataInvalid)?;
         validate_protected_payload(&protected)?;
         let transaction = backend
@@ -513,6 +586,10 @@ fn encode_records(
                     .as_ref()
                     .map_or(CborValue::Null, |name| CborValue::Text(name.clone())),
                 CborValue::Unsigned(record.creation_order),
+                record
+                    .relying_party_id
+                    .as_ref()
+                    .map_or(CborValue::Null, |rp_id| CborValue::Text(rp_id.clone())),
             ])
         })
         .collect::<Vec<_>>();
@@ -534,7 +611,7 @@ fn decode_records(
         bytes,
         CborLimits {
             max_depth: 4,
-            max_items: MAX_PERSISTED_RECORDS * 11,
+            max_items: MAX_PERSISTED_RECORDS * 12,
             max_bytes: MAX_PERSISTED_BYTES,
         },
     )
@@ -553,7 +630,8 @@ fn decode_records(
         let CborValue::Array(fields) = value else {
             return Err(CredentialError::ProtectedDataInvalid);
         };
-        let record = decode_record_fields(&fields, with_user_labels, with_creation_order)?;
+        let record =
+            decode_record_fields(&fields, with_user_labels, with_creation_order, version >= 4)?;
         if with_creation_order && !creation_orders.insert(record.creation_order) {
             return Err(CredentialError::ProtectedDataInvalid);
         }
@@ -569,6 +647,7 @@ fn decode_record_fields(
     fields: &[CborValue],
     with_user_labels: bool,
     with_creation_order: bool,
+    with_rp_id: bool,
 ) -> Result<CredentialRecord, CredentialError> {
     let (
         id,
@@ -582,37 +661,73 @@ fn decode_record_fields(
         user_name,
         user_display_name,
         creation_order,
+        relying_party_id,
     ) = if with_user_labels {
         if with_creation_order {
-            let [
-                CborValue::Bytes(id),
-                CborValue::Bytes(rp_id_hash),
-                CborValue::Bytes(user_handle),
-                CborValue::Bytes(key_handle),
-                CborValue::Unsigned(protection),
-                CborValue::Bool(exportable),
-                CborValue::Bool(discoverable),
-                CborValue::Unsigned(sign_count),
-                user_name,
-                user_display_name,
-                CborValue::Unsigned(creation_order),
-            ] = fields
-            else {
-                return Err(CredentialError::ProtectedDataInvalid);
-            };
-            (
-                id,
-                rp_id_hash,
-                user_handle,
-                key_handle,
-                protection,
-                exportable,
-                discoverable,
-                sign_count,
-                decode_user_label(user_name)?,
-                decode_user_label(user_display_name)?,
-                *creation_order,
-            )
+            if with_rp_id {
+                let [
+                    CborValue::Bytes(id),
+                    CborValue::Bytes(rp_id_hash),
+                    CborValue::Bytes(user_handle),
+                    CborValue::Bytes(key_handle),
+                    CborValue::Unsigned(protection),
+                    CborValue::Bool(exportable),
+                    CborValue::Bool(discoverable),
+                    CborValue::Unsigned(sign_count),
+                    user_name,
+                    user_display_name,
+                    CborValue::Unsigned(creation_order),
+                    relying_party_id,
+                ] = fields
+                else {
+                    return Err(CredentialError::ProtectedDataInvalid);
+                };
+                (
+                    id,
+                    rp_id_hash,
+                    user_handle,
+                    key_handle,
+                    protection,
+                    exportable,
+                    discoverable,
+                    sign_count,
+                    decode_user_label(user_name)?,
+                    decode_user_label(user_display_name)?,
+                    *creation_order,
+                    decode_rp_id(relying_party_id)?,
+                )
+            } else {
+                let [
+                    CborValue::Bytes(id),
+                    CborValue::Bytes(rp_id_hash),
+                    CborValue::Bytes(user_handle),
+                    CborValue::Bytes(key_handle),
+                    CborValue::Unsigned(protection),
+                    CborValue::Bool(exportable),
+                    CborValue::Bool(discoverable),
+                    CborValue::Unsigned(sign_count),
+                    user_name,
+                    user_display_name,
+                    CborValue::Unsigned(creation_order),
+                ] = fields
+                else {
+                    return Err(CredentialError::ProtectedDataInvalid);
+                };
+                (
+                    id,
+                    rp_id_hash,
+                    user_handle,
+                    key_handle,
+                    protection,
+                    exportable,
+                    discoverable,
+                    sign_count,
+                    decode_user_label(user_name)?,
+                    decode_user_label(user_display_name)?,
+                    *creation_order,
+                    None,
+                )
+            }
         } else {
             let [
                 CborValue::Bytes(id),
@@ -641,6 +756,7 @@ fn decode_record_fields(
                 decode_user_label(user_name)?,
                 decode_user_label(user_display_name)?,
                 0,
+                None,
             )
         }
     } else {
@@ -669,6 +785,7 @@ fn decode_record_fields(
             None,
             None,
             0,
+            None,
         )
     };
 
@@ -690,6 +807,7 @@ fn decode_record_fields(
     Ok(CredentialRecord {
         id,
         rp_id_hash: rp_hash,
+        relying_party_id,
         user_handle: user_handle.clone(),
         user_name,
         user_display_name,
@@ -704,6 +822,18 @@ fn decode_record_fields(
         sign_count: u32::try_from(*sign_count)
             .map_err(|_| CredentialError::ProtectedDataInvalid)?,
     })
+}
+
+fn decode_rp_id(value: &CborValue) -> Result<Option<String>, CredentialError> {
+    match value {
+        CborValue::Null => Ok(None),
+        CborValue::Text(rp_id)
+            if !rp_id.is_empty() && rp_id.len() <= MAX_RP_ID_BYTES && rp_id.is_ascii() =>
+        {
+            Ok(Some(rp_id.clone()))
+        }
+        _ => Err(CredentialError::ProtectedDataInvalid),
+    }
 }
 
 fn assign_legacy_creation_order(

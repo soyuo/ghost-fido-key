@@ -57,6 +57,19 @@ h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.025em; }
 .software-key-warning .eyebrow { margin-bottom: 8px; }
 .software-key-warning h2 { margin-bottom: 12px; }
 .software-key-warning p:not(.eyebrow) { color: #c6b797; font-size: 13px; line-height: 1.6; }
+.credential-list { display: grid; gap: 10px; margin-top: 16px; padding: 20px; border: 1px solid #303b48; border-radius: 13px; background: rgba(19, 26, 37, 0.94); }
+.credential-list-heading, .credential-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.credential-list-heading { margin-bottom: 4px; }
+.credential-list-heading .eyebrow { margin-bottom: 7px; }
+.credential-list-heading h2 { font-size: 17px; }
+.credential-list-heading button, .credential-delete { padding: 7px 11px; border: 1px solid #617080; border-radius: 8px; color: #e8edf5; background: #202a37; cursor: pointer; }
+.credential-card { padding: 13px 0; border-top: 1px solid #303946; }
+.credential-card h3 { margin: 0 0 5px; font-size: 14px; overflow-wrap: anywhere; }
+.credential-card p { margin: 0 0 4px; color: #c4cdd8; font-size: 12px; }
+.credential-card .credential-meta, .credential-empty { color: #8995a5; font-size: 11px; }
+.credential-delete { flex: 0 0 auto; border-color: #8f5a5a; color: #f1b6b6; }
+.credential-delete:hover { background: rgba(143, 65, 65, 0.2); }
+.credential-delete:disabled { opacity: 0.45; cursor: not-allowed; }
 .app-footer { display: flex; justify-content: space-between; gap: 16px; margin-top: auto; padding: 18px 46px; border-top: 1px solid #252c37; color: #747f8e; font-size: 11px; }
 
 @media (max-width: 560px) {
