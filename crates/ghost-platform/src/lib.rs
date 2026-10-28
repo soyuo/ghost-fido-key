@@ -13,6 +13,9 @@ mod linux_uhid;
 #[cfg(target_os = "linux")]
 mod linux_credential_protector;
 
+#[cfg(target_os = "linux")]
+mod linux_keystore;
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod credential_protector;
 
@@ -26,6 +29,9 @@ pub use linux_uhid::LinuxUhidBackend;
 
 #[cfg(target_os = "linux")]
 pub use linux_credential_protector::LinuxCredentialProtector;
+
+#[cfg(target_os = "linux")]
+pub use linux_keystore::LinuxKeyStore;
 
 pub use assertion::{
     GetAssertionExecution, GetAssertionExecutionError, execute_get_assertion,

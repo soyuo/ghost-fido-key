@@ -17,6 +17,8 @@ sha2 = "0.10.9"
 aes-gcm = "0.10.3"
 libc = "0.2"
 secret-service = { version = "=5.1.0", default-features = false, features = ["rt-tokio-crypto-rust"] }
+p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa", "std"] }
+uuid = { version = "1", features = ["v4"] }
 uhid-virt = "0.0.8"
 zeroize = "1"
 
