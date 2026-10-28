@@ -1,15 +1,17 @@
 # Windows UDE driver boundary
 
-This directory reserves the native Windows implementation required by the
+This directory contains the first native Windows implementation slice for the
 Rust `WindowsUdeBackend`. It is intentionally separate from the Rust workspace:
 UDE is a KMDF/UdeCx kernel-driver surface and must be built with the Windows
 Driver Kit (WDK).
 
 ## Required native lifecycle
 
-1. `EvtDriverDeviceAdd` initializes the emulated host controller with UdeCx.
-2. The client driver creates one virtual USB device and supplies a FIDO HID
-   descriptor with 64-byte input and output endpoints.
+1. `EvtDriverDeviceAdd` initializes the KMDF device and registers the UDE host
+   controller with UdeCx. The controller capability callback currently reports
+   capabilities as unsupported.
+2. A later implementation step will create one virtual USB device and supply a
+   FIDO HID descriptor with 64-byte input and output endpoints.
 3. Endpoint queues receive and complete URBs without blocking at the wrong IRQL.
 4. The driver plugs the device in only after all descriptors and endpoint
    queues are ready, and plugs it out before removal.
@@ -63,8 +65,11 @@ the handshake is not an authorization boundary for report traffic.
 - Verify Device Manager enumeration, HID report round-trip, Chrome/Edge FIDO
   discovery, registration, and assertion separately.
 
-No driver binary is produced by this repository yet. Until these gates pass,
-`WindowsUdeBackend` reports the boundary as unavailable and fails closed.
+CI compiles x64 and ARM64 `.sys` files under the ignored `target/` directory.
+Those build outputs are not installable driver packages. Until virtual-device
+enumeration, endpoint I/O, the control protocol, signing, and installation are
+implemented and validated, `WindowsUdeBackend` reports unavailable and fails
+closed.
 
 ## References
 

@@ -16,7 +16,6 @@
 DRIVER_INITIALIZE DriverEntry;
 EVT_WDF_DRIVER_DEVICE_ADD GhostFidoEvtDeviceAdd;
 EVT_UDECX_WDF_DEVICE_QUERY_USB_CAPABILITY GhostFidoQueryUsbCapability;
-EVT_UDECX_WDF_DEVICE_RESET GhostFidoResetController;
 EVT_UDECX_USB_DEVICE_DEFAULT_ENDPOINT_ADD GhostFidoAddDefaultEndpoint;
 EVT_UDECX_USB_DEVICE_ENDPOINT_ADD GhostFidoAddEndpoint;
 EVT_UDECX_USB_DEVICE_ENDPOINTS_CONFIGURE GhostFidoConfigureEndpoints;
@@ -47,13 +46,33 @@ DriverEntry(_In_ PDRIVER_OBJECT DriverObject, _In_ PUNICODE_STRING RegistryPath)
 NTSTATUS
 GhostFidoEvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
 {
-    UNREFERENCED_PARAMETER(Driver);
-    UNREFERENCED_PARAMETER(DeviceInit);
+    NTSTATUS status;
+    WDFDEVICE device;
+    WDF_OBJECT_ATTRIBUTES attributes;
+    UDECX_WDF_DEVICE_CONFIG controllerConfig;
 
-    // TODO: call UdecxInitializeWdfDeviceInit, create the controller device,
-    // register GhostFidoQueryUsbCapability/GhostFidoResetController, create
-    // the virtual device, descriptors, endpoint queues, and control IOCTL.
-    return STATUS_NOT_IMPLEMENTED;
+    UNREFERENCED_PARAMETER(Driver);
+
+    status = UdecxInitializeWdfDeviceInit(DeviceInit);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
+    status = WdfDeviceCreate(&DeviceInit, &attributes, &device);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    UDECX_WDF_DEVICE_CONFIG_INIT(&controllerConfig,
+                                 GhostFidoQueryUsbCapability);
+    status = UdecxWdfDeviceAddUsbDeviceEmulation(device, &controllerConfig);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    // Device enumeration and endpoint I/O are added in later implementation steps.
+    return STATUS_SUCCESS;
 }
 
 NTSTATUS GhostFidoQueryUsbCapability(_In_ WDFDEVICE Device,
@@ -67,13 +86,7 @@ NTSTATUS GhostFidoQueryUsbCapability(_In_ WDFDEVICE Device,
     UNREFERENCED_PARAMETER(OutputBufferLength);
     UNREFERENCED_PARAMETER(OutputBuffer);
     *ResultLength = 0;
-    return STATUS_NOT_IMPLEMENTED;
-}
-
-VOID GhostFidoResetController(_In_ WDFDEVICE Device)
-{
-    UNREFERENCED_PARAMETER(Device);
-    return;
+    return STATUS_NOT_SUPPORTED;
 }
 
 NTSTATUS GhostFidoAddDefaultEndpoint(_In_ UDECXUSBDEVICE UsbDevice,
