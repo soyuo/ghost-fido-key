@@ -1,10 +1,15 @@
 use ghost_fido_core::{CredentialProtector, CredentialStore, ProductInfo};
+#[cfg(target_os = "macos")]
+use ghost_platform::MacOsKeyStore;
+#[cfg(target_os = "windows")]
+use ghost_platform::WindowsKeyStore;
 use ghost_platform::{
     CapabilityState, HostPlatform, PlatformError, PlatformErrorKind, UserVerification,
     VerificationAction, VerificationDecision, VerificationRequest,
 };
+use ghost_platform::{KeyCreationPolicy, KeyStore, SoftwareKeyConsent};
 #[cfg(target_os = "linux")]
-use ghost_platform::{KeyReference, KeyStore, LinuxKeyStore};
+use ghost_platform::{KeyReference, LinuxKeyStore};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::{
@@ -17,7 +22,6 @@ use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 struct DesktopState {
-    #[cfg(target_os = "linux")]
     credential_store: Arc<Mutex<Option<CredentialStore>>>,
     credential_store_available: bool,
     credential_store_status: String,
@@ -101,6 +105,76 @@ fn credential_protector() -> Option<Arc<dyn CredentialProtector>> {
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 fn credential_protector() -> Option<Arc<dyn CredentialProtector>> {
     None
+}
+
+#[cfg(target_os = "linux")]
+fn runtime_key_provider(
+    software_key_risk_acknowledged: bool,
+) -> Result<
+    (
+        Box<dyn KeyStore>,
+        KeyCreationPolicy,
+        Option<SoftwareKeyConsent>,
+    ),
+    String,
+> {
+    let consent = SoftwareKeyConsent::confirm_user_acceptance(software_key_risk_acknowledged)
+        .ok_or("Explicit acceptance of the software-key warning is required.")?;
+    Ok((
+        Box::new(LinuxKeyStore::new()),
+        KeyCreationPolicy::SoftwareKeyAfterExplicitConsent,
+        Some(consent),
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn runtime_key_provider(
+    _software_key_risk_acknowledged: bool,
+) -> Result<
+    (
+        Box<dyn KeyStore>,
+        KeyCreationPolicy,
+        Option<SoftwareKeyConsent>,
+    ),
+    String,
+> {
+    Ok((
+        Box::new(WindowsKeyStore::new()),
+        KeyCreationPolicy::PlatformProtectedOnly,
+        None,
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn runtime_key_provider(
+    _software_key_risk_acknowledged: bool,
+) -> Result<
+    (
+        Box<dyn KeyStore>,
+        KeyCreationPolicy,
+        Option<SoftwareKeyConsent>,
+    ),
+    String,
+> {
+    Ok((
+        Box::new(MacOsKeyStore::new()),
+        KeyCreationPolicy::PlatformProtectedOnly,
+        None,
+    ))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+fn runtime_key_provider(
+    _software_key_risk_acknowledged: bool,
+) -> Result<
+    (
+        Box<dyn KeyStore>,
+        KeyCreationPolicy,
+        Option<SoftwareKeyConsent>,
+    ),
+    String,
+> {
+    Err("Signing-key storage is unsupported on this operating system.".into())
 }
 
 fn initialize_credential_store(app: &AppHandle) -> (Option<CredentialStore>, String) {
@@ -297,64 +371,66 @@ fn start_authenticator(
     state: tauri::State<'_, DesktopState>,
     software_key_risk_acknowledged: bool,
 ) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    {
-        if !software_key_risk_acknowledged {
-            return Err("Explicit acceptance of the software-key warning is required.".into());
+    let mut runtime = state
+        .runtime
+        .lock()
+        .map_err(|_| "Runtime state is unavailable.")?;
+    if let Some(existing) = runtime.take() {
+        if !existing.worker.is_finished() {
+            *runtime = Some(existing);
+            return Err("The authenticator is already starting or running.".into());
         }
-        let mut runtime = state
-            .runtime
-            .lock()
-            .map_err(|_| "Runtime state is unavailable.")?;
-        if let Some(existing) = runtime.take() {
-            if !existing.worker.is_finished() {
-                *runtime = Some(existing);
-                return Err("The authenticator is already starting or running.".into());
-            }
-            existing
-                .worker
-                .join()
-                .map_err(|_| "The previous authenticator session failed.")?;
-        }
-        if !state.credential_store_available {
-            return Err(state.credential_store_status.clone());
-        }
-        let mut backend = ghost_platform::host_virtual_hid_backend();
-        let availability = backend.availability();
-        if availability.state != CapabilityState::Available {
-            return Err(availability
-                .detail
-                .unwrap_or_else(|| "Virtual HID is unavailable.".into()));
-        }
-        let consent = ghost_platform::SoftwareKeyConsent::confirm_user_acceptance(true)
-            .ok_or("Software-key consent was not recorded.")?;
-        let (stop_tx, stop_rx) = mpsc::sync_channel(1);
-        let store = Arc::clone(&state.credential_store);
-        let verification: Arc<dyn UserVerification> = state.verification.clone();
-        let status = Arc::clone(&state.virtual_hid);
-        let worker = std::thread::Builder::new()
-            .name("ghost-fido-linux-uhid".into())
-            .spawn(move || {
-                linux_runtime::run(store, backend, verification, status, stop_rx, consent);
-            })
-            .map_err(|error| format!("Could not start authenticator runtime: {error}"))?;
-        if let Ok(mut status) = state.virtual_hid.lock() {
-            status.authenticator_running = true;
-            status.key_storage_status = "Software key (session consent)".into();
-            status.status_message = "Starting virtual authenticator…".into();
-        }
-        *runtime = Some(RuntimeHandle {
-            stop: stop_tx,
-            worker,
-        });
-        Ok(())
+        existing
+            .worker
+            .join()
+            .map_err(|_| "The previous authenticator session failed.")?;
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = software_key_risk_acknowledged;
-        let _ = state;
-        Err("The authenticator runtime is currently implemented on Linux only.".into())
+    if !state.credential_store_available {
+        return Err(state.credential_store_status.clone());
     }
+    let (key_store, key_creation_policy, software_key_consent) =
+        runtime_key_provider(software_key_risk_acknowledged)?;
+    let backend = ghost_platform::host_virtual_hid_backend();
+    let availability = backend.availability();
+    if availability.state != CapabilityState::Available {
+        return Err(availability
+            .detail
+            .unwrap_or_else(|| "Virtual HID is unavailable.".into()));
+    }
+
+    let (stop_tx, stop_rx) = mpsc::sync_channel(1);
+    let store = Arc::clone(&state.credential_store);
+    let verification: Arc<dyn UserVerification> = state.verification.clone();
+    let status = Arc::clone(&state.virtual_hid);
+    let key_storage_status = match key_creation_policy {
+        KeyCreationPolicy::PlatformProtectedOnly => "Platform-protected signing key",
+        KeyCreationPolicy::SoftwareKeyAfterExplicitConsent => "Software key (session consent)",
+    };
+    let worker = std::thread::Builder::new()
+        .name(format!("ghost-fido-{}-authenticator", std::env::consts::OS))
+        .spawn(move || {
+            authenticator_runtime::run(
+                store,
+                backend,
+                verification,
+                status,
+                stop_rx,
+                key_store,
+                key_creation_policy,
+                software_key_consent,
+            );
+        })
+        .map_err(|error| format!("Could not start authenticator runtime: {error}"))?;
+    if let Ok(mut status) = state.virtual_hid.lock() {
+        status.authenticator_running = true;
+        status.key_storage_status = key_storage_status.into();
+        status.status_message = "Starting virtual authenticator…".into();
+    }
+    *runtime = Some(RuntimeHandle {
+        stop: stop_tx,
+        worker,
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -542,37 +618,33 @@ pub fn run() {
         .setup(|app| {
             let (store, status) = initialize_credential_store(app.handle());
             let store_available = store.is_some();
-            #[cfg(not(target_os = "linux"))]
-            drop(store);
             let backend = ghost_platform::host_virtual_hid_backend();
-            #[cfg(target_os = "linux")]
             let availability = backend.availability();
-            #[cfg(not(target_os = "linux"))]
-            drop(backend);
-            #[cfg(target_os = "linux")]
+            let platform_name = match HostPlatform::current() {
+                HostPlatform::Windows => "Windows",
+                HostPlatform::MacOs => "macOS",
+                HostPlatform::Linux => "Linux",
+                HostPlatform::Other => "this operating system",
+            };
             let (virtual_hid_available, runtime_message) = (
                 availability.state == CapabilityState::Available,
-                availability
-                    .detail
-                    .unwrap_or_else(|| "Virtual FIDO HID is available on Linux.".into()),
-            );
-            #[cfg(not(target_os = "linux"))]
-            let (virtual_hid_available, runtime_message) = (
-                false,
-                "The authenticator runtime is not implemented for this operating system.".into(),
+                availability.detail.unwrap_or_else(|| {
+                    format!("Virtual FIDO HID is available on {platform_name}.")
+                }),
             );
             let runtime_status = RuntimeStatus {
                 virtual_hid_available,
-                key_storage_status: if cfg!(target_os = "linux") {
-                    "Signing key consent required".into()
-                } else {
-                    "OS protected storage".into()
-                },
+                key_storage_status: (match HostPlatform::current() {
+                    HostPlatform::Linux => "Signing key consent required",
+                    HostPlatform::Windows => "Windows TPM-backed signing key required",
+                    HostPlatform::MacOs => "Secure Enclave-backed signing key required",
+                    HostPlatform::Other => "Protected signing-key provider unavailable",
+                })
+                .into(),
                 status_message: runtime_message,
                 ..RuntimeStatus::default()
             };
             app.manage(DesktopState {
-                #[cfg(target_os = "linux")]
                 credential_store: Arc::new(Mutex::new(store)),
                 credential_store_available: store_available,
                 credential_store_status: status,
@@ -605,5 +677,4 @@ pub fn run() {
         })
 }
 
-#[cfg(target_os = "linux")]
-mod linux_runtime;
+mod authenticator_runtime;

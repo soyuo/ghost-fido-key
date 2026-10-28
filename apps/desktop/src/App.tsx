@@ -122,11 +122,11 @@ function App() {
       .catch(() => setApprovalError("That approval request has expired or is no longer active."));
   };
 
-  const startAuthenticator = async () => {
+  const startAuthenticator = async (softwareKeyRiskAcknowledged: boolean) => {
     setRuntimeAction(true);
     setRuntimeError(null);
     try {
-      await invoke("start_authenticator", { softwareKeyRiskAcknowledged: true });
+      await invoke("start_authenticator", { softwareKeyRiskAcknowledged });
       setShowSoftwareKeyWarning(false);
       await refreshStatus();
     } catch (cause) {
@@ -227,6 +227,13 @@ function App() {
               </button>
             </div>
           )}
+          {isTauri() && status?.hostPlatform === "Windows" && !status.authenticatorRunning && status.virtualHidAvailable && status.credentialStoreAvailable && (
+            <div className="runtime-actions">
+              <button type="button" disabled={runtimeAction} onClick={() => void startAuthenticator(false)}>
+                {runtimeAction ? "시작 중…" : "인증기 시작"}
+              </button>
+            </div>
+          )}
           {isTauri() && status?.authenticatorRunning && (
             <div className="runtime-actions">
               <button type="button" disabled={runtimeAction} onClick={stopAuthenticator}>인증기 중지</button>
@@ -240,7 +247,7 @@ function App() {
               <p>동의하면 이번 앱 실행 세션에서만 소프트웨어 키 생성을 허용합니다.</p>
               <div className="approval-actions">
                 <button type="button" disabled={runtimeAction} onClick={() => setShowSoftwareKeyWarning(false)}>취소</button>
-                <button type="button" disabled={runtimeAction} onClick={() => void startAuthenticator()}>{runtimeAction ? "시작 중…" : "위험을 이해했고 시작"}</button>
+                <button type="button" disabled={runtimeAction} onClick={() => void startAuthenticator(true)}>{runtimeAction ? "시작 중…" : "위험을 이해했고 시작"}</button>
               </div>
             </section>
           )}
@@ -356,7 +363,11 @@ function App() {
 
         <div className="notice" role="note">
           <span className="notice-icon" aria-hidden="true">i</span>
-          <p>{status?.authenticatorRunning ? "인증기가 실행 중입니다. 자격 증명 생성과 인증은 각각 사용자 승인이 필요합니다." : "인증기 시작은 Linux에서 지원됩니다. 소프트웨어 키는 명시적으로 동의한 세션에서만 생성됩니다."}</p>
+          <p>{status?.authenticatorRunning
+            ? "인증기가 실행 중입니다. 자격 증명 생성과 인증은 각각 사용자 승인이 필요합니다."
+            : status?.hostPlatform === "Windows"
+              ? "Windows에서는 검증된 UDE 드라이버와 TPM 보호 키 저장소가 준비된 경우에만 인증기를 시작할 수 있습니다."
+              : "Linux에서 인증기를 시작하려면 세션별 소프트웨어 키 사용 동의가 필요합니다."}</p>
         </div>
       </section>
 
