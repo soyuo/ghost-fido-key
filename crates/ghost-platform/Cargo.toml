@@ -20,6 +20,12 @@ secret-service = { version = "=5.1.0", default-features = false, features = ["rt
 uhid-virt = "0.0.8"
 zeroize = "1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+aes-gcm = "0.10.3"
+security-framework = "=3.7.0"
+security-framework-sys = "=2.17.0"
+zeroize = "1"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 uuid = { version = "1", features = ["v4"] }
