@@ -45,6 +45,7 @@ pub enum Ctap2Status {
     InvalidCommand = 0x01,
     InvalidParameter = 0x02,
     InvalidLength = 0x03,
+    CborUnexpectedType = 0x11,
     InvalidCbor = 0x12,
     MissingParameter = 0x14,
     UnsupportedOption = 0x2e,
@@ -109,6 +110,143 @@ pub fn encode_response(status: Ctap2Status, payload: &[u8]) -> Vec<u8> {
 pub struct Ctap2Response {
     pub status: Ctap2Status,
     pub payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetAssertionRequest {
+    pub rp_id: String,
+    pub client_data_hash: [u8; 32],
+    pub allow_list: Option<Vec<Vec<u8>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GetAssertionError {
+    InvalidCbor(CborError),
+    MissingParameter(u64),
+    UnexpectedType(u64),
+    InvalidParameter(u64),
+}
+
+impl GetAssertionError {
+    #[must_use]
+    pub const fn status(&self) -> Ctap2Status {
+        match self {
+            Self::InvalidCbor(_) => Ctap2Status::InvalidCbor,
+            Self::MissingParameter(_) => Ctap2Status::MissingParameter,
+            Self::UnexpectedType(_) => Ctap2Status::CborUnexpectedType,
+            Self::InvalidParameter(_) => Ctap2Status::InvalidParameter,
+        }
+    }
+}
+
+impl GetAssertionRequest {
+    pub fn decode(payload: &[u8]) -> Result<Self, GetAssertionError> {
+        let value = decode(payload).map_err(GetAssertionError::InvalidCbor)?;
+        let CborValue::Map(entries) = value else {
+            return Err(GetAssertionError::UnexpectedType(0));
+        };
+        let mut rp_id = None;
+        let mut client_data_hash = None;
+        let mut allow_list = None;
+        for (key, value) in entries {
+            let CborValue::Unsigned(key) = key else {
+                return Err(GetAssertionError::UnexpectedType(0));
+            };
+            match key {
+                1 => {
+                    if rp_id.is_some() {
+                        return Err(GetAssertionError::InvalidParameter(1));
+                    }
+                    let CborValue::Text(value) = value else {
+                        return Err(GetAssertionError::UnexpectedType(1));
+                    };
+                    if value.is_empty() {
+                        return Err(GetAssertionError::InvalidParameter(1));
+                    }
+                    rp_id = Some(value);
+                }
+                2 => {
+                    if client_data_hash.is_some() {
+                        return Err(GetAssertionError::InvalidParameter(2));
+                    }
+                    let CborValue::Bytes(value) = value else {
+                        return Err(GetAssertionError::UnexpectedType(2));
+                    };
+                    let hash: [u8; 32] = value
+                        .try_into()
+                        .map_err(|_| GetAssertionError::InvalidParameter(2))?;
+                    client_data_hash = Some(hash);
+                }
+                3 => {
+                    if allow_list.is_some() {
+                        return Err(GetAssertionError::InvalidParameter(3));
+                    }
+                    let CborValue::Array(descriptors) = value else {
+                        return Err(GetAssertionError::UnexpectedType(3));
+                    };
+                    if descriptors.is_empty() {
+                        return Err(GetAssertionError::InvalidParameter(3));
+                    }
+                    allow_list = Some(parse_allow_list(descriptors)?);
+                }
+                _ => {}
+            }
+        }
+        Ok(Self {
+            rp_id: rp_id.ok_or(GetAssertionError::MissingParameter(1))?,
+            client_data_hash: client_data_hash.ok_or(GetAssertionError::MissingParameter(2))?,
+            allow_list,
+        })
+    }
+}
+
+fn parse_allow_list(descriptors: Vec<CborValue>) -> Result<Vec<Vec<u8>>, GetAssertionError> {
+    descriptors
+        .into_iter()
+        .map(|descriptor| {
+            let CborValue::Map(fields) = descriptor else {
+                return Err(GetAssertionError::UnexpectedType(3));
+            };
+            let mut credential_type = None;
+            let mut id = None;
+            for (key, value) in fields {
+                let CborValue::Text(key) = key else {
+                    return Err(GetAssertionError::UnexpectedType(3));
+                };
+                match key.as_str() {
+                    "type" => {
+                        if credential_type.is_some() {
+                            return Err(GetAssertionError::InvalidParameter(3));
+                        }
+                        let CborValue::Text(value) = value else {
+                            return Err(GetAssertionError::UnexpectedType(3));
+                        };
+                        if value != "public-key" {
+                            return Err(GetAssertionError::InvalidParameter(3));
+                        }
+                        credential_type = Some(());
+                    }
+                    "id" => {
+                        if id.is_some() {
+                            return Err(GetAssertionError::InvalidParameter(3));
+                        }
+                        let CborValue::Bytes(value) = value else {
+                            return Err(GetAssertionError::UnexpectedType(3));
+                        };
+                        if value.is_empty() {
+                            return Err(GetAssertionError::InvalidParameter(3));
+                        }
+                        id = Some(value);
+                    }
+                    _ => {}
+                }
+            }
+            if credential_type.is_none() || id.is_none() {
+                return Err(GetAssertionError::MissingParameter(3));
+            }
+            Ok(id.expect("validated above"))
+        })
+        .collect()
 }
 
 impl Ctap2Response {
