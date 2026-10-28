@@ -1479,6 +1479,8 @@ CTAP2 입력 CBOR는 definite-length 값만 허용하며 기본 16 depth, 128 co
 
 `GetInfoProfile`은 versions, AAGUID, options, max message size와 PIN/UV protocol을 명시적으로 주입해야만 응답을 직렬화한다. 기본 profile은 제공하지 않아 미완성 authenticator가 기능을 과장하지 않는다. [`docs/ctap2-getinfo.md`](../docs/ctap2-getinfo.md)
 
+Credential domain은 private key bytes 대신 opaque key handle만 보관하고, 모든 allow-list/discoverable 조회를 RP ID hash로 격리한다. 중복 credential ID와 빈 metadata는 등록 전에 거부한다. [`docs/credential-domain.md`](../docs/credential-domain.md)
+
 프로그램은 지원 OS에서 가상 HID 장치의 연결과 분리를 제어하고, 사용자가 별도의 하드웨어 보안 키 없이 표준 WebAuthn 인증을 시도할 수 있는 환경을 제공하는 것을 목표로 한다. 각 OS와 브라우저 조합은 실제 검증을 통과한 경우에만 지원한다.
 
 이 프로젝트의 핵심은 **USB 장치의 물리적 존재를 구현하는 것이 아니라, USB FIDO2 인증기의 표준 인터페이스와 인증 동작을

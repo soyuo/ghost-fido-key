@@ -4,12 +4,16 @@
 //! implemented yet. Keep operating-system APIs out of this crate.
 
 pub mod cbor;
+pub mod credentials;
 pub mod ctap2;
 pub mod ctaphid;
 
 pub use cbor::{
     CborError, CborLimits, CborValue, decode as decode_cbor, decode_with_limits,
     encode as encode_cbor,
+};
+pub use credentials::{
+    CredentialError, CredentialId, CredentialRecord, CredentialStore, KeyHandle, RpIdHash,
 };
 pub use ctap2::{
     Ctap2Command, Ctap2Error, Ctap2Request, Ctap2Status, GetInfoError, GetInfoProfile,
