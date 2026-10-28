@@ -16,8 +16,38 @@ Driver Kit (WDK).
 5. A restricted user-mode control device exposes readiness, attach, detach, and
    report operations to the Rust application through versioned IOCTLs.
 
-The application must not claim `Available` from device enumeration alone. The
-driver must be signed, installed, and answer the readiness handshake first.
+The application must not claim `Available` from device enumeration or an open
+control handle alone. The driver must answer the versioned status IOCTL with
+the expected protocol signature, report sizes, and capability bits. The Rust
+adapter still reports the backend as unavailable until its attach, detach, and
+report operations are implemented end to end.
+
+## User-mode control protocol
+
+`ghost_fido_ude_protocol.h` is the native ABI definition. The Rust adapter
+mirrors its fixed-width little-endian fields in `windows_ude.rs`.
+
+- `IOCTL_GHOST_FIDO_UDE_QUERY_STATUS` uses `FILE_DEVICE_UNKNOWN`, function
+  `0x800`, `METHOD_BUFFERED`, and `FILE_READ_ACCESS`.
+- The 16-byte request contains `Size`, protocol major/minor, and a zero reserved
+  field. The current request is version 1.0.
+- The 36-byte response starts with `Size`, signature `GFUD`, protocol
+  major/minor, capability flags, input/output report sizes, and two zero
+  reserved fields. FIDO input and output reports must both be 64 bytes.
+- Capability bits declare controller readiness, the FIDO HID profile, attach
+  and detach operations, and report I/O. A driver must advertise all four for
+  the complete runtime contract.
+- A client accepts the same major version and ignores trailing fields from a
+  newer minor version after checking the declared response size. A different
+  major version, truncated or oversized response, wrong signature, nonzero
+  reserved fields, or mismatched report sizes is unavailable.
+- The current native driver does not implement the IOCTL handler, and the Rust
+  adapter does not implement attach, detach, or report IO. A successful future
+  handshake alone therefore cannot mark the backend `Available`.
+
+The IOCTL grants read access only. The eventual control-device interface must
+also apply an explicit device ACL and validate every operation in kernel mode;
+the handshake is not an authorization boundary for report traffic.
 
 ## Build and signing gates
 
