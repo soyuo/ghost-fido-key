@@ -16,24 +16,24 @@
 
 ### 0.1 제품 범위
 
-제품 목표는 물리 USB 없이 운영체제의 인증기 탐색 경로에 가상 FIDO HID 인증기를 제공하는 데스크톱 애플리케이션이다. Windows, macOS, Linux 지원을 지향하되 지원 여부는 OS 버전·CPU 아키텍처·브라우저 조합별 검증을 통과한 범위로 한정한다. 모든 웹사이트와 모든 운영체제 버전에서 동작한다고 보장하지 않는다.
+v1은 물리 USB 없이 Windows, macOS, Linux 모두에서 운영체제의 인증기 탐색 경로에 가상 FIDO HID 인증기를 제공해야 한다. 각 OS 공급자가 보안 업데이트를 제공하는 데스크톱 OS 버전을 대상으로 하며, x64와 ARM64를 지원한다. Linux 배포판은 Ubuntu LTS를 우선 대상으로 삼는다. OS 버전·CPU 아키텍처별 지원은 해당 OS 가상 HID 경로와 브라우저/WebAuthn 검증을 통과한 조합에 한정하며 모든 웹사이트 호환성을 보장하지 않는다.
 
-첫 출시 후보 범위는 Windows 10/11 x64, macOS 11 이상(지원 CPU 아키텍처는 빌드·드라이버 검증으로 확정), Linux x86_64 및 aarch64의 선정 배포판이다. 이는 잠정 범위이며 각 플랫폼의 설치·권한·장치 인식·브라우저 상호운용 검증 후 정식 지원표로 확정한다.
+지원표에는 OS 공급자 보안 업데이트 여부, x64/ARM64 빌드, 가상 장치 열거, 권한·설치, Chrome/Edge WebAuthn 결과를 버전별로 기록한다. OS 버전이 보안 지원에서 제외되거나 CPU 아키텍처에서 native adapter를 제공하지 못하면 해당 조합은 지원하지 않는다. Linux는 보안 업데이트 중인 Ubuntu LTS 릴리스부터 검증하고 다른 배포판은 별도 검증 전까지 보장하지 않는다.
 
 ### 0.2 공통 기술과 플랫폼별 기술
 
 | 영역 | 기준 기술 | 책임 |
 | --- | --- | --- |
-| 데스크톱 UI | Tauri 2, Rust backend, 웹 프런트엔드 | 상태, 설정, 승인, 플랫폼 상태 표시 |
+| 데스크톱 UI | Tauri 2, React, TypeScript, Rust backend | 상태, 설정, 승인, 플랫폼 상태 표시 |
 | 공통 인증기 코어 | Rust workspace | CTAPHID, CBOR, CTAP2, 자격 증명 정책 및 공통 오류 모델 |
 | 플랫폼 경계 | Rust trait/API 및 제한된 IPC | 공통 코어와 OS 기능을 분리하고 실패를 명시적으로 전달 |
-| Linux 가상 HID | `/dev/uhid` 사용자 공간 어댑터 후보 | UHID 장치 수명주기와 HID report 전달; 권한과 배포 규칙 별도 검증 |
-| Windows 가상 HID | UdeCx/KMDF 기반 네이티브 드라이버 후보 | Windows 장치 열거 및 endpoint 전달; 서명·설치·제거 검증 |
-| macOS 가상 HID | CoreHID virtual device API 및 entitlement 후보 | entitlement 발급, 서명, 배포와 브라우저 인식 가능성을 먼저 검증 |
+| Linux 가상 HID | `/dev/uhid` 사용자 공간 어댑터 후보 | x64/ARM64에서 UHID 수명주기, report 전달, 권한·Ubuntu LTS 배포 검증 |
+| Windows 가상 HID | UdeCx/KMDF 기반 네이티브 드라이버 후보 | x64/ARM64 장치 열거, 드라이버 서명·설치·제거 검증 |
+| macOS 가상 HID | CoreHID virtual device API 및 entitlement 후보 | 지원되는 x64/ARM64 조합, entitlement, 서명·배포와 브라우저 인식 검증 |
 | 암호 키 보관 | 플랫폼별 `KeyStore` provider | TPM, Secure Enclave 또는 OS 보호 저장소 등 실제 제공 능력을 보고하고 정책 적용 |
 | 메타데이터 | SQLite 등 공통 저장소 후보 | 민감한 개인 키 원문은 저장하지 않고 OS 보호 저장소의 key reference만 저장 |
 
-Tauri는 UI 구현을 공유하지만 가상 HID 장치·드라이버·보안 저장소를 자동으로 멀티플랫폼화하지 않는다. OS별 드라이버, entitlement, 권한, 패키징과 호환성 검증은 각 플랫폼에서 따로 수행한다.
+Tauri는 React/TypeScript UI 구현을 공유하지만 가상 HID 장치·드라이버·보안 저장소를 자동으로 멀티플랫폼화하지 않는다. OS별 드라이버, entitlement, 권한, 패키징과 호환성 검증은 각 플랫폼과 CPU 아키텍처에서 따로 수행한다.
 
 ### 0.3 모듈 책임 경계
 
@@ -49,9 +49,9 @@ Tauri는 UI 구현을 공유하지만 가상 HID 장치·드라이버·보안 �
 
 | 플랫폼 | 조사할 경로 | 출시 전 필수 증거 |
 | --- | --- | --- |
-| Linux | 커널 UHID (`/dev/uhid`) | 권한·udev 설치 방식, 대상 배포판에서 HID 열거, 브라우저의 FIDO 발견과 CTAPHID 왕복 |
-| Windows | UdeCx/KMDF 가상 USB/HID 드라이버 | 드라이버 개발·서명·배포·제거 절차, 장치 관리자 열거, 브라우저 FIDO 발견 및 report 왕복 |
-| macOS | CoreHID virtual device API와 `com.apple.developer.hid.virtual.device` entitlement 검토 | entitlement 요청·배포 가능성, 코드 서명·권한, HID 등록 및 브라우저 FIDO 탐색 확인 |
+| Linux | 커널 UHID (`/dev/uhid`) | 보안 업데이트 중인 Ubuntu LTS의 x64/ARM64에서 권한·udev, HID 열거, 브라우저 FIDO 발견과 CTAPHID 왕복 |
+| Windows | UdeCx/KMDF 가상 USB/HID 드라이버 | 보안 업데이트 중인 Windows x64/ARM64에서 드라이버 서명·설치·제거, 장치 열거와 브라우저 report 왕복 |
+| macOS | CoreHID virtual device API와 `com.apple.developer.hid.virtual.device` entitlement 검토 | 보안 업데이트 중인 macOS 및 x64/ARM64 지원 조합에서 entitlement, 코드 서명, HID 열거와 브라우저 탐색 |
 
 macOS entitlement와 가상 HID 공개 API의 가용성을 확인하기 전에는 macOS 제품 배포를 약속하지 않는다. Windows와 Linux 역시 장치가 OS에 열거된 것만으로 WebAuthn 경로가 검증되었다고 간주하지 않는다.
 
@@ -60,6 +60,8 @@ macOS entitlement와 가상 HID 공개 API의 가용성을 확인하기 전에�
 `STEP.md`는 구현 순서와 단계별 통과 기준을 정의한다. 이 절은 멀티플랫폼 제품 범위와 아키텍처의 현재 기준이다. 아래 본문의 Windows 전용 기술명과 UI 예시는 해당 OS의 구현 예로만 해석한다.
 
 공통 보안 원칙은 유지한다. 사용자 명시적 승인 없는 서명을 금지하고, 타사 제조사 VID/PID, AAGUID, 인증서 또는 attestation을 사칭하지 않으며, 물리 보안 키와 동등한 보안 보증을 하지 않는다. 플랫폼별 하드웨어 키 보호 능력은 지원 OS별로 따로 설명한다.
+
+키 생성은 플랫폼의 보호 저장소를 기본 사용한다. 하드웨어 보호 키를 사용할 수 없는 경우 소프트웨어 키로 자동 전환하지 않는다. 사용자가 보안 차이를 설명받고 명시적으로 동의한 경우에만 소프트웨어 키를 생성하며, UI에는 해당 credential의 보호 수준을 계속 표시한다.
 
 ### 0.6 공식 플랫폼 참고 자료
 
@@ -76,13 +78,11 @@ macOS entitlement와 가상 HID 공개 API의 가용성을 확인하기 전에�
 
 ### 1.1 프로젝트 정의
 
-Virtual FIDO2 Security Key는 **별도의 물리적 USB 장치 없이, 프로그램 실행만으로 Windows에 가상 USB
-FIDO2 보안 키를 생성하는 소프트웨어**다.
+Virtual FIDO2 Security Key는 **별도의 물리적 USB 장치 없이, 프로그램 실행만으로 Windows·macOS·Linux에 가상 FIDO HID 인증기를 제공하는 멀티플랫폼 소프트웨어**다.
 
 사용자가 프로그램을 실행하고 가상 보안 키를 활성화하면 운영체제는 USB HID 인증 장치가 연결된 것처럼 인식한다.
 
-Chrome, Edge 등의 브라우저 및 Windows의 WebAuthn 인터페이스를 통해 전달되는 인증 요청은 가상 USB 계층을 거쳐
-소프트웨어 FIDO2 인증 엔진으로 전달된다.
+Chrome, Edge 등의 브라우저와 각 운영체제의 WebAuthn 경로에서 전달되는 요청은 해당 OS의 가상 HID 어댑터를 거쳐 공통 FIDO2 인증 엔진으로 전달된다.
 
 인증 엔진은 사용자의 승인을 받은 후 보호된 개인 키로 암호학적 서명을 생성하고, 표준 FIDO2 응답을 반환한다.
 
@@ -96,13 +96,13 @@ Chrome, Edge 등의 브라우저 및 Windows의 WebAuthn 인터페이스를 통�
 1. 물리 USB 장치가 필요 없어야 한다.
 2. 일반 USB 메모리를 개조하거나 포맷할 필요가 없어야 한다.
 3. 프로그램 내부에서 가상 USB 장치를 생성해야 한다.
-4. Windows가 해당 장치를 USB HID 장치로 열거할 수 있어야 한다.
+4. 지원 대상 운영체제가 해당 장치를 FIDO HID 인증기로 열거할 수 있어야 한다.
 5. 표준 FIDO2 / CTAP2 인증 요청을 처리해야 한다.
 6. WebAuthn 호환 브라우저에서 인증에 사용할 수 있어야 한다.
 7. 인증용 개인 키는 외부에 노출하지 않아야 한다.
-8. 가능한 경우 TPM 2.0 기반 비추출형 개인 키를 사용해야 한다.
+8. 플랫폼 보호 저장소를 기본 사용하고, 보호 수준을 credential별로 표시해야 한다.
 9. 사용자의 명시적 승인 없이 인증을 완료해서는 안 된다.
-10. 프로그램 종료 시 가상 USB 장치를 연결 해제해야 한다.
+10. 프로그램 종료 시 가상 HID 장치를 연결 해제해야 한다.
 11. 인증 정보의 기밀성, 무결성 및 장치 수명주기를 관리해야 한다.
 12. 사용자에게 실제 하드웨어 인증기라는 허위 보안 보증을 제공해서는 안 된다.
 
@@ -221,7 +221,7 @@ v1에서는 다음을 필수 지원하지 않는다.
 | --- | --- |
 | OS | Windows, macOS, Linux; 버전과 아키텍처는 단계별 지원 매트릭스로 확정 |
 | 공통 코어 | Rust workspace |
-| 데스크톱 UI | Tauri 2와 Rust backend; 프런트엔드 기술은 UI scaffold 단계에서 확정 |
+| 데스크톱 UI | Tauri 2, React, TypeScript, Rust backend |
 | 플랫폼 HID | Linux UHID, Windows UdeCx/KMDF, macOS CoreHID 후보; 각각 독립 검증 |
 | 키 보관 | 플랫폼별 `KeyStore` provider; 하드웨어 보호 수준을 기능별로 보고 |
 | 승인 및 확인 | 공통 승인 정책과 OS별 사용자 확인 provider |
@@ -674,7 +674,7 @@ SQLite에 저장되는 메타데이터와 소프트웨어 키 저장이 필요�
 
 ### 10.4 TPM 미지원 환경
 
-TPM을 사용할 수 없는 경우 두 가지 운영 정책을 검토한다.
+플랫폼 보호 키를 사용할 수 없는 경우 기본적으로 키 생성을 거부한다. 사용자가 소프트웨어 키의 보안 차이를 설명받고 명시적으로 동의하면 software fallback을 선택할 수 있다.
 
 #### Strict Mode
 
@@ -687,7 +687,7 @@ TPM을 사용할 수 없는 경우 두 가지 운영 정책을 검토한다.
 - 암호화된 소프트웨어 키를 사용한다.
 - 별도의 사용자 승인과 명시적 위험 고지가 필요하다.
 - 하드웨어 기반 비추출 보장을 제공하지 않는다.
-- v1에 포함할지 여부는 보안 검토 후 확정한다.
+- v1은 위험 고지와 명시적 사용자 동의를 받은 경우에만 허용한다.
 
 ### 10.5 메모리 보호
 
@@ -1389,11 +1389,15 @@ Windows 가상 USB 호스트 컨트롤러 및 장치 구현을 위한 참고 자
 | 항목 | 최종 결정 |
 | --- | --- |
 | 프로젝트 형태 | Rust 공통 코어를 사용하는 멀티플랫폼 데스크톱 소프트웨어 |
+| v1 필수 운영체제 | Windows, macOS, Linux |
+| OS 버전 정책 | 각 공급자가 보안 업데이트를 제공하는 데스크톱 버전 |
+| CPU 아키텍처 | x64와 ARM64; OS별 가상 HID 경로에서 검증된 조합 |
+| Linux 배포판 | Ubuntu LTS 우선, 보안 업데이트 중인 릴리스 |
 | 물리 USB 필요 여부 | 불필요 |
 | 일반 USB 개조 | 하지 않음 |
 | 가상 FIDO HID 생성 | 지원을 선언하는 각 OS에서 필수 |
 | 장치 유형 | OS별 가상 HID 기반 FIDO2 |
-| 공통 UI | Tauri 2 |
+| 공통 UI | Tauri 2 + React + TypeScript |
 | OS별 장치 경로 | Linux UHID, Windows UdeCx/KMDF, macOS CoreHID 후보 검증 |
 | 브라우저 인터페이스 | WebAuthn |
 | 인증 프로토콜 | CTAP2 / CTAPHID |
@@ -1403,7 +1407,8 @@ Windows 가상 USB 호스트 컨트롤러 및 장치 구현을 위한 참고 자
 | 사용자 검증 | PIN과 OS별 사용자 확인 기능을 분리 검증 |
 | 개인 키 저장 | OS별 보호 키 저장소, 가용성과 보장 수준 표시 |
 | 암호화 메타데이터 | SQLite 후보 + OS별 보호 기능 |
-| 소프트웨어 키 대체 모드 | 보안 검토 후 결정 |
+| 키 저장 우선순위 | 플랫폼 보호 저장소 우선; hardware-backed 여부와 exportability를 노출 |
+| 소프트웨어 키 대체 모드 | 자동 전환 금지; 위험 고지와 명시적 사용자 동의 후 허용 |
 | 프로그램 실행 | 가상 USB 연결 기능 제공 |
 | 프로그램 종료 | 가상 USB 연결 해제 |
 | 웹사이트별 호환성 | 실제 테스트로 검증 |
