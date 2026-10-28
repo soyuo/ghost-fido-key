@@ -5,6 +5,7 @@
 #include <ntddk.h>
 #include <wdf.h>
 #include <Udecx.h>
+#include "ghost_fido_ude_protocol.h"
 
 #define GHOST_FIDO_VENDOR_ID 0x0000
 #define GHOST_FIDO_PRODUCT_ID 0x0000
