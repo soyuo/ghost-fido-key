@@ -10,7 +10,9 @@ use std::{
     io,
     os::windows::io::AsRawHandle,
     path::{Path, PathBuf},
+    thread,
     time::Duration,
+    time::Instant,
 };
 
 use windows::Win32::{Foundation::HANDLE, System::IO::DeviceIoControl};
@@ -24,14 +26,24 @@ use crate::{
 pub const DEFAULT_UDE_CONTROL_PATH: &str = r"\\.\GhostFidoUde";
 
 const IOCTL_GHOST_FIDO_UDE_QUERY_STATUS: u32 = ctl_code(0x22, 0x800, 0, 1);
+const IOCTL_GHOST_FIDO_UDE_ATTACH: u32 = ctl_code(0x22, 0x801, 0, 2);
+const IOCTL_GHOST_FIDO_UDE_DETACH: u32 = ctl_code(0x22, 0x802, 0, 2);
+const IOCTL_GHOST_FIDO_UDE_WRITE_INPUT_REPORT: u32 = ctl_code(0x22, 0x803, 0, 2);
+const IOCTL_GHOST_FIDO_UDE_READ_OUTPUT_REPORT: u32 = ctl_code(0x22, 0x804, 0, 1);
 const UDE_PROTOCOL_MAJOR: u32 = 1;
-const UDE_PROTOCOL_MINOR: u32 = 0;
+const UDE_PROTOCOL_MINOR: u32 = 1;
 const UDE_STATUS_SIGNATURE: u32 = 0x4455_4647;
 const UDE_STATUS_REQUEST_SIZE: u32 = 16;
 const UDE_STATUS_RESPONSE_SIZE: usize = 36;
 const UDE_MAX_STATUS_SIZE: usize = 256;
 const UDE_REQUIRED_CAPABILITIES: u32 = 0x0f;
 const FIDO_REPORT_SIZE: u32 = 64;
+const OPERATION_REQUEST_SIZE: u32 = 16;
+const INPUT_REPORT_REQUEST_SIZE: u32 = 84;
+const OUTPUT_REPORT_REQUEST_SIZE: u32 = 16;
+const OUTPUT_REPORT_RESPONSE_SIZE: usize = 84;
+const ERROR_NO_MORE_ITEMS_HRESULT: i32 = 0x8007_0103u32 as i32;
+const ERROR_DEVICE_NOT_CONNECTED_HRESULT: i32 = 0x8007_048fu32 as i32;
 const ERROR_ACCESS_DENIED_HRESULT: i32 = 0x8007_0005u32 as i32;
 const ERROR_INVALID_FUNCTION_HRESULT: i32 = 0x8007_0001u32 as i32;
 const ERROR_INVALID_PARAMETER_HRESULT: i32 = 0x8007_0057u32 as i32;
@@ -47,6 +59,36 @@ struct UdeStatusRequest {
     protocol_major: u32,
     protocol_minor: u32,
     reserved: u32,
+}
+
+#[repr(C)]
+struct UdeOperationRequest {
+    size: u32,
+    protocol_major: u32,
+    protocol_minor: u32,
+    reserved: u32,
+}
+
+#[repr(C)]
+struct UdeInputReportRequest {
+    size: u32,
+    protocol_major: u32,
+    protocol_minor: u32,
+    report_size: u32,
+    reserved: u32,
+    report: [u8; FIDO_REPORT_SIZE as usize],
+}
+
+#[repr(C)]
+struct UdeOutputReportRequest {
+    size: u32,
+    protocol_major: u32,
+    protocol_minor: u32,
+    reserved: u32,
+}
+
+struct UdeOutputReportResponse {
+    report: Vec<u8>,
 }
 
 struct UdeStatus {
@@ -183,6 +225,149 @@ impl WindowsUdeBackend {
             output_report_size: read_u32(24),
         })
     }
+
+    fn control_file(&self) -> Result<std::fs::File, UdeQueryError> {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.control_path)
+            .map_err(UdeQueryError::Open)
+    }
+
+    fn operation_request() -> UdeOperationRequest {
+        UdeOperationRequest {
+            size: OPERATION_REQUEST_SIZE,
+            protocol_major: UDE_PROTOCOL_MAJOR,
+            protocol_minor: UDE_PROTOCOL_MINOR,
+            reserved: 0,
+        }
+    }
+
+    fn send_operation(&self, ioctl: u32) -> Result<(), UdeQueryError> {
+        let file = self.control_file()?;
+        let request = Self::operation_request();
+        let mut bytes_returned = 0u32;
+        // SAFETY: the fixed-size request is initialized and the byte-count
+        // pointer remains writable for the duration of DeviceIoControl.
+        unsafe {
+            DeviceIoControl(
+                HANDLE(file.as_raw_handle()),
+                ioctl,
+                Some((&request as *const UdeOperationRequest).cast()),
+                OPERATION_REQUEST_SIZE,
+                None,
+                0,
+                Some(&mut bytes_returned),
+                None,
+            )
+        }
+        .map_err(|error| UdeQueryError::Ioctl {
+            code: error.code().0,
+            detail: error.to_string(),
+        })?;
+        if bytes_returned != 0 {
+            return Err(UdeQueryError::Protocol(format!(
+                "operation returned {bytes_returned} unexpected response bytes"
+            )));
+        }
+        Ok(())
+    }
+
+    fn write_input_report(&self, report: &[u8]) -> Result<(), UdeQueryError> {
+        let report: [u8; FIDO_REPORT_SIZE as usize] = report.try_into().map_err(|_| {
+            UdeQueryError::Protocol(format!("FIDO HID reports must be {FIDO_REPORT_SIZE} bytes"))
+        })?;
+        let file = self.control_file()?;
+        let request = UdeInputReportRequest {
+            size: INPUT_REPORT_REQUEST_SIZE,
+            protocol_major: UDE_PROTOCOL_MAJOR,
+            protocol_minor: UDE_PROTOCOL_MINOR,
+            report_size: FIDO_REPORT_SIZE,
+            reserved: 0,
+            report,
+        };
+        let mut bytes_returned = 0u32;
+        // SAFETY: the report record is fixed-size and initialized; the output
+        // pointer is valid for the synchronous DeviceIoControl call.
+        unsafe {
+            DeviceIoControl(
+                HANDLE(file.as_raw_handle()),
+                IOCTL_GHOST_FIDO_UDE_WRITE_INPUT_REPORT,
+                Some((&request as *const UdeInputReportRequest).cast()),
+                INPUT_REPORT_REQUEST_SIZE,
+                None,
+                0,
+                Some(&mut bytes_returned),
+                None,
+            )
+        }
+        .map_err(|error| UdeQueryError::Ioctl {
+            code: error.code().0,
+            detail: error.to_string(),
+        })?;
+        if bytes_returned != 0 {
+            return Err(UdeQueryError::Protocol(format!(
+                "report write returned {bytes_returned} unexpected response bytes"
+            )));
+        }
+        Ok(())
+    }
+
+    fn read_output_report(&self) -> Result<UdeOutputReportResponse, UdeQueryError> {
+        let file = self.control_file()?;
+        let request = UdeOutputReportRequest {
+            size: OUTPUT_REPORT_REQUEST_SIZE,
+            protocol_major: UDE_PROTOCOL_MAJOR,
+            protocol_minor: UDE_PROTOCOL_MINOR,
+            reserved: 0,
+        };
+        let mut response = [0u8; OUTPUT_REPORT_RESPONSE_SIZE];
+        let mut bytes_returned = 0u32;
+        // SAFETY: the request and response buffers have the exact ABI sizes;
+        // DeviceIoControl writes no more than the provided response capacity.
+        unsafe {
+            DeviceIoControl(
+                HANDLE(file.as_raw_handle()),
+                IOCTL_GHOST_FIDO_UDE_READ_OUTPUT_REPORT,
+                Some((&request as *const UdeOutputReportRequest).cast()),
+                OUTPUT_REPORT_REQUEST_SIZE,
+                Some(response.as_mut_ptr().cast()),
+                OUTPUT_REPORT_RESPONSE_SIZE as u32,
+                Some(&mut bytes_returned),
+                None,
+            )
+        }
+        .map_err(|error| UdeQueryError::Ioctl {
+            code: error.code().0,
+            detail: error.to_string(),
+        })?;
+
+        if bytes_returned as usize != OUTPUT_REPORT_RESPONSE_SIZE {
+            return Err(UdeQueryError::Protocol(format!(
+                "driver returned {bytes_returned} output-report bytes; expected {OUTPUT_REPORT_RESPONSE_SIZE}"
+            )));
+        }
+        let read_u32 = |offset: usize| {
+            u32::from_le_bytes(
+                response[offset..offset + 4]
+                    .try_into()
+                    .expect("fixed-size output-report response"),
+            )
+        };
+        if read_u32(0) as usize != OUTPUT_REPORT_RESPONSE_SIZE
+            || read_u32(4) != UDE_PROTOCOL_MAJOR
+            || read_u32(8) > UDE_PROTOCOL_MINOR
+            || read_u32(12) != FIDO_REPORT_SIZE
+            || read_u32(16) != 0
+        {
+            return Err(UdeQueryError::Protocol(
+                "driver returned an invalid output-report response header".to_owned(),
+            ));
+        }
+        Ok(UdeOutputReportResponse {
+            report: response[20..].to_vec(),
+        })
+    }
 }
 
 impl Default for WindowsUdeBackend {
@@ -201,7 +386,7 @@ impl VirtualHidBackend for WindowsUdeBackend {
             {
                 CapabilityStatus::unavailable(
                     CapabilityState::NotImplemented,
-                    "the UDE driver reports a compatible FIDO HID profile, but Rust attach, detach, and report operations are not implemented",
+                    "the UDE driver reports a compatible FIDO HID profile, but runtime transport validation is still required",
                 )
             }
             Ok(status) => CapabilityStatus::unavailable(
@@ -266,33 +451,140 @@ impl VirtualHidBackend for WindowsUdeBackend {
     }
 
     fn attach(&mut self) -> Result<(), PlatformError> {
-        self.state = DeviceState::Failed;
-        Err(Self::error(
-            PlatformErrorKind::NotImplemented,
-            "UDE attach IOCTL contract is not implemented",
-        ))
+        if self.state == DeviceState::Attached {
+            return Ok(());
+        }
+        self.state = DeviceState::Starting;
+        match self.send_operation(IOCTL_GHOST_FIDO_UDE_ATTACH) {
+            Ok(()) => {
+                self.state = DeviceState::Attached;
+                Ok(())
+            }
+            Err(error) => {
+                self.state = DeviceState::Failed;
+                Err(self.map_operation_error("attach", error))
+            }
+        }
     }
 
     fn detach(&mut self) -> Result<(), PlatformError> {
-        self.state = DeviceState::Detached;
-        Ok(())
+        self.state = DeviceState::Stopping;
+        match self.send_operation(IOCTL_GHOST_FIDO_UDE_DETACH) {
+            Ok(()) => {
+                self.state = DeviceState::Detached;
+                Ok(())
+            }
+            Err(UdeQueryError::Ioctl { code, .. })
+                if code == ERROR_DEVICE_NOT_CONNECTED_HRESULT =>
+            {
+                self.state = DeviceState::Detached;
+                Ok(())
+            }
+            Err(error) => {
+                self.state = DeviceState::Failed;
+                Err(self.map_operation_error("detach", error))
+            }
+        }
     }
 
     fn state(&self) -> DeviceState {
         self.state
     }
 
-    fn send_input_report(&mut self, _report: &[u8]) -> Result<(), PlatformError> {
-        Err(Self::error(
-            PlatformErrorKind::NotImplemented,
-            "UDE report IOCTL contract is not implemented",
-        ))
+    fn send_input_report(&mut self, report: &[u8]) -> Result<(), PlatformError> {
+        if report.len() != FIDO_REPORT_SIZE as usize {
+            return Err(Self::error(
+                PlatformErrorKind::InvalidReport,
+                format!("FIDO HID reports must be {FIDO_REPORT_SIZE} bytes"),
+            ));
+        }
+        if self.state != DeviceState::Attached {
+            return Err(Self::error(
+                PlatformErrorKind::Unsupported,
+                "cannot send a report while the device is detached",
+            ));
+        }
+        self.write_input_report(report)
+            .map_err(|error| self.map_operation_error("write input report", error))
     }
 
-    fn receive_output_report(&mut self, _timeout: Duration) -> Result<Vec<u8>, PlatformError> {
-        Err(Self::error(
-            PlatformErrorKind::NotImplemented,
-            "UDE report IOCTL contract is not implemented",
-        ))
+    fn receive_output_report(&mut self, timeout: Duration) -> Result<Vec<u8>, PlatformError> {
+        if self.state != DeviceState::Attached {
+            return Err(Self::error(
+                PlatformErrorKind::Unsupported,
+                "cannot receive a report while the device is detached",
+            ));
+        }
+        let started = Instant::now();
+        loop {
+            match self.read_output_report() {
+                Ok(response) => return Ok(response.report),
+                Err(UdeQueryError::Ioctl { code, .. }) if code == ERROR_NO_MORE_ITEMS_HRESULT => {
+                    let elapsed = started.elapsed();
+                    if elapsed >= timeout {
+                        return Err(Self::error(
+                            PlatformErrorKind::Timeout,
+                            "timed out waiting for a UDE output report",
+                        ));
+                    }
+                    thread::sleep(Duration::from_millis(2).min(timeout - elapsed));
+                }
+                Err(UdeQueryError::Ioctl { code, detail })
+                    if code == ERROR_DEVICE_NOT_CONNECTED_HRESULT =>
+                {
+                    self.state = DeviceState::Failed;
+                    return Err(Self::error(PlatformErrorKind::Io, detail));
+                }
+                Err(error) => {
+                    self.state = DeviceState::Failed;
+                    return Err(self.map_operation_error("read output report", error));
+                }
+            }
+        }
+    }
+}
+
+impl WindowsUdeBackend {
+    fn map_operation_error(&self, operation: &str, error: UdeQueryError) -> PlatformError {
+        match error {
+            UdeQueryError::Open(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                Self::error(
+                    PlatformErrorKind::PermissionDenied,
+                    format!("permission denied while attempting to {operation}"),
+                )
+            }
+            UdeQueryError::Open(error) if error.kind() == io::ErrorKind::NotFound => Self::error(
+                PlatformErrorKind::DriverMissing,
+                format!("UDE control endpoint is missing while attempting to {operation}"),
+            ),
+            UdeQueryError::Open(error) => Self::error(
+                PlatformErrorKind::Io,
+                format!("failed to open the UDE control endpoint for {operation}: {error}"),
+            ),
+            UdeQueryError::Ioctl { code, detail } if code == ERROR_ACCESS_DENIED_HRESULT => {
+                Self::error(
+                    PlatformErrorKind::PermissionDenied,
+                    format!("permission denied while attempting to {operation}: {detail}"),
+                )
+            }
+            UdeQueryError::Ioctl { code, detail }
+                if code == ERROR_INVALID_FUNCTION_HRESULT
+                    || code == ERROR_INVALID_PARAMETER_HRESULT
+                    || code == ERROR_NOT_SUPPORTED_HRESULT =>
+            {
+                Self::error(
+                    PlatformErrorKind::NotImplemented,
+                    format!("the UDE driver rejected {operation}: {detail}"),
+                )
+            }
+            UdeQueryError::Ioctl { detail, .. } => Self::error(
+                PlatformErrorKind::Io,
+                format!("UDE {operation} IOCTL failed: {detail}"),
+            ),
+            UdeQueryError::Protocol(detail) => Self::error(
+                PlatformErrorKind::InvalidReport,
+                format!("invalid UDE response during {operation}: {detail}"),
+            ),
+        }
     }
 }

@@ -14,20 +14,23 @@ Driver Kit (WDK).
    the driver adds a USB 2.0 FIDO HID descriptor set and creates the UDE device.
    The default zero values leave the controller running without a virtual USB
    device.
-3. The driver creates the default control endpoint and both 64-byte interrupt
-   endpoint objects before plugging in the virtual device. Endpoint requests
-   currently complete with `STATUS_NOT_SUPPORTED`; HID class requests and FIDO
-   report transport are not implemented.
+3. On an explicit attach IOCTL, the driver creates the default control endpoint
+   and both 64-byte interrupt endpoint objects, then plugs in the virtual
+   device. The HID report descriptor and fixed-profile class requests are
+   handled on EP0. Interrupt IN/OUT requests exchange 64-byte reports with
+   bounded kernel queues.
 4. Device context cleanup calls `UdecxUsbDevicePlugOutAndDelete` before freeing
    any unconsumed UDE initialization parameters.
 5. A restricted user-mode control device exposes readiness, attach, detach, and
-   report operations to the Rust application through versioned IOCTLs.
+   report operations to the Rust application through versioned IOCTLs. URBs are
+   completed from a separate DPC; pending interrupt-IN requests are held in a
+   cancellable manual queue and purged during detach.
 
 The application must not claim `Available` from device enumeration or an open
 control handle alone. The driver must answer the versioned status IOCTL with
 the expected protocol signature, report sizes, and capability bits. The Rust
-adapter still reports the backend as unavailable until its attach, detach, and
-report operations are implemented end to end.
+adapter keeps the backend unavailable until the complete driver transport has
+passed runtime validation on supported Windows systems.
 
 ## User-mode control protocol
 
@@ -37,7 +40,7 @@ mirrors its fixed-width little-endian fields in `windows_ude.rs`.
 - `IOCTL_GHOST_FIDO_UDE_QUERY_STATUS` uses `FILE_DEVICE_UNKNOWN`, function
   `0x800`, `METHOD_BUFFERED`, and `FILE_READ_ACCESS`.
 - The 16-byte request contains `Size`, protocol major/minor, and a zero reserved
-  field. The current request is version 1.0.
+  field. The current protocol is version 1.1.
 - The 36-byte response starts with `Size`, signature `GFUD`, protocol
   major/minor, capability flags, input/output report sizes, and two zero
   reserved fields. FIDO input and output reports must both be 64 bytes.
@@ -48,16 +51,20 @@ mirrors its fixed-width little-endian fields in `windows_ude.rs`.
   newer minor version after checking the declared response size. A different
   major version, truncated or oversized response, wrong signature, nonzero
   reserved fields, or mismatched report sizes is unavailable.
-- The native driver exposes `\\.\GhostFidoUde` with a read-only status ACL. It
-  reports only `CONTROLLER_READY`; FIDO profile, attach/detach, and report I/O
-  remain unimplemented even when the virtual device has been plugged in. The
-  Rust adapter requires all four capabilities and also lacks attach, detach,
-  and report operations, so this handshake cannot mark the backend `Available`.
+- Attach/detach and report IOCTLs use fixed-size versioned records. Input
+  reports are exactly 64 bytes. Output report reads return immediately with
+  `STATUS_NO_MORE_ENTRIES` when the bounded queue is empty; Rust polls until its
+  caller-supplied timeout expires.
+- The native driver exposes `\\.\GhostFidoUde` with read/write access for
+  interactive users and full access for Local System and Administrators. The
+  driver reports only `CONTROLLER_READY`; FIDO profile, attach/detach, and
+  report-I/O capabilities remain unadvertised until runtime validation. The
+  Rust adapter also fails closed and cannot mark the backend `Available`.
 
-The IOCTL grants read access only. The controller device ACL allows status reads
-and grants full access only to Local System and Administrators. Every future
-operation must validate its inputs in kernel mode; the handshake is not an
-authorization boundary for report traffic.
+The IOCTL access bits and controller ACL both restrict access. Every operation
+validates versions, exact structure sizes, reserved fields, and report lengths
+in kernel mode; the readiness handshake is not an authorization boundary for
+report traffic.
 
 ## Build and signing gates
 
@@ -74,7 +81,7 @@ authorization boundary for report traffic.
   traffic, and these properties do not authorize product identity or confer
   readiness.
 - The project and CI do not produce an INF, catalog, signed package, or release
-  artifact. The compiled scaffold is not installable or functional.
+  artifact. The compiled driver is not installable or ready for product use.
 - Test installation, elevation, reboot, upgrade, and removal on supported
   Windows versions.
 - Sign the driver package using the distribution policy selected for the
@@ -83,10 +90,11 @@ authorization boundary for report traffic.
   discovery, registration, and assertion separately.
 
 CI compiles x64 and ARM64 `.sys` files under the ignored `target/` directory.
-Those build outputs are not installable driver packages. Until virtual-device
-enumeration, endpoint I/O, the control protocol, signing, and installation are
-implemented and validated, `WindowsUdeBackend` reports unavailable and fails
-closed.
+Those build outputs are not installable driver packages. The source implements
+the descriptor, class-request, and report-transport paths, but real Windows
+runtime round-trip, assigned product VID/PID, signed packaging, installation,
+and browser discovery still require validation. Until those gates pass,
+`WindowsUdeBackend` reports unavailable and fails closed.
 
 ## References
 
