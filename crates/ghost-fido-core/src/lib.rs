@@ -1,7 +1,7 @@
 //! Platform-independent domain types for the Ghost FIDO authenticator.
 //!
-//! Protocol handling, credentials, cryptography, and persistence are not
-//! implemented yet. Keep operating-system APIs out of this crate.
+//! Protocol handling, credential selection and protected metadata persistence
+//! are platform-independent. Keep operating-system APIs out of this crate.
 
 pub mod cbor;
 pub mod credentials;
@@ -14,7 +14,8 @@ pub use cbor::{
 };
 pub use credentials::{
     CredentialError, CredentialId, CredentialKeyMetadata, CredentialKeyProtection,
-    CredentialRecord, CredentialStore, Es256PublicKey, KeyHandle, RpIdHash,
+    CredentialProtectionError, CredentialProtector, CredentialRecord, CredentialStore,
+    Es256PublicKey, KeyHandle, RpIdHash,
 };
 pub use ctap2::{
     Ctap2Command, Ctap2Error, Ctap2Handler, Ctap2Request, Ctap2Response, Ctap2Status,
