@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 
 type PlatformStatus = {
@@ -15,9 +16,19 @@ type PlatformStatus = {
   statusMessage: string;
 };
 
+type ApprovalPrompt = {
+  requestId: string;
+  relyingPartyId: string;
+  relyingPartyName: string | null;
+  action: string;
+  timeoutMillis: number;
+};
+
 function App() {
   const [status, setStatus] = useState<PlatformStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [approvalRequests, setApprovalRequests] = useState<ApprovalPrompt[]>([]);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isTauri()) {
@@ -29,6 +40,38 @@ function App() {
       .then(setStatus)
       .catch(() => setError("백엔드 상태를 불러오지 못했습니다."));
   }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<ApprovalPrompt>("approval-request", ({ payload }) => {
+      setApprovalRequests((current) => [
+        ...current.filter((request) => request.requestId !== payload.requestId),
+        payload,
+      ]);
+    })
+      .then((stopListening) => {
+        if (disposed) stopListening();
+        else unlisten = stopListening;
+      })
+      .catch(() => setApprovalError("Could not receive approval requests."));
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  const respondToApproval = (requestId: string, approved: boolean) => {
+    setApprovalError(null);
+    void invoke("respond_approval", { requestId, approved })
+      .then(() => {
+        setApprovalRequests((current) => current.filter((request) => request.requestId !== requestId));
+      })
+      .catch(() => setApprovalError("That approval request has expired or is no longer active."));
+  };
 
   return (
     <main className="app-shell">
@@ -90,6 +133,33 @@ function App() {
             {status?.credentialStoreStatus ?? "Credential storage status is unavailable."}
           </p>
         </div>
+
+        {approvalRequests.length > 0 && (
+          <section className="approval-list" aria-label="Pending authenticator approvals">
+            {approvalRequests.map((request) => (
+              <article className="approval-card" key={request.requestId}>
+                <p className="eyebrow">Approval required</p>
+                <h2>{request.action}</h2>
+                <p className="approval-rp">
+                  {request.relyingPartyName ?? request.relyingPartyId}
+                  {request.relyingPartyName && <span> ({request.relyingPartyId})</span>}
+                </p>
+                <p className="approval-timeout">
+                  This request expires in {Math.ceil(request.timeoutMillis / 1000)} seconds.
+                </p>
+                <div className="approval-actions">
+                  <button type="button" onClick={() => respondToApproval(request.requestId, false)}>
+                    Deny
+                  </button>
+                  <button type="button" onClick={() => respondToApproval(request.requestId, true)}>
+                    Approve
+                  </button>
+                </div>
+              </article>
+            ))}
+            {approvalError && <p className="status-message" role="alert">{approvalError}</p>}
+          </section>
+        )}
 
         <div className="notice" role="note">
           <span className="notice-icon" aria-hidden="true">i</span>
