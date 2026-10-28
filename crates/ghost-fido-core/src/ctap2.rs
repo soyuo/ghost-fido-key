@@ -1,5 +1,7 @@
 //! Minimal CTAP2 command and status boundary.
 
+use crate::cbor::{CborValue, encode};
+
 use core::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,4 +97,62 @@ pub fn encode_response(status: Ctap2Status, payload: &[u8]) -> Vec<u8> {
     response.push(status.wire());
     response.extend_from_slice(payload);
     response
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetInfoProfile {
+    pub versions: Vec<String>,
+    pub aaguid: [u8; 16],
+    pub options: Vec<(String, bool)>,
+    pub max_msg_size: u64,
+    pub pin_uv_auth_protocols: Vec<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GetInfoError {
+    MissingVersion,
+    InvalidMessageSize,
+}
+
+pub fn encode_get_info(profile: &GetInfoProfile) -> Result<Vec<u8>, GetInfoError> {
+    if profile.versions.is_empty() {
+        return Err(GetInfoError::MissingVersion);
+    }
+    if profile.max_msg_size == 0 {
+        return Err(GetInfoError::InvalidMessageSize);
+    }
+    let versions = profile
+        .versions
+        .iter()
+        .cloned()
+        .map(CborValue::Text)
+        .collect();
+    let options = profile
+        .options
+        .iter()
+        .map(|(key, value)| (CborValue::Text(key.clone()), CborValue::Bool(*value)))
+        .collect();
+    Ok(encode(&CborValue::Map(vec![
+        (CborValue::Unsigned(1), CborValue::Array(versions)),
+        (
+            CborValue::Unsigned(3),
+            CborValue::Bytes(profile.aaguid.to_vec()),
+        ),
+        (CborValue::Unsigned(4), CborValue::Map(options)),
+        (
+            CborValue::Unsigned(5),
+            CborValue::Unsigned(profile.max_msg_size),
+        ),
+        (
+            CborValue::Unsigned(6),
+            CborValue::Array(
+                profile
+                    .pin_uv_auth_protocols
+                    .iter()
+                    .copied()
+                    .map(CborValue::Unsigned)
+                    .collect(),
+            ),
+        ),
+    ])))
 }

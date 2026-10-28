@@ -7,8 +7,14 @@ pub mod cbor;
 pub mod ctap2;
 pub mod ctaphid;
 
-pub use cbor::{CborError, CborLimits, CborValue, decode as decode_cbor, decode_with_limits};
-pub use ctap2::{Ctap2Command, Ctap2Error, Ctap2Request, Ctap2Status, encode_response};
+pub use cbor::{
+    CborError, CborLimits, CborValue, decode as decode_cbor, decode_with_limits,
+    encode as encode_cbor,
+};
+pub use ctap2::{
+    Ctap2Command, Ctap2Error, Ctap2Request, Ctap2Status, GetInfoError, GetInfoProfile,
+    encode_get_info, encode_response,
+};
 pub use ctaphid::{
     BROADCAST_CHANNEL, ChannelError, CtapHidAssembler, CtapHidChannelAllocator, CtapHidCommand,
     CtapHidMessage, FrameError, encode_continuations, encode_initialization,

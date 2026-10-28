@@ -183,3 +183,66 @@ fn bounded_len(value: u64, limit: usize, bytes: bool) -> Result<usize, CborError
         Ok(length)
     }
 }
+
+#[must_use]
+pub fn encode(value: &CborValue) -> Vec<u8> {
+    let mut output = Vec::new();
+    encode_into(value, &mut output);
+    output
+}
+
+fn encode_into(value: &CborValue, output: &mut Vec<u8>) {
+    match value {
+        CborValue::Unsigned(value) => write_argument(output, 0, *value),
+        CborValue::Negative(value) => write_argument(
+            output,
+            1,
+            u64::try_from(-1 - *value).expect("negative conversion"),
+        ),
+        CborValue::Bytes(value) => {
+            write_argument(output, 2, value.len() as u64);
+            output.extend_from_slice(value);
+        }
+        CborValue::Text(value) => {
+            write_argument(output, 3, value.len() as u64);
+            output.extend_from_slice(value.as_bytes());
+        }
+        CborValue::Array(values) => {
+            write_argument(output, 4, values.len() as u64);
+            for value in values {
+                encode_into(value, output);
+            }
+        }
+        CborValue::Map(values) => {
+            write_argument(output, 5, values.len() as u64);
+            for (key, value) in values {
+                encode_into(key, output);
+                encode_into(value, output);
+            }
+        }
+        CborValue::Bool(value) => output.push(if *value { 0xf5 } else { 0xf4 }),
+        CborValue::Null => output.push(0xf6),
+    }
+}
+
+fn write_argument(output: &mut Vec<u8>, major: u8, value: u64) {
+    let info = if value < 24 {
+        value as u8
+    } else if value <= u8::MAX as u64 {
+        24
+    } else if value <= u16::MAX as u64 {
+        25
+    } else if value <= u32::MAX as u64 {
+        26
+    } else {
+        27
+    };
+    output.push((major << 5) | info);
+    match info {
+        24 => output.push(value as u8),
+        25 => output.extend_from_slice(&(value as u16).to_be_bytes()),
+        26 => output.extend_from_slice(&(value as u32).to_be_bytes()),
+        27 => output.extend_from_slice(&value.to_be_bytes()),
+        _ => {}
+    }
+}
