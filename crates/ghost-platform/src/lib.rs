@@ -42,6 +42,12 @@ mod windows_keystore;
 #[cfg(target_os = "windows")]
 pub use windows_keystore::WindowsKeyStore;
 
+#[cfg(target_os = "windows")]
+mod windows_dpapi;
+
+#[cfg(target_os = "windows")]
+pub use windows_dpapi::WindowsCredentialProtector;
+
 #[cfg(target_os = "macos")]
 mod macos_corehid;
 
