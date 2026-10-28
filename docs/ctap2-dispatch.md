@@ -1,6 +1,8 @@
 # CTAP2 dispatch boundary
 
-`ghost-fido-core` decodes CTAP2 command bytes, validates bounded CBOR, serves an explicitly configured GetInfo profile, and validates GetAssertion request fields. Credential lookup, user approval, signing, and the remaining CTAP commands are not implemented yet.
+`ghost-fido-core` decodes CTAP2 command bytes, validates bounded CBOR, serves an explicitly configured GetInfo profile, and validates typed MakeCredential/GetAssertion requests. `ghost-platform::AuthenticatorService` routes GetInfo, MakeCredential, and GetAssertion through the existing provider-backed workflows. Provider and storage failures remain structured service errors for the transport/application layer to handle.
+
+The service requires an explicit GetInfo profile, credential store, key store, user-confirmation provider, registration policy, and timeout. It returns `InvalidCommand` for unsupported commands. CTAPHID framing and native HID lifecycle remain separate. Credential selection currently supports one unambiguous GetAssertion match; multiple matches are denied until a chooser and GetNextAssertion flow exist.
 
 Selected status wire values follow the FIDO CTAP 2.1 error table:
 
