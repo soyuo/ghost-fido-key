@@ -18,6 +18,12 @@ mod windows_ude;
 #[cfg(target_os = "windows")]
 pub use windows_ude::WindowsUdeBackend;
 
+#[cfg(target_os = "macos")]
+mod macos_corehid;
+
+#[cfg(target_os = "macos")]
+pub use macos_corehid::MacOsCoreHidBackend;
+
 /// Host operating system selected at compile time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostPlatform {
