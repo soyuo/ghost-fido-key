@@ -51,6 +51,7 @@ pub enum Ctap2Status {
     InvalidCommand = 0x01,
     InvalidParameter = 0x02,
     InvalidLength = 0x03,
+    Other = 0x7f,
     CborUnexpectedType = 0x11,
     InvalidCbor = 0x12,
     MissingParameter = 0x14,
