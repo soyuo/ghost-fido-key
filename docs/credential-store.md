@@ -12,9 +12,12 @@ key bytes are never part of a `CredentialRecord`.
 
 The protector must provide authenticated encryption and authenticate the
 associated data supplied by the store. Its encryption key must be managed
-outside the SQLite database. The core crate defines this boundary but does not
-provide an operating-system protector; callers must not open persistent storage
-until a platform-backed protector is available.
+outside the SQLite database. `WindowsCredentialProtector` uses current-user
+DPAPI and supplies the associated data as DPAPI optional entropy. The resulting
+data is bound to the Windows user profile and normally to the computer; moving
+the database alone is not a supported recovery method. macOS and Linux
+protectors remain unavailable, and the desktop app does not yet open this
+persistent store automatically.
 
 Schema version 3 stores a single CBOR-encoded record set, including optional
 user name and display name hints and the store-assigned credential creation
