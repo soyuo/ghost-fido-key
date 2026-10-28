@@ -485,6 +485,49 @@ fn delete_credential(
 }
 
 #[tauri::command]
+fn reset_credentials(
+    state: tauri::State<'_, DesktopState>,
+    confirmed: bool,
+) -> Result<usize, String> {
+    if !confirmed {
+        return Err("Explicit confirmation is required to reset credentials.".into());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        return with_stopped_credential_store(&state, |store| {
+            let references = store
+                .provider_key_handles()
+                .into_iter()
+                .map(|handle| {
+                    String::from_utf8(handle.as_bytes().to_vec())
+                        .map(KeyReference::new)
+                        .map_err(|_| "A credential key reference is invalid.".to_owned())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let key_store = LinuxKeyStore::new();
+            for (index, reference) in references.iter().enumerate() {
+                key_store.delete_key(reference).map_err(|error| {
+                    format!(
+                        "Could not delete signing key {} of {}. Credential metadata was kept; retry reset after fixing the Secret Service issue. {}",
+                        index + 1,
+                        references.len(),
+                        error.detail
+                    )
+                })?;
+            }
+            store.clear().map_err(|_| {
+                "All signing keys were deleted, but credential metadata could not be cleared. Retry reset to finish cleanup.".to_owned()
+            })
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = state;
+        Err("Credential reset is currently implemented on Linux only.".into())
+    }
+}
+
+#[tauri::command]
 fn respond_approval(
     state: tauri::State<'_, DesktopState>,
     request_id: String,
@@ -548,7 +591,8 @@ pub fn run() {
             start_authenticator,
             stop_authenticator,
             list_credentials,
-            delete_credential
+            delete_credential,
+            reset_credentials
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
