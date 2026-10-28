@@ -253,11 +253,12 @@ pub trait KeyStore: Send + Sync {
         policy: KeyCreationPolicy,
     ) -> Result<(KeyReference, KeyMetadata), PlatformError>;
 
+    /// Signs a precomputed digest. For ES256 the input must be a 32-byte SHA-256 digest.
     fn sign(
         &self,
         key: &KeyReference,
         algorithm: SigningAlgorithm,
-        message: &[u8],
+        digest: &[u8],
     ) -> Result<Vec<u8>, PlatformError>;
 
     fn delete_key(&self, key: &KeyReference) -> Result<(), PlatformError>;
