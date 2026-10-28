@@ -52,6 +52,7 @@ pub enum Ctap2Status {
     CborUnexpectedType = 0x11,
     InvalidCbor = 0x12,
     MissingParameter = 0x14,
+    CredentialExcluded = 0x19,
     UnsupportedAlgorithm = 0x26,
     UnsupportedOption = 0x2b,
     NoCredentials = 0x2e,
@@ -268,6 +269,18 @@ impl MakeCredentialRequest {
             exclude_list,
             options: options.unwrap_or_default(),
         })
+    }
+
+    #[must_use]
+    pub fn has_excluded_credential(&self, store: &CredentialStore) -> bool {
+        self.exclude_list.as_ref().is_some_and(|exclude_list| {
+            store.has_matching_credentials(self.rp_id_hash(), exclude_list)
+        })
+    }
+
+    #[must_use]
+    pub fn rp_id_hash(&self) -> RpIdHash {
+        Sha256::digest(self.rp.id.as_bytes()).into()
     }
 }
 
