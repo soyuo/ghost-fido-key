@@ -93,7 +93,13 @@ function App() {
             <span className={`status-dot ${status?.virtualHidAvailable ? "is-ready" : "is-pending"}`} aria-hidden="true" />
             <div>
               <p className="status-label">가상 인증기</p>
-              <h2>{status?.deviceAttached ? "연결됨" : "사용할 수 없음"}</h2>
+              <h2>
+                {status?.deviceAttached
+                  ? "연결됨"
+                  : status?.virtualHidAvailable
+                    ? "연결 대기"
+                    : "사용할 수 없음"}
+              </h2>
             </div>
             <span className={`status-pill ${status?.virtualHidAvailable ? "pill-ready" : "pill-pending"}`}>
               {status?.virtualHidAvailable ? "준비됨" : "개발 중"}
