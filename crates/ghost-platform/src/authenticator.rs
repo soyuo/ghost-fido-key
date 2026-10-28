@@ -159,6 +159,10 @@ impl<'a> AuthenticatorService<'a> {
             _ => Ok(protocol_error(Ctap2Status::InvalidCommand)),
         }
     }
+
+    pub(crate) fn clear_channel(&mut self, channel: u32) {
+        self.assertion_continuations.remove(&channel);
+    }
 }
 
 fn protocol_error(status: Ctap2Status) -> Ctap2Response {
