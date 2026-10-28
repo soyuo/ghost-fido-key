@@ -13,6 +13,9 @@ mod linux_uhid;
 #[cfg(target_os = "linux")]
 mod linux_credential_protector;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod credential_protector;
+
 mod assertion;
 mod authenticator;
 mod ctaphid_service;
@@ -64,7 +67,13 @@ pub use macos_corehid::MacOsCoreHidBackend;
 mod macos_keystore;
 
 #[cfg(target_os = "macos")]
+mod macos_credential_protector;
+
+#[cfg(target_os = "macos")]
 pub use macos_keystore::MacOsKeyStore;
+
+#[cfg(target_os = "macos")]
+pub use macos_credential_protector::MacOsCredentialProtector;
 
 /// Host operating system selected at compile time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -19,8 +19,11 @@ the database alone is not a supported recovery method. On Linux,
 `LinuxCredentialProtector` stores one random key in the default Secret Service
 collection and encrypts metadata with AES-256-GCM. It fails closed when Secret
 Service is unavailable, the key cannot be unlocked, or duplicate key items are
-found. macOS protection remains unavailable, and the desktop app does not yet
-open this persistent store automatically.
+found. On macOS, `MacOsCredentialProtector` stores its random key in the
+default Keychain and uses the same bounded AES-256-GCM envelope with a
+macOS-specific associated-data prefix. It fails closed when the Keychain item
+cannot be read or created. The desktop app does not yet open this persistent
+store automatically.
 
 Schema version 3 stores a single CBOR-encoded record set, including optional
 user name and display name hints and the store-assigned credential creation
