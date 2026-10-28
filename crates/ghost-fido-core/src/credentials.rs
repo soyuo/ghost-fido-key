@@ -2,15 +2,17 @@
 
 use std::{collections::BTreeMap, fmt, path::Path, sync::Arc};
 
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::cbor::{CborLimits, CborValue, decode_with_limits, encode as encode_cbor};
 
-const STORAGE_SCHEMA_VERSION: i64 = 1;
-const STORAGE_AAD: &[u8] = b"ghost-fido/credential-store/v1";
+const STORAGE_SCHEMA_VERSION: i64 = 2;
+const STORAGE_AAD_V1: &[u8] = b"ghost-fido/credential-store/v1";
+const STORAGE_AAD_V2: &[u8] = b"ghost-fido/credential-store/v2";
 const MAX_PERSISTED_RECORDS: usize = 4096;
 const MAX_PERSISTED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PROTECTED_BYTES: usize = MAX_PERSISTED_BYTES + 4096;
+const MAX_USER_LABEL_BYTES: usize = 256;
 
 pub type RpIdHash = [u8; 32];
 
@@ -83,6 +85,8 @@ pub struct CredentialRecord {
     pub id: CredentialId,
     pub rp_id_hash: RpIdHash,
     pub user_handle: Vec<u8>,
+    pub user_name: Option<String>,
+    pub user_display_name: Option<String>,
     pub key_handle: KeyHandle,
     pub key_metadata: CredentialKeyMetadata,
     pub discoverable: bool,
@@ -96,6 +100,8 @@ impl fmt::Debug for CredentialRecord {
             .field("id", &self.id)
             .field("rp_id_hash", &"[REDACTED]")
             .field("user_handle", &"[REDACTED]")
+            .field("user_name", &"[REDACTED]")
+            .field("user_display_name", &"[REDACTED]")
             .field("key_handle", &self.key_handle)
             .field("key_metadata", &self.key_metadata)
             .field("discoverable", &self.discoverable)
@@ -109,6 +115,7 @@ pub enum CredentialError {
     EmptyIdentifier,
     EmptyUserHandle,
     EmptyKeyHandle,
+    UserLabelTooLong,
     DuplicateIdentifier,
     NotFound,
     CounterOverflow,
@@ -190,7 +197,7 @@ impl CredentialStore {
                 }
                 let payload = encode_records(&BTreeMap::new())?;
                 let protected = protector
-                    .protect(&payload, STORAGE_AAD)
+                    .protect(&payload, STORAGE_AAD_V2)
                     .map_err(|_| CredentialError::ProtectedDataInvalid)?;
                 if protected.is_empty() || protected.len() > MAX_PROTECTED_BYTES {
                     return Err(CredentialError::ProtectedDataInvalid);
@@ -220,34 +227,36 @@ impl CredentialStore {
                     .map_err(|_| CredentialError::StorageFailure)?;
                 BTreeMap::new()
             }
-            STORAGE_SCHEMA_VERSION => {
-                let payload_size: Option<i64> = connection
-                    .query_row(
-                        "SELECT length(payload) FROM credential_store WHERE singleton = 1",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .optional()
+            1 => {
+                let transaction = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(|_| CredentialError::StorageFailure)?;
-                let payload_size = payload_size.ok_or(CredentialError::ProtectedDataInvalid)?;
-                if payload_size <= 0
-                    || usize::try_from(payload_size).map_or(true, |size| size > MAX_PROTECTED_BYTES)
-                {
-                    return Err(CredentialError::ProtectedDataInvalid);
-                }
-                let stored: Option<Vec<u8>> = connection
-                    .query_row(
-                        "SELECT payload FROM credential_store WHERE singleton = 1",
-                        [],
-                        |row| row.get(0),
-                    )
-                    .optional()
-                    .map_err(|_| CredentialError::StorageFailure)?;
-                let protected = stored.ok_or(CredentialError::ProtectedDataInvalid)?;
+                let protected = read_protected_payload(&transaction)?;
                 let plaintext = protector
-                    .unprotect(&protected, STORAGE_AAD)
+                    .unprotect(&protected, STORAGE_AAD_V1)
                     .map_err(|_| CredentialError::ProtectedDataInvalid)?;
-                decode_records(&plaintext)?
+                let records = decode_records(&plaintext, false)?;
+                let migrated_plaintext = encode_records(&records)?;
+                let migrated_protected = protector
+                    .protect(&migrated_plaintext, STORAGE_AAD_V2)
+                    .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+                validate_protected_payload(&migrated_protected)?;
+
+                write_payload(&transaction, &migrated_protected)?;
+                transaction
+                    .pragma_update(None, "user_version", STORAGE_SCHEMA_VERSION)
+                    .map_err(|_| CredentialError::StorageFailure)?;
+                transaction
+                    .commit()
+                    .map_err(|_| CredentialError::StorageFailure)?;
+                records
+            }
+            STORAGE_SCHEMA_VERSION => {
+                let protected = read_protected_payload(&connection)?;
+                let plaintext = protector
+                    .unprotect(&protected, STORAGE_AAD_V2)
+                    .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+                decode_records(&plaintext, true)?
             }
             other => return Err(CredentialError::UnsupportedSchemaVersion(other)),
         };
@@ -264,6 +273,17 @@ impl CredentialStore {
     pub fn register(&mut self, record: CredentialRecord) -> Result<(), CredentialError> {
         if record.user_handle.is_empty() {
             return Err(CredentialError::EmptyUserHandle);
+        }
+        if record
+            .user_name
+            .as_ref()
+            .is_some_and(|name| name.len() > MAX_USER_LABEL_BYTES)
+            || record
+                .user_display_name
+                .as_ref()
+                .is_some_and(|name| name.len() > MAX_USER_LABEL_BYTES)
+        {
+            return Err(CredentialError::UserLabelTooLong);
         }
         if self.records.contains_key(&record.id) {
             return Err(CredentialError::DuplicateIdentifier);
@@ -365,11 +385,9 @@ impl CredentialStore {
         let plaintext = encode_records(records)?;
         let protected = backend
             .protector
-            .protect(&plaintext, STORAGE_AAD)
+            .protect(&plaintext, STORAGE_AAD_V2)
             .map_err(|_| CredentialError::ProtectedDataInvalid)?;
-        if protected.is_empty() || protected.len() > MAX_PROTECTED_BYTES {
-            return Err(CredentialError::ProtectedDataInvalid);
-        }
+        validate_protected_payload(&protected)?;
         let transaction = backend
             .connection
             .transaction()
@@ -382,13 +400,56 @@ impl CredentialStore {
 }
 
 fn write_payload(transaction: &Transaction<'_>, payload: &[u8]) -> Result<(), CredentialError> {
-    transaction
+    let updated = transaction
         .execute(
             "UPDATE credential_store SET payload = ?1 WHERE singleton = 1",
             params![payload],
         )
         .map_err(|_| CredentialError::StorageFailure)?;
+    if updated != 1 {
+        return Err(CredentialError::ProtectedDataInvalid);
+    }
     Ok(())
+}
+
+fn read_protected_payload(connection: &Connection) -> Result<Vec<u8>, CredentialError> {
+    let payload_size: Option<i64> = connection
+        .query_row(
+            "SELECT length(payload) FROM credential_store WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| CredentialError::StorageFailure)?;
+    let payload_size = payload_size.ok_or(CredentialError::ProtectedDataInvalid)?;
+    if payload_size <= 0
+        || usize::try_from(payload_size).map_or(true, |size| size > MAX_PROTECTED_BYTES)
+    {
+        return Err(CredentialError::ProtectedDataInvalid);
+    }
+    let payload: Option<Vec<u8>> = connection
+        .query_row(
+            "SELECT payload FROM credential_store WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| CredentialError::StorageFailure)?;
+    let payload = payload.ok_or(CredentialError::ProtectedDataInvalid)?;
+    if payload.len()
+        != usize::try_from(payload_size).map_err(|_| CredentialError::ProtectedDataInvalid)?
+    {
+        return Err(CredentialError::ProtectedDataInvalid);
+    }
+    Ok(payload)
+}
+
+fn validate_protected_payload(payload: &[u8]) -> Result<(), CredentialError> {
+    if payload.is_empty() || payload.len() > MAX_PROTECTED_BYTES {
+        Err(CredentialError::ProtectedDataInvalid)
+    } else {
+        Ok(())
+    }
 }
 
 fn encode_records(
@@ -414,6 +475,14 @@ fn encode_records(
                 CborValue::Bool(record.key_metadata.exportable),
                 CborValue::Bool(record.discoverable),
                 CborValue::Unsigned(u64::from(record.sign_count)),
+                record
+                    .user_name
+                    .as_ref()
+                    .map_or(CborValue::Null, |name| CborValue::Text(name.clone())),
+                record
+                    .user_display_name
+                    .as_ref()
+                    .map_or(CborValue::Null, |name| CborValue::Text(name.clone())),
             ])
         })
         .collect::<Vec<_>>();
@@ -426,6 +495,7 @@ fn encode_records(
 
 fn decode_records(
     bytes: &[u8],
+    with_user_labels: bool,
 ) -> Result<BTreeMap<CredentialId, CredentialRecord>, CredentialError> {
     if bytes.len() > MAX_PERSISTED_BYTES {
         return Err(CredentialError::ProtectedDataInvalid);
@@ -434,7 +504,7 @@ fn decode_records(
         bytes,
         CborLimits {
             max_depth: 4,
-            max_items: MAX_PERSISTED_RECORDS * 9,
+            max_items: MAX_PERSISTED_RECORDS * 11,
             max_bytes: MAX_PERSISTED_BYTES,
         },
     )
@@ -450,6 +520,31 @@ fn decode_records(
         let CborValue::Array(fields) = value else {
             return Err(CredentialError::ProtectedDataInvalid);
         };
+        let record = decode_record_fields(&fields, with_user_labels)?;
+        let id = record.id.clone();
+        if decoded.insert(id, record).is_some() {
+            return Err(CredentialError::ProtectedDataInvalid);
+        }
+    }
+    Ok(decoded)
+}
+
+fn decode_record_fields(
+    fields: &[CborValue],
+    with_user_labels: bool,
+) -> Result<CredentialRecord, CredentialError> {
+    let (
+        id,
+        rp_id_hash,
+        user_handle,
+        key_handle,
+        protection,
+        exportable,
+        discoverable,
+        sign_count,
+        user_name,
+        user_display_name,
+    ) = if with_user_labels {
         let [
             CborValue::Bytes(id),
             CborValue::Bytes(rp_id_hash),
@@ -459,40 +554,86 @@ fn decode_records(
             CborValue::Bool(exportable),
             CborValue::Bool(discoverable),
             CborValue::Unsigned(sign_count),
-        ] = fields.as_slice()
+            user_name,
+            user_display_name,
+        ] = fields
         else {
             return Err(CredentialError::ProtectedDataInvalid);
         };
-        if rp_id_hash.len() != 32 || user_handle.is_empty() {
+        (
+            id,
+            rp_id_hash,
+            user_handle,
+            key_handle,
+            protection,
+            exportable,
+            discoverable,
+            sign_count,
+            decode_user_label(user_name)?,
+            decode_user_label(user_display_name)?,
+        )
+    } else {
+        let [
+            CborValue::Bytes(id),
+            CborValue::Bytes(rp_id_hash),
+            CborValue::Bytes(user_handle),
+            CborValue::Bytes(key_handle),
+            CborValue::Unsigned(protection),
+            CborValue::Bool(exportable),
+            CborValue::Bool(discoverable),
+            CborValue::Unsigned(sign_count),
+        ] = fields
+        else {
             return Err(CredentialError::ProtectedDataInvalid);
-        }
-        let key_protection = match protection {
-            0 => CredentialKeyProtection::HardwareBacked,
-            1 => CredentialKeyProtection::OsProtected,
-            2 => CredentialKeyProtection::Software,
-            _ => return Err(CredentialError::ProtectedDataInvalid),
         };
-        let mut rp_hash = [0; 32];
-        rp_hash.copy_from_slice(rp_id_hash);
-        let id =
-            CredentialId::new(id.clone()).map_err(|_| CredentialError::ProtectedDataInvalid)?;
-        let record = CredentialRecord {
-            id: id.clone(),
-            rp_id_hash: rp_hash,
-            user_handle: user_handle.clone(),
-            key_handle: KeyHandle::new(key_handle.clone())
-                .map_err(|_| CredentialError::ProtectedDataInvalid)?,
-            key_metadata: CredentialKeyMetadata {
-                protection: key_protection,
-                exportable: *exportable,
-            },
-            discoverable: *discoverable,
-            sign_count: u32::try_from(*sign_count)
-                .map_err(|_| CredentialError::ProtectedDataInvalid)?,
-        };
-        if decoded.insert(id, record).is_some() {
-            return Err(CredentialError::ProtectedDataInvalid);
-        }
+        (
+            id,
+            rp_id_hash,
+            user_handle,
+            key_handle,
+            protection,
+            exportable,
+            discoverable,
+            sign_count,
+            None,
+            None,
+        )
+    };
+
+    if rp_id_hash.len() != 32 || user_handle.is_empty() {
+        return Err(CredentialError::ProtectedDataInvalid);
     }
-    Ok(decoded)
+    let key_protection = match protection {
+        0 => CredentialKeyProtection::HardwareBacked,
+        1 => CredentialKeyProtection::OsProtected,
+        2 => CredentialKeyProtection::Software,
+        _ => return Err(CredentialError::ProtectedDataInvalid),
+    };
+    let mut rp_hash = [0; 32];
+    rp_hash.copy_from_slice(rp_id_hash);
+    let id = CredentialId::new(id.clone()).map_err(|_| CredentialError::ProtectedDataInvalid)?;
+    Ok(CredentialRecord {
+        id,
+        rp_id_hash: rp_hash,
+        user_handle: user_handle.clone(),
+        user_name,
+        user_display_name,
+        key_handle: KeyHandle::new(key_handle.clone())
+            .map_err(|_| CredentialError::ProtectedDataInvalid)?,
+        key_metadata: CredentialKeyMetadata {
+            protection: key_protection,
+            exportable: *exportable,
+        },
+        discoverable: *discoverable,
+        sign_count: u32::try_from(*sign_count)
+            .map_err(|_| CredentialError::ProtectedDataInvalid)?,
+    })
+}
+
+fn decode_user_label(value: &CborValue) -> Result<Option<String>, CredentialError> {
+    match value {
+        CborValue::Null => Ok(None),
+        CborValue::Text(label) if label.len() <= MAX_USER_LABEL_BYTES => Ok(Some(label.clone())),
+        _ => Err(CredentialError::ProtectedDataInvalid),
+    }
 }
