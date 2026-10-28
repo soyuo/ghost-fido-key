@@ -18,9 +18,11 @@ pub use credentials::{
 };
 pub use ctap2::{
     Ctap2Command, Ctap2Error, Ctap2Handler, Ctap2Request, Ctap2Response, Ctap2Status,
-    GetAssertionError, GetAssertionRequest, GetInfoError, GetInfoProfile, MakeCredentialError,
-    MakeCredentialOptions, MakeCredentialRequest, MakeCredentialRp, MakeCredentialUser,
-    PublicKeyCredentialParameter, encode_es256_cose_public_key, encode_get_info, encode_response,
+    GetAssertionError, GetAssertionRequest, GetInfoError, GetInfoProfile, MAX_CREDENTIAL_ID_SIZE,
+    MakeCredentialError, MakeCredentialOptions, MakeCredentialRequest, MakeCredentialResponseError,
+    MakeCredentialRp, MakeCredentialUser, PublicKeyCredentialParameter,
+    encode_es256_cose_public_key, encode_get_info, encode_make_credential_response,
+    encode_response,
 };
 pub use ctaphid::{
     BROADCAST_CHANNEL, ChannelError, CtapHidAssembler, CtapHidChannelAllocator, CtapHidCommand,
