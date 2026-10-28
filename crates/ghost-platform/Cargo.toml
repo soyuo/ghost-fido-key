@@ -14,8 +14,11 @@ getrandom = "0.3.4"
 sha2 = "0.10.9"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+aes-gcm = "0.10.3"
 libc = "0.2"
+secret-service = { version = "=5.1.0", default-features = false, features = ["rt-tokio-crypto-rust"] }
 uhid-virt = "0.0.8"
+zeroize = "1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
