@@ -245,6 +245,14 @@ pub struct CtapHidAssembler {
     payload: Vec<u8>,
 }
 
+/// Encodes a CTAPHID_ERROR command report using the supplied channel.
+pub fn encode_error(
+    channel: u32,
+    code: CtapHidErrorCode,
+) -> Result<[u8; HID_REPORT_SIZE], FrameError> {
+    encode_initialization(channel, CtapHidCommand::Error, &[code as u8])
+}
+
 /// Owns in-flight fragmented messages and initialized channels for one HID
 /// transport instance. Platform code supplies time and handles returned actions.
 #[derive(Debug)]
@@ -324,7 +332,7 @@ impl CtapHidSession {
             }
             Ok(CtapHidDispatch::Cancel) => Ok(SessionEvent::Cancelled(channel)),
             Ok(action) => Ok(SessionEvent::Message(action)),
-            Err(_) => Err(FrameError::InvalidChannel),
+            Err(code) => Ok(SessionEvent::Response(encode_error(channel, code)?)),
         }
     }
 
