@@ -11,6 +11,8 @@ pub const INIT_PAYLOAD_SIZE: usize = HID_REPORT_SIZE - 7;
 pub const CONTINUATION_PAYLOAD_SIZE: usize = HID_REPORT_SIZE - 5;
 pub const MAX_PAYLOAD_SIZE: usize = 7609;
 pub const BROADCAST_CHANNEL: u32 = 0xffff_ffff;
+pub const INIT_NONCE_SIZE: usize = 8;
+pub const INIT_RESPONSE_SIZE: usize = 17;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CtapHidErrorCode {
@@ -122,6 +124,7 @@ pub enum FrameError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelError {
     Exhausted,
+    InvalidNonceLength(usize),
 }
 
 /// Tracks concurrent CTAPHID channels and their deadlines without choosing an
@@ -160,6 +163,25 @@ impl CtapHidChannelAllocator {
             }
         }
         Err(ChannelError::Exhausted)
+    }
+
+    /// Allocates a channel for a valid broadcast INIT request and returns the
+    /// CTAPHID_INIT response payload (nonce, channel, protocol, version, caps).
+    pub fn initialize(
+        &mut self,
+        nonce: &[u8],
+        now: Instant,
+        timeout: Duration,
+    ) -> Result<(u32, [u8; INIT_RESPONSE_SIZE]), ChannelError> {
+        if nonce.len() != INIT_NONCE_SIZE {
+            return Err(ChannelError::InvalidNonceLength(nonce.len()));
+        }
+        let channel = self.allocate(now, timeout)?;
+        let mut response = [0; INIT_RESPONSE_SIZE];
+        response[..INIT_NONCE_SIZE].copy_from_slice(nonce);
+        response[8..12].copy_from_slice(&channel.to_be_bytes());
+        response[12..].copy_from_slice(&[2, 1, 0, 0, 0]);
+        Ok((channel, response))
     }
 
     pub fn release(&mut self, channel: u32) -> bool {
