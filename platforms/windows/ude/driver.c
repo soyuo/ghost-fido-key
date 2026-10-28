@@ -3,6 +3,7 @@
 #include <ntddk.h>
 #include <wdf.h>
 #include <usb.h>
+#include <usbioctl.h>
 #include <wdfusb.h>
 #include <Udecx.h>
 #include "ghost_fido_ude_protocol.h"
@@ -131,7 +132,7 @@ GhostFidoInitializeReportQueues(_In_ WDFDEVICE Device)
     WDF_OBJECT_ATTRIBUTES attributes;
     WDF_DPC_CONFIG dpcConfig;
     WDF_IO_QUEUE_CONFIG queueConfig;
-    WDF_DPC dpc;
+    WDFDPC dpc;
     WDFQUEUE queue;
     PGHOST_FIDO_DPC_CONTEXT dpcContext;
 
@@ -473,10 +474,7 @@ GhostFidoCreateAndPlugInVirtualDevice(_In_ WDFDEVICE Device)
     }
 
     GhostFidoResetReportQueues(Device);
-    status = WdfIoQueueStart(context->InputPendingQueue);
-    if (!NT_SUCCESS(status)) {
-        return status;
-    }
+    WdfIoQueueStart(context->InputPendingQueue);
     UDECX_USB_DEVICE_PLUG_IN_OPTIONS_INIT(&plugInOptions);
     status = UdecxUsbDevicePlugIn(context->UsbDevice, &plugInOptions);
     return status;
@@ -904,14 +902,14 @@ GhostFidoHandleControlUrb(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request)
     return status;
 }
 
-static VOID
+VOID
 GhostFidoEndpointIoctlCanceled(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request)
 {
     GhostFidoDeferUrbCompletion(WdfIoQueueGetDevice(Queue), Request,
                                 STATUS_CANCELLED, 0);
 }
 
-static VOID
+VOID
 GhostFidoInputQueueCanceled(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request)
 {
     GhostFidoDeferUrbCompletion(WdfIoQueueGetDevice(Queue), Request,
