@@ -45,7 +45,8 @@ function App() {
     if (!isTauri()) return;
 
     let disposed = false;
-    let unlisten: (() => void) | undefined;
+    let unlistenApproval: (() => void) | undefined;
+    let unlistenCancelled: (() => void) | undefined;
     void listen<ApprovalPrompt>("approval-request", ({ payload }) => {
       setApprovalRequests((current) => [
         ...current.filter((request) => request.requestId !== payload.requestId),
@@ -54,13 +55,23 @@ function App() {
     })
       .then((stopListening) => {
         if (disposed) stopListening();
-        else unlisten = stopListening;
+        else unlistenApproval = stopListening;
       })
       .catch(() => setApprovalError("Could not receive approval requests."));
 
+    void listen<string>("approval-cancelled", ({ payload: requestId }) => {
+      setApprovalRequests((current) => current.filter((request) => request.requestId !== requestId));
+    })
+      .then((stopListening) => {
+        if (disposed) stopListening();
+        else unlistenCancelled = stopListening;
+      })
+      .catch(() => setApprovalError("Could not receive approval cancellation updates."));
+
     return () => {
       disposed = true;
-      unlisten?.();
+      unlistenApproval?.();
+      unlistenCancelled?.();
     };
   }, []);
 
