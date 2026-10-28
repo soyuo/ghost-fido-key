@@ -3,8 +3,10 @@
 //! Protocol handling, credentials, cryptography, and persistence are not
 //! implemented yet. Keep operating-system APIs out of this crate.
 
+pub mod ctap2;
 pub mod ctaphid;
 
+pub use ctap2::{Ctap2Command, Ctap2Error, Ctap2Request, Ctap2Status, encode_response};
 pub use ctaphid::{
     CtapHidAssembler, CtapHidCommand, CtapHidMessage, FrameError, encode_continuations,
     encode_initialization,
