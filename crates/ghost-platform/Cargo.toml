@@ -14,3 +14,6 @@ ghost-fido-core = { path = "../ghost-fido-core" }
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 uhid-virt = "0.0.8"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Security_Cryptography"] }
