@@ -10,11 +10,16 @@ Driver Kit (WDK).
 1. `EvtDriverDeviceAdd` initializes the KMDF device and registers the UDE host
    controller with UdeCx. The controller capability callback currently reports
    capabilities as unsupported.
-2. A later implementation step will create one virtual USB device and supply a
-   FIDO HID descriptor with 64-byte input and output endpoints.
-3. Endpoint queues receive and complete URBs without blocking at the wrong IRQL.
-4. The driver plugs the device in only after all descriptors and endpoint
-   queues are ready, and plugs it out before removal.
+2. When nonzero, explicitly assigned VID and PID build properties are present,
+   the driver adds a USB 2.0 FIDO HID descriptor set and creates the UDE device.
+   The default zero values leave the controller running without a virtual USB
+   device.
+3. The driver creates the default control endpoint and both 64-byte interrupt
+   endpoint objects before plugging in the virtual device. Endpoint requests
+   currently complete with `STATUS_NOT_SUPPORTED`; HID class requests and FIDO
+   report transport are not implemented.
+4. Device context cleanup calls `UdecxUsbDevicePlugOutAndDelete` before freeing
+   any unconsumed UDE initialization parameters.
 5. A restricted user-mode control device exposes readiness, attach, detach, and
    report operations to the Rust application through versioned IOCTLs.
 
@@ -45,9 +50,9 @@ mirrors its fixed-width little-endian fields in `windows_ude.rs`.
   reserved fields, or mismatched report sizes is unavailable.
 - The native driver exposes `\\.\GhostFidoUde` with a read-only status ACL. It
   reports only `CONTROLLER_READY`; FIDO profile, attach/detach, and report I/O
-  remain unimplemented. The Rust adapter requires all four capabilities and
-  also lacks attach, detach, and report operations, so this handshake cannot
-  mark the backend `Available`.
+  remain unimplemented even when the virtual device has been plugged in. The
+  Rust adapter requires all four capabilities and also lacks attach, detach,
+  and report operations, so this handshake cannot mark the backend `Available`.
 
 The IOCTL grants read access only. The controller device ACL allows status reads
 and grants full access only to Local System and Administrators. Every future
@@ -59,6 +64,15 @@ authorization boundary for report traffic.
 - Build-only KMDF project: `ghost-fido-ude.vcxproj`. It compiles `driver.c`
   for x64 and ARM64 with the pinned WDK 10.0.28000.2526 NuGet packages and
   writes `.sys` outputs under the repository `target/windows-ude` directory.
+- Default builds set `GhostFidoVendorId` and `GhostFidoProductId` to zero, so
+  no virtual USB device is created. To enable descriptor/device creation in a
+  development build, pass both properties to MSBuild, for example
+  `/p:GhostFidoVendorId=0x1234 /p:GhostFidoProductId=0x0001`. Replace these
+  example values only with USB IDs assigned to the product. Do not use another
+  vendor's IDs or claim a third-party identity. CI intentionally uses the zero
+  defaults. The current driver does not implement HID class requests or FIDO
+  traffic, and these properties do not authorize product identity or confer
+  readiness.
 - The project and CI do not produce an INF, catalog, signed package, or release
   artifact. The compiled scaffold is not installable or functional.
 - Test installation, elevation, reboot, upgrade, and removal on supported
