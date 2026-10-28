@@ -15,9 +15,12 @@ associated data supplied by the store. Its encryption key must be managed
 outside the SQLite database. `WindowsCredentialProtector` uses current-user
 DPAPI and supplies the associated data as DPAPI optional entropy. The resulting
 data is bound to the Windows user profile and normally to the computer; moving
-the database alone is not a supported recovery method. macOS and Linux
-protectors remain unavailable, and the desktop app does not yet open this
-persistent store automatically.
+the database alone is not a supported recovery method. On Linux,
+`LinuxCredentialProtector` stores one random key in the default Secret Service
+collection and encrypts metadata with AES-256-GCM. It fails closed when Secret
+Service is unavailable, the key cannot be unlocked, or duplicate key items are
+found. macOS protection remains unavailable, and the desktop app does not yet
+open this persistent store automatically.
 
 Schema version 3 stores a single CBOR-encoded record set, including optional
 user name and display name hints and the store-assigned credential creation

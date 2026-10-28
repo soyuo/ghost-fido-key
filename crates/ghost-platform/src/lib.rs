@@ -10,6 +10,9 @@ use std::{fmt, time::Duration};
 #[cfg(target_os = "linux")]
 mod linux_uhid;
 
+#[cfg(target_os = "linux")]
+mod linux_credential_protector;
+
 mod assertion;
 mod authenticator;
 mod ctaphid_service;
@@ -17,6 +20,9 @@ mod registration;
 
 #[cfg(target_os = "linux")]
 pub use linux_uhid::LinuxUhidBackend;
+
+#[cfg(target_os = "linux")]
+pub use linux_credential_protector::LinuxCredentialProtector;
 
 pub use assertion::{
     GetAssertionExecution, GetAssertionExecutionError, execute_get_assertion,
