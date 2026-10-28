@@ -30,6 +30,12 @@ mod macos_corehid;
 #[cfg(target_os = "macos")]
 pub use macos_corehid::MacOsCoreHidBackend;
 
+#[cfg(target_os = "macos")]
+mod macos_keystore;
+
+#[cfg(target_os = "macos")]
+pub use macos_keystore::MacOsKeyStore;
+
 /// Host operating system selected at compile time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostPlatform {
