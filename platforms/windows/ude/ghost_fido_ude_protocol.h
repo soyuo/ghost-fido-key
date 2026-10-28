@@ -1,7 +1,9 @@
 // Shared user-mode/kernel-mode control protocol for Ghost FIDO UDE.
 #pragma once
 
+#if !defined(_NTDDK_)
 #include <winioctl.h>
+#endif
 
 #define GHOST_FIDO_UDE_PROTOCOL_MAJOR 1u
 #define GHOST_FIDO_UDE_PROTOCOL_MINOR 0u

@@ -4,6 +4,8 @@
 
 #include <ntddk.h>
 #include <wdf.h>
+#include <usb.h>
+#include <wdfusb.h>
 #include <Udecx.h>
 #include "ghost_fido_ude_protocol.h"
 
@@ -56,18 +58,22 @@ GhostFidoEvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
 
 NTSTATUS GhostFidoQueryUsbCapability(_In_ WDFDEVICE Device,
                                      _In_ PGUID CapabilityType,
-                                     _Out_ PBOOLEAN Supported)
+                                     _In_ ULONG OutputBufferLength,
+                                     _Out_writes_to_opt_(OutputBufferLength, *ResultLength) PVOID OutputBuffer,
+                                     _Out_ PULONG ResultLength)
 {
     UNREFERENCED_PARAMETER(Device);
     UNREFERENCED_PARAMETER(CapabilityType);
-    *Supported = FALSE;
+    UNREFERENCED_PARAMETER(OutputBufferLength);
+    UNREFERENCED_PARAMETER(OutputBuffer);
+    *ResultLength = 0;
     return STATUS_NOT_IMPLEMENTED;
 }
 
-NTSTATUS GhostFidoResetController(_In_ WDFDEVICE Device)
+VOID GhostFidoResetController(_In_ WDFDEVICE Device)
 {
     UNREFERENCED_PARAMETER(Device);
-    return STATUS_NOT_IMPLEMENTED;
+    return;
 }
 
 NTSTATUS GhostFidoAddDefaultEndpoint(_In_ UDECXUSBDEVICE UsbDevice,
@@ -79,37 +85,46 @@ NTSTATUS GhostFidoAddDefaultEndpoint(_In_ UDECXUSBDEVICE UsbDevice,
 }
 
 NTSTATUS GhostFidoAddEndpoint(_In_ UDECXUSBDEVICE UsbDevice,
-                               _In_ PUDECXUSBENDPOINT_INIT EndpointInit)
+                               _In_ PUDECX_USB_ENDPOINT_INIT_AND_METADATA EndpointToCreate)
 {
     UNREFERENCED_PARAMETER(UsbDevice);
-    UNREFERENCED_PARAMETER(EndpointInit);
+    UNREFERENCED_PARAMETER(EndpointToCreate);
     return STATUS_NOT_IMPLEMENTED;
 }
 
-NTSTATUS GhostFidoConfigureEndpoints(_In_ UDECXUSBDEVICE UsbDevice,
-                                      _In_ WDFREQUEST Request)
+VOID GhostFidoConfigureEndpoints(_In_ UDECXUSBDEVICE UsbDevice,
+                                  _In_ WDFREQUEST Request,
+                                  _In_ PUDECX_ENDPOINTS_CONFIGURE_PARAMS Params)
 {
     UNREFERENCED_PARAMETER(UsbDevice);
     UNREFERENCED_PARAMETER(Request);
-    return STATUS_NOT_IMPLEMENTED;
+    UNREFERENCED_PARAMETER(Params);
 }
 
-NTSTATUS GhostFidoDeviceD0Entry(_In_ UDECXUSBDEVICE UsbDevice)
+NTSTATUS GhostFidoDeviceD0Entry(_In_ WDFDEVICE Device,
+                             _In_ UDECXUSBDEVICE UsbDevice)
 {
+    UNREFERENCED_PARAMETER(Device);
     UNREFERENCED_PARAMETER(UsbDevice);
+
     return STATUS_NOT_IMPLEMENTED;
 }
 
-NTSTATUS GhostFidoDeviceD0Exit(_In_ UDECXUSBDEVICE UsbDevice)
+NTSTATUS GhostFidoDeviceD0Exit(_In_ WDFDEVICE Device,
+                            _In_ UDECXUSBDEVICE UsbDevice,
+                            _In_ UDECX_USB_DEVICE_WAKE_SETTING WakeSetting)
 {
+    UNREFERENCED_PARAMETER(Device);
     UNREFERENCED_PARAMETER(UsbDevice);
+    UNREFERENCED_PARAMETER(WakeSetting);
     return STATUS_NOT_IMPLEMENTED;
 }
 
-NTSTATUS GhostFidoResetEndpoint(_In_ UDECXUSBENDPOINT Endpoint)
+VOID GhostFidoResetEndpoint(_In_ UDECXUSBENDPOINT Endpoint,
+                            _In_ WDFREQUEST Request)
 {
     UNREFERENCED_PARAMETER(Endpoint);
-    return STATUS_NOT_IMPLEMENTED;
+    UNREFERENCED_PARAMETER(Request);
 }
 
 VOID GhostFidoEndpointIoctl(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request,
