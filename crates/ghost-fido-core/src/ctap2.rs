@@ -186,6 +186,80 @@ pub fn encode_make_credential_response(
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GetAssertionResponseError {
+    EmptyCredentialId,
+    CredentialIdTooLong(usize),
+    EmptySignature,
+    SignatureTooLong(usize),
+    InvalidUserHandle,
+}
+
+/// Encodes one successful CTAP2 `authenticatorGetAssertion` response.
+///
+/// The caller supplies an already-created signature. The response sets UP and
+/// leaves UV clear; signing and user approval remain outside the encoder.
+pub fn encode_get_assertion_response(
+    rp_id_hash: RpIdHash,
+    credential_id: &[u8],
+    user_handle: Option<&[u8]>,
+    signature: &[u8],
+    sign_count: u32,
+) -> Result<Ctap2Response, GetAssertionResponseError> {
+    if credential_id.is_empty() {
+        return Err(GetAssertionResponseError::EmptyCredentialId);
+    }
+    if credential_id.len() > MAX_CREDENTIAL_ID_SIZE {
+        return Err(GetAssertionResponseError::CredentialIdTooLong(
+            credential_id.len(),
+        ));
+    }
+    if signature.is_empty() {
+        return Err(GetAssertionResponseError::EmptySignature);
+    }
+    if signature.len() > 128 {
+        return Err(GetAssertionResponseError::SignatureTooLong(signature.len()));
+    }
+    if user_handle.is_some_and(|handle| handle.is_empty() || handle.len() > 64) {
+        return Err(GetAssertionResponseError::InvalidUserHandle);
+    }
+
+    let mut authenticator_data = Vec::with_capacity(37);
+    authenticator_data.extend_from_slice(&rp_id_hash);
+    authenticator_data.push(0x01); // UP; UV and extensions are not asserted.
+    authenticator_data.extend_from_slice(&sign_count.to_be_bytes());
+
+    let credential = CborValue::Map(vec![
+        (
+            CborValue::Text("type".into()),
+            CborValue::Text("public-key".into()),
+        ),
+        (
+            CborValue::Text("id".into()),
+            CborValue::Bytes(credential_id.to_vec()),
+        ),
+    ]);
+    let mut response = vec![
+        (CborValue::Unsigned(1), credential),
+        (CborValue::Unsigned(2), CborValue::Bytes(authenticator_data)),
+        (CborValue::Unsigned(3), CborValue::Bytes(signature.to_vec())),
+    ];
+    if let Some(user_handle) = user_handle {
+        response.push((
+            CborValue::Unsigned(4),
+            CborValue::Map(vec![(
+                CborValue::Text("id".into()),
+                CborValue::Bytes(user_handle.to_vec()),
+            )]),
+        ));
+    }
+
+    Ok(Ctap2Response {
+        status: Ctap2Status::Success,
+        payload: encode(&CborValue::Map(response)),
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ctap2Response {
     pub status: Ctap2Status,
