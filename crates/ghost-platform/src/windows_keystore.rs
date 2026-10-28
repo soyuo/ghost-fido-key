@@ -231,7 +231,7 @@ impl KeyStore for WindowsKeyStore {
             )
         }
         .map_err(Self::fail)?;
-        let mut signature = vec![0u8; 256];
+        let mut signature = vec![0u8; 64];
         let mut written = 0;
         // SAFETY: message and signature buffers are valid for their declared lengths.
         unsafe {
@@ -249,6 +249,11 @@ impl KeyStore for WindowsKeyStore {
         // SAFETY: both handles were opened successfully and are now being released.
         unsafe { NCryptFreeObject(handle.into()) }.map_err(Self::fail)?;
         unsafe { NCryptFreeObject(provider.into()) }.map_err(Self::fail)?;
+        if signature.len() != 64 {
+            return Err(Self::fail(
+                "CNG did not return a fixed-width ES256 signature",
+            ));
+        }
         Ok(signature)
     }
 
