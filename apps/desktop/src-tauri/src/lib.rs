@@ -1,17 +1,38 @@
 use ghost_fido_core::{CredentialProtector, CredentialStore, ProductInfo};
 use ghost_platform::{
-    CapabilityState, DeviceState, HostPlatform, UnavailableBackend, VirtualHidBackend,
+    CapabilityState, DeviceState, HostPlatform, PlatformError, PlatformErrorKind,
+    UnavailableBackend, UserVerification, VerificationAction, VerificationDecision,
+    VerificationRequest, VirtualHidBackend,
 };
 use serde::Serialize;
+use std::collections::HashMap;
 use std::{
     fs,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc, mpsc::SyncSender},
+    time::Duration,
 };
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
+use uuid::Uuid;
 
 struct DesktopState {
     credential_store: Mutex<Option<CredentialStore>>,
     credential_store_status: String,
+    verification: DesktopVerificationProvider,
+}
+
+struct DesktopVerificationProvider {
+    app: AppHandle,
+    pending: Mutex<HashMap<String, SyncSender<VerificationDecision>>>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApprovalPrompt {
+    request_id: String,
+    relying_party_id: String,
+    relying_party_name: Option<String>,
+    action: &'static str,
+    timeout_millis: u64,
 }
 
 #[derive(Serialize)]
@@ -87,6 +108,86 @@ fn initialize_credential_store(app: &AppHandle) -> (Option<CredentialStore>, Str
     }
 }
 
+impl DesktopVerificationProvider {
+    fn resolve(&self, request_id: &str, approved: bool) -> Result<(), String> {
+        let sender = self
+            .pending
+            .lock()
+            .map_err(|_| "Approval state is unavailable.".to_owned())?
+            .remove(request_id)
+            .ok_or_else(|| "Approval request is unknown or expired.".to_owned())?;
+        sender
+            .send(if approved {
+                VerificationDecision::Approved
+            } else {
+                VerificationDecision::Rejected
+            })
+            .map_err(|_| "Approval request is no longer active.".to_owned())
+    }
+}
+
+impl UserVerification for DesktopVerificationProvider {
+    fn request_confirmation(
+        &self,
+        request: &VerificationRequest,
+        timeout: Duration,
+    ) -> Result<VerificationDecision, PlatformError> {
+        let request_id = Uuid::new_v4().to_string();
+        let prompt = ApprovalPrompt {
+            request_id: request_id.clone(),
+            relying_party_id: request.relying_party_id.clone(),
+            relying_party_name: request.relying_party_name.clone(),
+            action: match request.action {
+                VerificationAction::RegisterCredential => "Register credential",
+                VerificationAction::Authenticate => "Authenticate",
+                VerificationAction::CredentialExclusionCheck => "Check existing credential",
+            },
+            timeout_millis: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+        };
+        let (sender, receiver) = mpsc::sync_channel(1);
+        self.pending
+            .lock()
+            .map_err(|_| {
+                PlatformError::new(
+                    PlatformErrorKind::UserVerificationUnavailable,
+                    HostPlatform::current(),
+                    "approval state is unavailable",
+                )
+            })?
+            .insert(request_id.clone(), sender);
+
+        if self.app.emit("approval-request", prompt).is_err() {
+            if let Ok(mut pending) = self.pending.lock() {
+                pending.remove(&request_id);
+            }
+            return Err(PlatformError::new(
+                PlatformErrorKind::UserVerificationUnavailable,
+                HostPlatform::current(),
+                "could not deliver the approval request to the desktop UI",
+            ));
+        }
+
+        match receiver.recv_timeout(timeout) {
+            Ok(decision) => Ok(decision),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if let Ok(mut pending) = self.pending.lock() {
+                    pending.remove(&request_id);
+                }
+                Err(PlatformError::new(
+                    PlatformErrorKind::Timeout,
+                    HostPlatform::current(),
+                    "approval request timed out",
+                ))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(PlatformError::new(
+                PlatformErrorKind::UserVerificationUnavailable,
+                HostPlatform::current(),
+                "approval response channel closed",
+            )),
+        }
+    }
+}
+
 fn capability_label(state: CapabilityState) -> &'static str {
     match state {
         CapabilityState::Available => "사용 가능",
@@ -134,6 +235,15 @@ fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
     }
 }
 
+#[tauri::command]
+fn respond_approval(
+    state: tauri::State<'_, DesktopState>,
+    request_id: String,
+    approved: bool,
+) -> Result<(), String> {
+    state.verification.resolve(&request_id, approved)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -142,10 +252,14 @@ pub fn run() {
             app.manage(DesktopState {
                 credential_store: Mutex::new(store),
                 credential_store_status: status,
+                verification: DesktopVerificationProvider {
+                    app: app.handle().clone(),
+                    pending: Mutex::new(HashMap::new()),
+                },
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![platform_status])
+        .invoke_handler(tauri::generate_handler![platform_status, respond_approval])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
