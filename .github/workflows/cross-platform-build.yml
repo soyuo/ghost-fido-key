@@ -24,7 +24,7 @@ jobs:
         os:
           - ubuntu-22.04
           - windows-2025-vs2026
-          - macos-14
+          - macos-15
 
     steps:
       - name: Install Tauri Linux dependencies
@@ -105,8 +105,8 @@ jobs:
       - name: Check macOS CoreHID Swift bridge for Intel and Apple silicon
         if: runner.os == 'macOS'
         run: |
-          swiftc -typecheck -target x86_64-apple-macosx14.0 platforms/macos/corehid/GhostFidoVirtualDevice.swift
-          swiftc -typecheck -target arm64-apple-macosx14.0 platforms/macos/corehid/GhostFidoVirtualDevice.swift
+          swiftc -typecheck -target x86_64-apple-macosx15.0 platforms/macos/corehid/GhostFidoVirtualDevice.swift
+          swiftc -typecheck -target arm64-apple-macosx15.0 platforms/macos/corehid/GhostFidoVirtualDevice.swift
 
       - name: Install frontend dependencies
         run: npm ci --prefix apps/desktop
