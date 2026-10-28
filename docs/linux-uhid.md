@@ -20,21 +20,49 @@ The adapter does not implement CTAPHID framing or CTAP commands. Those remain
 owned by the common authenticator core and will consume complete reports through
 the transport contract.
 
-## Ubuntu LTS setup investigation
+## Active-session device access
 
-The runtime must not ask users to run the application as root. For each target
-Ubuntu LTS release, record the distribution's `/dev/uhid` ownership, mode, and
-ACL behavior, then provide the smallest package or udev rule that grants the
-installed application access. Validate the rule from a fresh login and remove it
-cleanly during uninstall.
+The application must not run as root. The repository includes
+[`70-ghost-fido-key.rules`](../platforms/linux/udev/70-ghost-fido-key.rules),
+which tags only the `/dev/uhid` misc device with `uaccess`. On systemd-logind
+systems this lets logind grant an ACL to the active local seat instead of
+opening the device to every user. The rule does not change the device mode or
+grant access to background/headless sessions.
 
-Useful evidence commands on a Linux test host:
+For a development installation on Ubuntu LTS, an administrator can install and
+reload the rule with:
+
+```sh
+sudo install -m 0644 platforms/linux/udev/70-ghost-fido-key.rules \
+  /etc/udev/rules.d/70-ghost-fido-key.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger --action=change --subsystem-match=misc --sysname-match=uhid
+```
+
+Start a fresh local desktop login before validating the ACL. Check the device
+node and effective access from that session:
 
 ```sh
 stat -c '%A %U %G %n' /dev/uhid
+getfacl /dev/uhid
 udevadm info --query=all --name=/dev/uhid
 ls -l /dev/hidraw*
 ```
+
+Remove the development rule and refresh udev when uninstalling it:
+
+```sh
+sudo rm /etc/udev/rules.d/70-ghost-fido-key.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger --action=change --subsystem-match=misc --sysname-match=uhid
+```
+
+The rule is a packaging input; no installer currently deploys it automatically.
+The installed package must own cleanup during uninstall. Ubuntu releases without
+systemd-logind seat ACL handling need a separately reviewed access policy and
+must not silently fall back to world-writable permissions. Real-host ownership,
+mode, ACL, fresh-login, and uninstall checks are still required before claiming
+Linux runtime support.
 
 Do not mark Linux support complete from a Windows cross-build. The release gate
 requires an Ubuntu LTS x64 and ARM64 device test, HID enumeration, CTAPHID
