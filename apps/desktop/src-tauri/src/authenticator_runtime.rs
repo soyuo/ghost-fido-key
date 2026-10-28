@@ -12,8 +12,8 @@ use ghost_fido_core::{
 };
 use ghost_platform::{
     AuthenticatorHidError, AuthenticatorHidEvent, AuthenticatorHidSession, AuthenticatorService,
-    AuthenticatorServiceConfig, KeyCreationPolicy, LinuxKeyStore, PlatformErrorKind,
-    SoftwareKeyConsent, UserVerification, VirtualHidBackend,
+    AuthenticatorServiceConfig, KeyCreationPolicy, KeyStore, PlatformErrorKind, SoftwareKeyConsent,
+    UserVerification, VirtualHidBackend,
 };
 
 use crate::RuntimeStatus;
@@ -42,7 +42,9 @@ pub fn run(
     verification: Arc<dyn UserVerification>,
     status: Arc<Mutex<RuntimeStatus>>,
     stop: Receiver<()>,
-    consent: SoftwareKeyConsent,
+    key_store: Box<dyn KeyStore>,
+    key_creation_policy: KeyCreationPolicy,
+    software_key_consent: Option<SoftwareKeyConsent>,
 ) {
     let Some(mut store) = credential_store
         .lock()
@@ -71,7 +73,6 @@ pub fn run(
     let (response_tx, response_rx) = channel();
     let service_verification = Arc::clone(&verification);
     let service_thread = thread::spawn(move || {
-        let key_store = LinuxKeyStore::new();
         let profile = GetInfoProfile {
             versions: vec!["FIDO_2_0".into()],
             aaguid: [0; 16],
@@ -88,8 +89,8 @@ pub fn run(
         let config = AuthenticatorServiceConfig {
             get_info: profile,
             aaguid: [0; 16],
-            key_creation_policy: KeyCreationPolicy::SoftwareKeyAfterExplicitConsent,
-            software_key_consent: Some(consent),
+            key_creation_policy,
+            software_key_consent,
             request_timeout: REQUEST_TIMEOUT,
         };
         let Ok(mut service) = AuthenticatorService::new(
