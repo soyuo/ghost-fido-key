@@ -210,10 +210,11 @@ impl KeyStore for LinuxKeyStore {
         let found = service
             .search_items(attributes)
             .map_err(|_| Self::fail("could not search Secret Service signing keys"))?;
-        if found.unlocked.len() + found.locked.len() != 1 {
-            return Err(Self::fail(
-                "Secret Service signing key is missing or ambiguous",
-            ));
+        if found.unlocked.len() + found.locked.len() > 1 {
+            return Err(Self::fail("Secret Service signing key is ambiguous"));
+        }
+        if found.unlocked.is_empty() && found.locked.is_empty() {
+            return Ok(());
         }
         let item = found
             .unlocked

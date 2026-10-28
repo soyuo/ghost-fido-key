@@ -131,6 +131,7 @@ pub fn register_make_credential(
     let record = CredentialRecord {
         id: credential_id,
         rp_id_hash: request.rp_id_hash(),
+        relying_party_id: Some(request.rp.id.clone()),
         user_handle: request.user.id.clone(),
         user_name: request.user.name.clone(),
         user_display_name: request.user.display_name.clone(),
