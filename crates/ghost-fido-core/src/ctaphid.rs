@@ -267,6 +267,7 @@ pub enum SessionEvent {
     Pending,
     Message(CtapHidDispatch),
     Response([u8; HID_REPORT_SIZE]),
+    Responses(Vec<[u8; HID_REPORT_SIZE]>),
     Cancelled(u32),
 }
 
@@ -329,6 +330,16 @@ impl CtapHidSession {
                     .map_err(|_| FrameError::InvalidChannel)?;
                 let report = encode_initialization(assigned, CtapHidCommand::Init, &payload)?;
                 Ok(SessionEvent::Response(report))
+            }
+            Ok(CtapHidDispatch::Ping(payload)) => {
+                let first = encode_initialization(channel, CtapHidCommand::Ping, &payload)?;
+                let mut reports = vec![first];
+                reports.extend(encode_continuations(channel, &payload)?);
+                if reports.len() == 1 {
+                    Ok(SessionEvent::Response(first))
+                } else {
+                    Ok(SessionEvent::Responses(reports))
+                }
             }
             Ok(CtapHidDispatch::Cancel) => Ok(SessionEvent::Cancelled(channel)),
             Ok(action) => Ok(SessionEvent::Message(action)),
