@@ -25,6 +25,16 @@ type ApprovalPrompt = {
   timeoutMillis: number;
 };
 
+type CredentialSummary = {
+  creationOrder: number;
+  relyingPartyId: string | null;
+  userName: string | null;
+  userDisplayName: string | null;
+  keyProtection: string;
+  exportable: boolean;
+  discoverable: boolean;
+};
+
 function App() {
   const [status, setStatus] = useState<PlatformStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -33,8 +43,20 @@ function App() {
   const [showSoftwareKeyWarning, setShowSoftwareKeyWarning] = useState(false);
   const [runtimeAction, setRuntimeAction] = useState(false);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [showCredentials, setShowCredentials] = useState(false);
+  const [credentials, setCredentials] = useState<CredentialSummary[]>([]);
+  const [credentialError, setCredentialError] = useState<string | null>(null);
 
   const refreshStatus = () => invoke<PlatformStatus>("platform_status").then(setStatus);
+  const refreshCredentials = () => invoke<CredentialSummary[]>("list_credentials").then(setCredentials);
+  const loadCredentials = async () => {
+    try {
+      await refreshCredentials();
+      setCredentialError(null);
+    } catch (cause) {
+      setCredentialError(typeof cause === "string" ? cause : "자격 증명 목록을 불러오지 못했습니다.");
+    }
+  };
 
   useEffect(() => {
     if (!isTauri()) {
@@ -49,6 +71,12 @@ function App() {
     }, 1000);
     return () => window.clearInterval(refreshTimer);
   }, []);
+
+  useEffect(() => {
+    if (showCredentials && !status?.authenticatorRunning && status?.hostPlatform === "Linux") {
+      void loadCredentials();
+    }
+  }, [showCredentials, status?.authenticatorRunning, status?.hostPlatform]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -120,6 +148,21 @@ function App() {
     }
   };
 
+  const deleteCredential = async (credential: CredentialSummary) => {
+    const site = credential.relyingPartyId ?? "사이트를 확인할 수 없는 기존 자격 증명";
+    const user = credential.userDisplayName ?? credential.userName;
+    if (!window.confirm(`${site}${user ? `\n${user}` : ""} 자격 증명을 삭제할까요? 이 작업은 되돌릴 수 없습니다.`)) return;
+
+    setCredentialError(null);
+    try {
+      await invoke("delete_credential", { creationOrder: credential.creationOrder, confirmed: true });
+      await loadCredentials();
+    } catch (cause) {
+      await loadCredentials();
+      setCredentialError(typeof cause === "string" ? cause : "자격 증명을 삭제하지 못했습니다.");
+    }
+  };
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -184,6 +227,17 @@ function App() {
             </section>
           )}
           {runtimeError && <p className="status-message" role="alert">{runtimeError}</p>}
+          {isTauri() && status?.hostPlatform === "Linux" && status.credentialStoreAvailable && (
+            <div className="runtime-actions">
+              <button
+                type="button"
+                disabled={status.authenticatorRunning}
+                onClick={() => setShowCredentials((visible) => !visible)}
+              >
+                {showCredentials ? "자격 증명 숨기기" : "등록된 자격 증명 관리"}
+              </button>
+            </div>
+          )}
           <div className="card-divider" />
           <dl className="details">
             <div>
@@ -215,6 +269,40 @@ function App() {
             {status?.credentialStoreStatus ?? "Credential storage status is unavailable."}
           </p>
         </div>
+
+        {showCredentials && status?.hostPlatform === "Linux" && (
+          <section className="credential-list" aria-label="등록된 자격 증명">
+            <div className="credential-list-heading">
+              <div>
+                <p className="eyebrow">Credential management</p>
+                <h2>등록된 자격 증명</h2>
+              </div>
+              <button type="button" disabled={status.authenticatorRunning} onClick={() => void loadCredentials()}>
+                새로고침
+              </button>
+            </div>
+            {credentialError && <p className="status-message" role="alert">{credentialError}</p>}
+            {credentials.length === 0 ? (
+              <p className="credential-empty">등록된 자격 증명이 없습니다.</p>
+            ) : credentials.map((credential) => (
+              <article className="credential-card" key={credential.creationOrder}>
+                <div>
+                  <h3>{credential.relyingPartyId ?? "알 수 없는 사이트 (기존 자격 증명)"}</h3>
+                  {(credential.userDisplayName || credential.userName) && (
+                    <p>{credential.userDisplayName ?? credential.userName}</p>
+                  )}
+                  <p className="credential-meta">
+                    {credential.keyProtection}{credential.exportable ? " · 추출 가능" : " · 추출 불가"}
+                    {credential.discoverable ? " · discoverable" : " · allow-list 전용"}
+                  </p>
+                </div>
+                <button type="button" className="credential-delete" disabled={status.authenticatorRunning} onClick={() => void deleteCredential(credential)}>
+                  삭제
+                </button>
+              </article>
+            ))}
+          </section>
+        )}
 
         {approvalRequests.length > 0 && (
           <section className="approval-list" aria-label="Pending authenticator approvals">
