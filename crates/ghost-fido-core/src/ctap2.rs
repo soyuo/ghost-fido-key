@@ -8,6 +8,8 @@ use crate::{
 use core::fmt;
 use sha2::{Digest, Sha256};
 
+pub const MAX_CREDENTIAL_ID_SIZE: usize = 1023;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Ctap2Command {
@@ -127,6 +129,59 @@ pub fn encode_es256_cose_public_key(public_key: &Es256PublicKey) -> Vec<u8> {
             CborValue::Bytes(public_key.y.to_vec()),
         ),
     ]))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MakeCredentialResponseError {
+    EmptyCredentialId,
+    CredentialIdTooLong(usize),
+}
+
+/// Encodes a CTAP2 `fmt: none` MakeCredential response.
+pub fn encode_make_credential_response(
+    rp_id_hash: RpIdHash,
+    aaguid: [u8; 16],
+    credential_id: &[u8],
+    public_key: &Es256PublicKey,
+    user_verified: bool,
+) -> Result<Ctap2Response, MakeCredentialResponseError> {
+    if credential_id.is_empty() {
+        return Err(MakeCredentialResponseError::EmptyCredentialId);
+    }
+    if credential_id.len() > MAX_CREDENTIAL_ID_SIZE {
+        return Err(MakeCredentialResponseError::CredentialIdTooLong(
+            credential_id.len(),
+        ));
+    }
+
+    let mut authenticator_data = Vec::with_capacity(37 + 18 + credential_id.len() + 77);
+    authenticator_data.extend_from_slice(&rp_id_hash);
+    let flags = 0x01 | 0x40 | if user_verified { 0x04 } else { 0 };
+    authenticator_data.push(flags);
+    authenticator_data.extend_from_slice(&0_u32.to_be_bytes());
+    authenticator_data.extend_from_slice(&aaguid);
+    authenticator_data.extend_from_slice(&(credential_id.len() as u16).to_be_bytes());
+    authenticator_data.extend_from_slice(credential_id);
+    authenticator_data.extend_from_slice(&encode_es256_cose_public_key(public_key));
+
+    let attestation_object = encode(&CborValue::Map(vec![
+        (
+            CborValue::Text("fmt".into()),
+            CborValue::Text("none".into()),
+        ),
+        (
+            CborValue::Text("authData".into()),
+            CborValue::Bytes(authenticator_data),
+        ),
+        (
+            CborValue::Text("attStmt".into()),
+            CborValue::Map(Vec::new()),
+        ),
+    ]));
+    Ok(Ctap2Response {
+        status: Ctap2Status::Success,
+        payload: attestation_object,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

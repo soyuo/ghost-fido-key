@@ -25,3 +25,9 @@ This behavior follows CTAP 2.1's `excludeList` processing rules in
 
 The request field identifiers and required fields follow the
 [FIDO CTAP 2.1 authenticatorMakeCredential request](https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-20210615.html#authenticatormakecredential-0x01).
+
+`encode_make_credential_response` builds a `fmt: none` CBOR response. Its
+authenticator data contains the RP hash, UP/AT flags, a zero sign counter, the
+AAGUID, credential ID, and ES256 COSE public key. It can set UV only when the
+caller has established user verification. IDs must contain 1–1023 bytes. This
+response is not an attestation of hardware provenance.
