@@ -1475,7 +1475,7 @@ CTAPHID broadcast INIT는 8-byte nonce를 검증한 뒤 고유 channel을 할당
 
 CTAPHID channel allocator는 broadcast channel(`0xffffffff`)과 channel zero를 예약하고, 동시 요청별 deadline을 추적해 만료 시 channel을 회수한다. 타이머와 오류 report 전송은 호출자에 남겨 OS별 runtime 차이를 격리한다. [`docs/ctaphid-channels.md`](../docs/ctaphid-channels.md)
 
-CTAP2 dispatch는 command byte와 status-prefixed response envelope만 먼저 소유한다. CBOR, credential, PIN/UV 처리는 별도 구현 전까지 지원하지 않는 명령 또는 명시적 오류로 닫힌다. 경계는 [`docs/ctap2-dispatch.md`](../docs/ctap2-dispatch.md)에 기록한다.
+CTAP2 core는 command byte와 status-prefixed response, bounded CBOR, 명시적으로 설정한 GetInfo 응답, GetAssertion 요청 필드 검증을 제공한다. credential 검색·서명·사용자 승인 및 나머지 명령은 구현 전까지 명시적 오류로 닫힌다. 경계와 표준 status 값은 [`docs/ctap2-dispatch.md`](../docs/ctap2-dispatch.md)에 기록한다.
 
 CTAP2 입력 CBOR는 definite-length 값만 허용하며 기본 16 depth, 128 collection items, 8192 bytes 제한을 적용한다. 잘린 입력, indefinite form, 지원하지 않는 simple/float 값, 잘못된 UTF-8과 trailing data는 handler 전에 거부한다. [`docs/cbor-validation.md`](../docs/cbor-validation.md)
 
