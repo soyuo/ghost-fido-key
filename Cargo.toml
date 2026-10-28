@@ -7,6 +7,9 @@ members = [
     "apps/desktop/src-tauri",
 ]
 
+[patch.crates-io]
+uhid-virt = { path = "vendor/uhid-virt" }
+
 [workspace.package]
 edition = "2024"
 license = "MIT"
