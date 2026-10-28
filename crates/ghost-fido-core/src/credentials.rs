@@ -447,6 +447,25 @@ impl CredentialStore {
         Ok(removed)
     }
 
+    /// Returns provider key handles for an internal full-reset operation.
+    /// Callers must keep the handles out of logs and external UI responses.
+    #[must_use]
+    pub fn provider_key_handles(&self) -> Vec<KeyHandle> {
+        self.records
+            .values()
+            .map(|record| record.key_handle.clone())
+            .collect()
+    }
+
+    /// Atomically clears persisted credential metadata without removing the
+    /// protected database or its metadata-encryption key.
+    pub fn clear(&mut self) -> Result<usize, CredentialError> {
+        let count = self.records.len();
+        self.persist(&BTreeMap::new())?;
+        self.records.clear();
+        Ok(count)
+    }
+
     #[must_use]
     pub fn by_creation_order(&self, creation_order: u64) -> Option<&CredentialRecord> {
         self.records
