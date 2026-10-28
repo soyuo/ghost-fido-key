@@ -13,6 +13,71 @@ pub const MAX_PAYLOAD_SIZE: usize = 7609;
 pub const BROADCAST_CHANNEL: u32 = 0xffff_ffff;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CtapHidErrorCode {
+    InvalidCommand = 0x01,
+    InvalidParameter = 0x02,
+    InvalidLength = 0x03,
+    ChannelBusy = 0x06,
+    InvalidChannel = 0x0b,
+    Other = 0x7f,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CtapHidDispatch {
+    AllocateChannel,
+    Ping(Vec<u8>),
+    Cbor(Vec<u8>),
+    Cancel,
+    Unsupported,
+}
+
+/// Validates a complete message and maps supported commands to core actions.
+/// INIT allocation policy and CBOR execution remain with their owning layers.
+pub fn dispatch(
+    message: CtapHidMessage,
+    channel_is_active: bool,
+) -> Result<CtapHidDispatch, CtapHidErrorCode> {
+    match message.command {
+        CtapHidCommand::Init
+            if message.channel == BROADCAST_CHANNEL && message.payload.len() == 8 =>
+        {
+            Ok(CtapHidDispatch::AllocateChannel)
+        }
+        CtapHidCommand::Init => Err(CtapHidErrorCode::InvalidParameter),
+        CtapHidCommand::Ping if message.channel != BROADCAST_CHANNEL && channel_is_active => {
+            Ok(CtapHidDispatch::Ping(message.payload))
+        }
+        CtapHidCommand::Cbor
+            if message.channel != BROADCAST_CHANNEL
+                && channel_is_active
+                && !message.payload.is_empty() =>
+        {
+            Ok(CtapHidDispatch::Cbor(message.payload))
+        }
+        CtapHidCommand::Cancel
+            if message.channel != BROADCAST_CHANNEL
+                && channel_is_active
+                && message.payload.is_empty() =>
+        {
+            Ok(CtapHidDispatch::Cancel)
+        }
+        CtapHidCommand::Ping | CtapHidCommand::Cbor | CtapHidCommand::Cancel
+            if message.channel == BROADCAST_CHANNEL =>
+        {
+            Err(CtapHidErrorCode::InvalidChannel)
+        }
+        CtapHidCommand::Ping | CtapHidCommand::Cbor | CtapHidCommand::Cancel
+            if !channel_is_active =>
+        {
+            Err(CtapHidErrorCode::InvalidChannel)
+        }
+        CtapHidCommand::Cbor if message.payload.is_empty() => Err(CtapHidErrorCode::InvalidLength),
+        CtapHidCommand::Keepalive | CtapHidCommand::Error => Err(CtapHidErrorCode::InvalidCommand),
+        _ => Ok(CtapHidDispatch::Unsupported),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CtapHidCommand {
     Init = 0x06,
