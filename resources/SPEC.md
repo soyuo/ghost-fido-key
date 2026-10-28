@@ -85,6 +85,8 @@ macOS entitlement와 가상 HID 공개 API의 실제 배포 가능성을 검증�
 - [Rust 플랫폼 지원 등급](https://doc.rust-lang.org/rustc/platform-support.html)
 - [Tauri 2 플랫폼별 사전 요구사항](https://v2.tauri.app/start/prerequisites/)
 - [Linux UHID 문서](https://docs.kernel.org/hid/uhid.html)
+- [FIDO CTAP HID descriptor 및 discovery](https://fidoalliance.org/specs/fido-v2.2-rd-20241003/fido-client-to-authenticator-protocol-v2.2-rd-20241003.pdf)
+- [Rust uhid-virt wrapper](https://docs.rs/uhid-virt/latest/uhid_virt/)
 - [Windows UDE Client Driver](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/writing-a-ude-client-driver)
 - [Apple CoreHID HIDVirtualDevice](https://developer.apple.com/documentation/corehid/hidvirtualdevice)
 - [Apple 가상 HID entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.hid.virtual.device)

@@ -10,3 +10,7 @@ workspace = true
 
 [dependencies]
 ghost-fido-core = { path = "../ghost-fido-core" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+uhid-virt = "0.0.8"

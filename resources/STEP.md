@@ -37,6 +37,8 @@
 ### 1단계 작업
 
 - Linux에서 `/dev/uhid`로 가상 FIDO HID를 생성하고 report 입출력을 확인한다. 권한, udev 규칙, 배포 패키지와 최소 지원 커널을 기록한다.
+- `ghost-platform`의 Linux adapter는 `UHID_CREATE2`/`UHID_START`/`UHID_DESTROY` lifecycle과 FIDO Alliance `0xF1D0/0x01`, 64-byte report descriptor를 사용한다. 실제 CTAPHID framing은 공통 core가 소유한다.
+- Linux 배포 시 root 실행을 요구하지 않는다. 대상 Ubuntu LTS의 `/dev/uhid` 소유권·ACL·udev 경로를 확인하고 최소 권한 설치·제거 절차를 기록한다.
 - Windows에서 UdeCx/KMDF 기반 가상 USB/HID 경로를 검증한다. 개발 키트, 관리자 권한, 서명, 설치·제거, 재부팅과 배포 조건을 조사한다.
 - macOS에서 CoreHID virtual device API와 필요한 entitlement를 확인한다. entitlement 요청 가능성, 코드 서명, 배포 및 브라우저에서 보이는 장치 여부를 먼저 확인한다.
 - 각 OS에서 장치 열거 이후 Chrome/Edge 등 테스트 대상 브라우저가 FIDO authenticator를 발견하고 HID report를 교환하는지 확인한다.

@@ -6,6 +6,12 @@
 
 use std::{fmt, time::Duration};
 
+#[cfg(target_os = "linux")]
+mod linux_uhid;
+
+#[cfg(target_os = "linux")]
+pub use linux_uhid::LinuxUhidBackend;
+
 /// Host operating system selected at compile time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostPlatform {
