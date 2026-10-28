@@ -35,10 +35,12 @@ response is not an attestation of hardware provenance.
 `ghost-platform::register_make_credential` checks for an offered ES256
 algorithm, runs the RP-scoped exclusion check, waits for explicit local
 registration approval, then creates the protected key and stores its opaque
-reference and protection metadata. It returns protocol errors for unsupported
-options, user rejection, and timeout. If record insertion fails after key
-creation, it deletes the new key. The caller owns the in-memory credential
-store; persistence is still required before credentials survive app restart.
+reference, protection metadata, user handle, and optional user labels. It returns
+protocol errors for unsupported options, user rejection, and timeout. If record
+insertion fails after key creation, it deletes the new key. User labels are
+private presentation hints and are redacted from debug output. The caller owns
+the credential store; persistent storage requires a platform-backed
+`CredentialProtector` before credentials survive app restart.
 
-Credential IDs, RP hashes, user handles, and provider key references are
-redacted from credential `Debug` output.
+Credential IDs, RP hashes, user handles, user labels, and provider key
+references are redacted from credential `Debug` output.
