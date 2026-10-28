@@ -5,8 +5,8 @@
 //! available, this provider reports no key capability and fails closed.
 
 use crate::{
-    HostPlatform, KeyCreationPolicy, KeyMetadata, KeyReference, KeyStore, PlatformError,
-    PlatformErrorKind, SigningAlgorithm, SoftwareKeyConsent,
+    CreatedSigningKey, HostPlatform, KeyCreationPolicy, KeyStore, PlatformError, PlatformErrorKind,
+    SigningAlgorithm, SoftwareKeyConsent,
 };
 
 #[derive(Debug, Default)]
@@ -25,7 +25,7 @@ impl KeyStore for MacOsKeyStore {
         _algorithm: SigningAlgorithm,
         _policy: KeyCreationPolicy,
         _consent: Option<SoftwareKeyConsent>,
-    ) -> Result<(KeyReference, KeyMetadata), PlatformError> {
+    ) -> Result<CreatedSigningKey, PlatformError> {
         Err(PlatformError::new(
             PlatformErrorKind::KeyStoreUnavailable,
             HostPlatform::MacOs,
