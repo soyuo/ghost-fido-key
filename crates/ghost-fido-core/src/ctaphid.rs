@@ -245,6 +245,98 @@ pub struct CtapHidAssembler {
     payload: Vec<u8>,
 }
 
+/// Owns in-flight fragmented messages and initialized channels for one HID
+/// transport instance. Platform code supplies time and handles returned actions.
+#[derive(Debug)]
+pub struct CtapHidSession {
+    channels: CtapHidChannelAllocator,
+    pending: BTreeMap<u32, CtapHidAssembler>,
+    channel_timeout: Duration,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SessionEvent {
+    Pending,
+    Message(CtapHidDispatch),
+    Response([u8; HID_REPORT_SIZE]),
+    Cancelled(u32),
+}
+
+impl CtapHidSession {
+    #[must_use]
+    pub fn new(channel_capacity: usize, channel_timeout: Duration) -> Self {
+        Self {
+            channels: CtapHidChannelAllocator::new(channel_capacity),
+            pending: BTreeMap::new(),
+            channel_timeout,
+        }
+    }
+
+    pub fn receive(&mut self, report: &[u8], now: Instant) -> Result<SessionEvent, FrameError> {
+        self.expire(now);
+        let channel = if report.len() == HID_REPORT_SIZE {
+            u32::from_be_bytes(report[..4].try_into().expect("four bytes"))
+        } else {
+            return Err(FrameError::InvalidReportLength(report.len()));
+        };
+        if report[4] & 0x80 == 0 {
+            let assembler = self
+                .pending
+                .get_mut(&channel)
+                .ok_or(FrameError::UnexpectedContinuation)?;
+            return match assembler.push_continuation(report)? {
+                Some(message) => {
+                    self.pending.remove(&channel);
+                    self.dispatch_message(message, now)
+                }
+                None => Ok(SessionEvent::Pending),
+            };
+        }
+        let message = CtapHidAssembler::start(report)?;
+        if !message.is_complete() {
+            self.pending.insert(channel, message);
+            return Ok(SessionEvent::Pending);
+        }
+        let mut message = message;
+        let complete = CtapHidMessage {
+            channel: message.channel,
+            command: message.command,
+            payload: core::mem::take(&mut message.payload),
+        };
+        self.dispatch_message(complete, now)
+    }
+
+    fn dispatch_message(
+        &mut self,
+        message: CtapHidMessage,
+        now: Instant,
+    ) -> Result<SessionEvent, FrameError> {
+        let channel = message.channel;
+        let active = self.channels.is_active(channel);
+        match dispatch(message.clone(), active) {
+            Ok(CtapHidDispatch::AllocateChannel) => {
+                let (assigned, payload) = self
+                    .channels
+                    .initialize(&message.payload, now, self.channel_timeout)
+                    .map_err(|_| FrameError::InvalidChannel)?;
+                let report = encode_initialization(assigned, CtapHidCommand::Init, &payload)?;
+                Ok(SessionEvent::Response(report))
+            }
+            Ok(CtapHidDispatch::Cancel) => Ok(SessionEvent::Cancelled(channel)),
+            Ok(action) => Ok(SessionEvent::Message(action)),
+            Err(_) => Err(FrameError::InvalidChannel),
+        }
+    }
+
+    pub fn expire(&mut self, now: Instant) -> Vec<u32> {
+        let expired = self.channels.expire(now);
+        for channel in &expired {
+            self.pending.remove(channel);
+        }
+        expired
+    }
+}
+
 impl CtapHidAssembler {
     pub fn start(report: &[u8]) -> Result<Self, FrameError> {
         ensure_report(report)?;
