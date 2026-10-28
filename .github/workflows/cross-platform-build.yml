@@ -23,7 +23,7 @@ jobs:
       matrix:
         os:
           - ubuntu-22.04
-          - windows-latest
+          - windows-2025-vs2026
           - macos-14
 
     steps:
@@ -49,6 +49,42 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+
+      - name: Add MSBuild to PATH
+        if: runner.os == 'Windows'
+        uses: microsoft/setup-msbuild@v3
+
+      - name: Restore Windows UDE WDK packages
+        if: runner.os == 'Windows'
+        run: nuget restore platforms/windows/ude/packages.config -PackagesDirectory platforms/windows/ude/packages
+
+      - name: Build Windows UDE driver for x64
+        if: runner.os == 'Windows'
+        run: msbuild platforms/windows/ude/ghost-fido-ude.vcxproj /m /p:Configuration=Release /p:Platform=x64
+
+      - name: Verify Windows UDE x64 driver output
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $driver = Join-Path $env:GITHUB_WORKSPACE 'target/windows-ude/x64/Release/GhostFidoUde.sys'
+          if (-not (Test-Path -LiteralPath $driver -PathType Leaf)) {
+            throw "The x64 UDE driver build did not produce $driver"
+          }
+          Get-Item -LiteralPath $driver | Select-Object FullName, Length
+
+      - name: Build Windows UDE driver for ARM64
+        if: runner.os == 'Windows'
+        run: msbuild platforms/windows/ude/ghost-fido-ude.vcxproj /m /p:Configuration=Release /p:Platform=ARM64
+
+      - name: Verify Windows UDE ARM64 driver output
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $driver = Join-Path $env:GITHUB_WORKSPACE 'target/windows-ude/ARM64/Release/GhostFidoUde.sys'
+          if (-not (Test-Path -LiteralPath $driver -PathType Leaf)) {
+            throw "The ARM64 UDE driver build did not produce $driver"
+          }
+          Get-Item -LiteralPath $driver | Select-Object FullName, Length
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2

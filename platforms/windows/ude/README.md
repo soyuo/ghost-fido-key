@@ -51,8 +51,11 @@ the handshake is not an authorization boundary for report traffic.
 
 ## Build and signing gates
 
-- Build x64 and native ARM64 configurations with a supported WDK and Visual
-  Studio Desktop C++ workload.
+- Build-only KMDF project: `ghost-fido-ude.vcxproj`. It compiles `driver.c`
+  for x64 and ARM64 with the pinned WDK 10.0.28000.2526 NuGet packages and
+  writes `.sys` outputs under the repository `target/windows-ude` directory.
+- The project and CI do not produce an INF, catalog, signed package, or release
+  artifact. The compiled scaffold is not installable or functional.
 - Test installation, elevation, reboot, upgrade, and removal on supported
   Windows versions.
 - Sign the driver package using the distribution policy selected for the
