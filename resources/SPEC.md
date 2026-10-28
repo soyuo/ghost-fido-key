@@ -1483,7 +1483,7 @@ CTAP2 입력 CBOR는 definite-length 값만 허용하며 기본 16 depth, 128 co
 
 `GetAssertionRequest`는 CBOR 필수 필드, 32-byte `clientDataHash`, optional `public-key` allow-list descriptor와 `up`/`uv` boolean 옵션을 검증한다. RP ID의 SHA-256 hash를 사용해 allow-list 또는 discoverable credential을 RP별로 조회한다. 성공 응답 인코더는 credential descriptor, UP flag와 signature counter를 포함한 authenticator data, signature 및 선택적 discoverable user entity를 직렬화한다. 실행 경로는 일치 credential이 하나일 때 사용자 승인을 받고 key provider로 서명한 뒤 counter를 저장한다. 다중 계정 선택과 `GetNextAssertion`은 후속 구현이다. [`docs/ctap2-getassertion.md`](../docs/ctap2-getassertion.md)
 
-`MakeCredentialRequest`는 CBOR 필수 필드, RP/user entity, ordered public-key algorithm, excludeList 및 등록 옵션을 검증한다. excludeList는 RP hash로만 조회하고 일치 시 local presence interaction 후 `CredentialExcluded`를 응답한다. key 생성·보호 저장·attestation·서명은 provider/handler 작업으로 남아 있다. [`docs/ctap2-makecredential.md`](../docs/ctap2-makecredential.md)
+`MakeCredentialRequest`는 CBOR 필수 필드, RP/user entity, ordered public-key algorithm, excludeList 및 등록 옵션을 검증한다. excludeList는 RP hash로만 조회하고 일치 시 local presence interaction 후 `CredentialExcluded`를 응답한다. 등록 흐름은 승인 후 보호 키를 만들고 key reference, 보호 정보, user handle 및 선택적 user labels를 credential store에 넣는다. 암호화된 SQLite 저장소는 v1 payload를 v2로 원자적으로 마이그레이션하며, 재시작 후 사용하려면 아직 OS 기반 `CredentialProtector` provider가 필요하다. [`docs/ctap2-makecredential.md`](../docs/ctap2-makecredential.md)
 
 `KeyStore::create_signing_key`는 opaque reference와 protection metadata에 더해 ES256 public coordinates를 반환한다. Windows CNG는 public ECC blob만 export하고 private key는 provider 내부에 유지한다. [`docs/key-store-public-keys.md`](../docs/key-store-public-keys.md)
 
