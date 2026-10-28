@@ -6,7 +6,7 @@
 
 use crate::{
     HostPlatform, KeyCreationPolicy, KeyMetadata, KeyReference, KeyStore, PlatformError,
-    PlatformErrorKind, SigningAlgorithm,
+    PlatformErrorKind, SigningAlgorithm, SoftwareKeyConsent,
 };
 
 #[derive(Debug, Default)]
@@ -24,6 +24,7 @@ impl KeyStore for MacOsKeyStore {
         &self,
         _algorithm: SigningAlgorithm,
         _policy: KeyCreationPolicy,
+        _consent: Option<SoftwareKeyConsent>,
     ) -> Result<(KeyReference, KeyMetadata), PlatformError> {
         Err(PlatformError::new(
             PlatformErrorKind::KeyStoreUnavailable,
