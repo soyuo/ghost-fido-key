@@ -16,6 +16,11 @@
     <KMDF_VERSION_MAJOR>1</KMDF_VERSION_MAJOR>
     <WindowsTargetPlatformVersion>10.0.28000.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
+  <PropertyGroup>
+    <!-- Zero values intentionally disable virtual-device creation in CI/default builds. -->
+    <GhostFidoVendorId Condition="'$(GhostFidoVendorId)' == ''">0</GhostFidoVendorId>
+    <GhostFidoProductId Condition="'$(GhostFidoProductId)' == ''">0</GhostFidoProductId>
+  </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Label="Configuration" Condition="'$(Configuration)|$(Platform)' == 'Release|x64'">
     <TargetVersion>Windows10</TargetVersion>
@@ -53,6 +58,7 @@
   <ItemDefinitionGroup>
     <ClCompile>
       <AdditionalIncludeDirectories>$(WDKContentRoot)\Include\10.0.28000.0\km\ude\1.0;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>GHOST_FIDO_VENDOR_ID=$(GhostFidoVendorId);GHOST_FIDO_PRODUCT_ID=$(GhostFidoProductId);%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
