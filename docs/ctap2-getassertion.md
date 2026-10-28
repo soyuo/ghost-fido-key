@@ -1,12 +1,16 @@
 # CTAP2 GetAssertion request decoding
 
 `GetAssertionRequest::decode` validates the bounded CBOR request map and extracts
-the required RP ID, 32-byte client data hash, and optional credential allow-list.
+the required RP ID, 32-byte client data hash, optional credential allow-list,
+and the known `up`/`uv` boolean options.
 Each allow-list descriptor must identify a non-empty credential ID of type
 `public-key`. `rp_id_hash` computes SHA-256 over the UTF-8 RP ID, and
 `find_credentials` selects matching records through the RP-isolated credential
 store. When the allow-list is absent, only discoverable credentials are
-selected. User approval and signing remain follow-up work.
+selected. Unknown option names are ignored and absent `up`/`uv` options remain
+`None` for the execution layer to interpret. Decoding does not claim that the
+authenticator can perform user verification. User approval and signing remain
+follow-up work.
 
 Schema failures expose a CTAP2 status through `GetAssertionError::status`:
 malformed CBOR maps to `InvalidCbor`, missing fields to `MissingParameter`,

@@ -1481,7 +1481,7 @@ CTAP2 입력 CBOR는 definite-length 값만 허용하며 기본 16 depth, 128 co
 
 `GetInfoProfile`은 versions, AAGUID, options, max message size와 PIN/UV protocol을 명시적으로 주입해야만 응답을 직렬화한다. 기본 profile은 제공하지 않아 미완성 authenticator가 기능을 과장하지 않는다. [`docs/ctap2-getinfo.md`](../docs/ctap2-getinfo.md)
 
-`GetAssertionRequest`는 CBOR 필수 필드, 32-byte `clientDataHash`, optional `public-key` allow-list descriptor를 검증한다. RP ID의 SHA-256 hash를 사용해 allow-list 또는 discoverable credential을 RP별로 조회한다. 성공 응답 인코더는 credential descriptor, UP flag와 signature counter를 포함한 authenticator data, signature 및 선택적 discoverable user entity를 직렬화한다. 사용자 승인·서명·다중 자격 증명 선택은 별도 handler 단계에서 수행한다. [`docs/ctap2-getassertion.md`](../docs/ctap2-getassertion.md)
+`GetAssertionRequest`는 CBOR 필수 필드, 32-byte `clientDataHash`, optional `public-key` allow-list descriptor와 `up`/`uv` boolean 옵션을 검증한다. RP ID의 SHA-256 hash를 사용해 allow-list 또는 discoverable credential을 RP별로 조회한다. 성공 응답 인코더는 credential descriptor, UP flag와 signature counter를 포함한 authenticator data, signature 및 선택적 discoverable user entity를 직렬화한다. 사용자 승인·서명·다중 자격 증명 선택은 별도 handler 단계에서 수행한다. [`docs/ctap2-getassertion.md`](../docs/ctap2-getassertion.md)
 
 `MakeCredentialRequest`는 CBOR 필수 필드, RP/user entity, ordered public-key algorithm, excludeList 및 등록 옵션을 검증한다. excludeList는 RP hash로만 조회하고 일치 시 local presence interaction 후 `CredentialExcluded`를 응답한다. key 생성·보호 저장·attestation·서명은 provider/handler 작업으로 남아 있다. [`docs/ctap2-makecredential.md`](../docs/ctap2-makecredential.md)
 
