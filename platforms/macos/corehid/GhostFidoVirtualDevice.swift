@@ -10,7 +10,7 @@ let ghostFidoReportDescriptor: [UInt8] = [
     0x75, 0x08, 0x95, 0x40, 0x91, 0x02, 0xC0,
 ]
 
-enum GhostFidoCoreHIDError: Error {
+enum GhostFidoCoreHIDError: Error, Equatable {
     case invalidIdentity
     case alreadyActive
     case notActive
@@ -144,6 +144,9 @@ actor GhostFidoVirtualDevice {
 
         let newDelegate = GhostFidoVirtualDeviceDelegate(outputReports: outputReports)
         await newDevice.activate(delegate: newDelegate)
+        guard newDevice.hidDevice != nil else {
+            throw HIDDeviceError.notReady
+        }
         device = newDevice
         delegate = newDelegate
         outputReports.activate()
