@@ -1481,7 +1481,7 @@ CTAP2 입력 CBOR는 definite-length 값만 허용하며 기본 16 depth, 128 co
 
 `GetInfoProfile`은 versions, AAGUID, options, max message size와 PIN/UV protocol을 명시적으로 주입해야만 응답을 직렬화한다. 기본 profile은 제공하지 않아 미완성 authenticator가 기능을 과장하지 않는다. [`docs/ctap2-getinfo.md`](../docs/ctap2-getinfo.md)
 
-`GetAssertionRequest`는 CBOR 필수 필드, 32-byte `clientDataHash`, optional `public-key` allow-list descriptor를 검증하고 CTAP2 status를 제공한다. credential 검색, 사용자 승인, 서명과 assertion 응답은 별도 handler 단계에서 수행한다. [`docs/ctap2-getassertion.md`](../docs/ctap2-getassertion.md)
+`GetAssertionRequest`는 CBOR 필수 필드, 32-byte `clientDataHash`, optional `public-key` allow-list descriptor를 검증한다. RP ID의 SHA-256 hash를 사용해 allow-list 또는 discoverable credential을 RP별로 조회하며, 사용자 승인·서명·assertion 응답은 별도 handler 단계에서 수행한다. [`docs/ctap2-getassertion.md`](../docs/ctap2-getassertion.md)
 
 Credential domain은 private key bytes 대신 opaque key handle만 보관하고, 모든 allow-list/discoverable 조회를 RP ID hash로 격리한다. 중복 credential ID와 빈 metadata는 등록 전에 거부한다. [`docs/credential-domain.md`](../docs/credential-domain.md)
 

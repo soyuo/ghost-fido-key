@@ -1,8 +1,12 @@
 //! Minimal CTAP2 command and status boundary.
 
-use crate::cbor::{CborError, CborValue, decode, encode};
+use crate::{
+    cbor::{CborError, CborValue, decode, encode},
+    credentials::{CredentialRecord, CredentialStore, RpIdHash},
+};
 
 use core::fmt;
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -197,6 +201,16 @@ impl GetAssertionRequest {
             client_data_hash: client_data_hash.ok_or(GetAssertionError::MissingParameter(2))?,
             allow_list,
         })
+    }
+
+    #[must_use]
+    pub fn rp_id_hash(&self) -> RpIdHash {
+        Sha256::digest(self.rp_id.as_bytes()).into()
+    }
+
+    #[must_use]
+    pub fn find_credentials<'a>(&self, store: &'a CredentialStore) -> Vec<&'a CredentialRecord> {
+        store.find_for_assertion(self.rp_id_hash(), self.allow_list.as_deref())
     }
 }
 

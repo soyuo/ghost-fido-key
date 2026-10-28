@@ -93,6 +93,25 @@ impl CredentialStore {
             .filter(|record| record.rp_id_hash == rp_id_hash && record.discoverable)
             .collect()
     }
+
+    /// Selects assertion credentials without disclosing non-discoverable ones.
+    #[must_use]
+    pub fn find_for_assertion(
+        &self,
+        rp_id_hash: RpIdHash,
+        allow_list: Option<&[Vec<u8>]>,
+    ) -> Vec<&CredentialRecord> {
+        self.records
+            .values()
+            .filter(|record| {
+                record.rp_id_hash == rp_id_hash
+                    && match allow_list {
+                        Some(ids) => ids.iter().any(|id| id.as_slice() == record.id.as_bytes()),
+                        None => record.discoverable,
+                    }
+            })
+            .collect()
+    }
     pub fn increment_sign_count(&mut self, id: &CredentialId) -> Result<u32, CredentialError> {
         let record = self.records.get_mut(id).ok_or(CredentialError::NotFound)?;
         record.sign_count = record
