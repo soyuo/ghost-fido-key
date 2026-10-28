@@ -163,6 +163,11 @@ impl<'a> AuthenticatorService<'a> {
     pub(crate) fn clear_channel(&mut self, channel: u32) {
         self.assertion_continuations.remove(&channel);
     }
+
+    /// Clears per-channel state after the transport reports cancellation or expiry.
+    pub fn cancel_channel(&mut self, channel: u32) {
+        self.clear_channel(channel);
+    }
 }
 
 fn protocol_error(status: Ctap2Status) -> Ctap2Response {

@@ -187,6 +187,17 @@ impl UserVerification for DesktopVerificationProvider {
             )),
         }
     }
+
+    fn cancel_pending(&self) {
+        let pending = match self.pending.lock() {
+            Ok(mut pending) => std::mem::take(&mut *pending),
+            Err(_) => return,
+        };
+        for (request_id, sender) in pending {
+            let _ = sender.send(VerificationDecision::Cancelled);
+            let _ = self.app.emit("approval-cancelled", request_id);
+        }
+    }
 }
 
 fn capability_label(state: CapabilityState) -> &'static str {

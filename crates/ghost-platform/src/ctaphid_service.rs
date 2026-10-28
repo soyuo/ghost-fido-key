@@ -2,14 +2,15 @@
 
 use std::time::{Duration, Instant};
 
-use ghost_fido_core::{CtapHidDispatch, CtapHidSession, FrameError, HID_REPORT_SIZE, SessionEvent};
-
-use crate::{AuthenticatorService, AuthenticatorServiceError};
+use crate::UserVerification;
+use ghost_fido_core::{
+    Ctap2Request, Ctap2Response, CtapHidDispatch, CtapHidErrorCode, CtapHidSession, FrameError,
+    HID_REPORT_SIZE, SessionEvent, encode_error,
+};
 
 #[derive(Debug)]
 pub enum AuthenticatorHidError {
     Framing(FrameError),
-    Service(AuthenticatorServiceError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,24 +19,30 @@ pub enum AuthenticatorHidEvent {
     Reports(Vec<[u8; HID_REPORT_SIZE]>),
     Cancelled(u32),
     Message(CtapHidDispatch),
+    Ctap2Request { channel: u32, request: Ctap2Request },
 }
 
-/// Routes complete CTAPHID events through one authenticator and its channels.
-pub struct AuthenticatorHidSession<'service, 'providers> {
+/// Owns CTAPHID transport state while leaving CTAP2 execution to its caller.
+///
+/// Separating request reception from execution lets the transport continue to
+/// process cancellation and expiry while a CTAP2 command awaits user approval.
+pub struct AuthenticatorHidSession<'verification> {
     hid: CtapHidSession,
-    service: &'service mut AuthenticatorService<'providers>,
+    verification: &'verification dyn UserVerification,
+    active_ctap2_channel: Option<u32>,
 }
 
-impl<'service, 'providers> AuthenticatorHidSession<'service, 'providers> {
+impl<'verification> AuthenticatorHidSession<'verification> {
     #[must_use]
     pub fn new(
-        service: &'service mut AuthenticatorService<'providers>,
+        verification: &'verification dyn UserVerification,
         channel_capacity: usize,
         channel_timeout: Duration,
     ) -> Self {
         Self {
             hid: CtapHidSession::new(channel_capacity, channel_timeout),
-            service,
+            verification,
+            active_ctap2_channel: None,
         }
     }
 
@@ -55,29 +62,45 @@ impl<'service, 'providers> AuthenticatorHidSession<'service, 'providers> {
             SessionEvent::Response(report) => Ok(AuthenticatorHidEvent::Reports(vec![report])),
             SessionEvent::Responses(reports) => Ok(AuthenticatorHidEvent::Reports(reports)),
             SessionEvent::Cancelled(channel) => {
-                self.service.clear_channel(channel);
+                if self.active_ctap2_channel == Some(channel) {
+                    self.verification.cancel_pending();
+                }
                 Ok(AuthenticatorHidEvent::Cancelled(channel))
             }
             SessionEvent::Message(message) => Ok(AuthenticatorHidEvent::Message(message)),
             SessionEvent::Ctap2Request { channel, request } => {
-                let response = self
-                    .service
-                    .handle_on_channel(channel, &request)
-                    .map_err(AuthenticatorHidError::Service)?;
-                let reports = self
-                    .hid
-                    .respond_ctap2_result(channel, &response)
-                    .map_err(AuthenticatorHidError::Framing)?;
-                Ok(AuthenticatorHidEvent::Reports(reports))
+                if self.active_ctap2_channel.is_some() {
+                    let report = encode_error(channel, CtapHidErrorCode::ChannelBusy)
+                        .map_err(AuthenticatorHidError::Framing)?;
+                    return Ok(AuthenticatorHidEvent::Reports(vec![report]));
+                }
+                self.active_ctap2_channel = Some(channel);
+                Ok(AuthenticatorHidEvent::Ctap2Request { channel, request })
             }
         }
+    }
+
+    /// Frames a completed authenticator response on its still-active channel.
+    pub fn respond_ctap2(
+        &mut self,
+        channel: u32,
+        response: &Ctap2Response,
+    ) -> Result<Vec<[u8; HID_REPORT_SIZE]>, FrameError> {
+        if self.active_ctap2_channel == Some(channel) {
+            self.active_ctap2_channel = None;
+        }
+        self.hid.respond_ctap2_result(channel, response)
     }
 
     /// Releases protocol and assertion state for channels whose CTAPHID lease expired.
     pub fn expire(&mut self, now: Instant) -> Vec<u32> {
         let expired = self.hid.expire(now);
-        for channel in &expired {
-            self.service.clear_channel(*channel);
+        if self
+            .active_ctap2_channel
+            .is_some_and(|channel| expired.contains(&channel))
+        {
+            self.verification.cancel_pending();
+            self.active_ctap2_channel = None;
         }
         expired
     }
