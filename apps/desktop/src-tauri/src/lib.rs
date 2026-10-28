@@ -1,8 +1,8 @@
 use ghost_fido_core::{CredentialProtector, CredentialStore, ProductInfo};
 use ghost_platform::{
-    CapabilityState, DeviceState, HostPlatform, PlatformError, PlatformErrorKind,
-    UnavailableBackend, UserVerification, VerificationAction, VerificationDecision,
-    VerificationRequest, VirtualHidBackend,
+    CapabilityState, CapabilityStatus, DeviceState, HostPlatform, PlatformError, PlatformErrorKind,
+    UserVerification, VerificationAction, VerificationDecision, VerificationRequest,
+    VirtualHidBackend,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -18,6 +18,7 @@ struct DesktopState {
     credential_store: Mutex<Option<CredentialStore>>,
     credential_store_status: String,
     verification: DesktopVerificationProvider,
+    virtual_hid: Mutex<Box<dyn VirtualHidBackend>>,
 }
 
 struct DesktopVerificationProvider {
@@ -203,13 +204,25 @@ fn capability_label(state: CapabilityState) -> &'static str {
 #[tauri::command]
 fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
     let product = ProductInfo::current();
-    let backend = UnavailableBackend;
-    let capabilities = backend.capabilities();
     let host_platform = match HostPlatform::current() {
         HostPlatform::Windows => "Windows",
         HostPlatform::MacOs => "macOS",
         HostPlatform::Linux => "Linux",
         HostPlatform::Other => "Unsupported operating system",
+    };
+
+    let (virtual_hid, device_attached) = match state.virtual_hid.lock() {
+        Ok(backend) => (
+            backend.availability(),
+            backend.state() == DeviceState::Attached,
+        ),
+        Err(_) => (
+            CapabilityStatus::unavailable(
+                CapabilityState::Error,
+                "Virtual HID adapter state is unavailable.",
+            ),
+            false,
+        ),
     };
 
     let (credential_store_available, credential_store_status) = match state.credential_store.lock()
@@ -222,16 +235,15 @@ fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
         product_name: product.name,
         product_version: product.version,
         host_platform,
-        virtual_hid_available: capabilities.virtual_hid.state == CapabilityState::Available,
-        device_attached: backend.state() == DeviceState::Attached,
-        key_storage_status: capability_label(capabilities.protected_key_storage.state),
-        user_verification_status: capability_label(capabilities.user_verification.state),
+        virtual_hid_available: virtual_hid.state == CapabilityState::Available,
+        device_attached,
+        key_storage_status: capability_label(CapabilityState::NotImplemented),
+        user_verification_status: capability_label(CapabilityState::NotImplemented),
         credential_store_available,
         credential_store_status,
-        status_message: capabilities
-            .virtual_hid
+        status_message: virtual_hid
             .detail
-            .unwrap_or_else(|| format!("Virtual FIDO HID is unavailable on {host_platform}.")),
+            .unwrap_or_else(|| format!("Virtual FIDO HID is available on {host_platform}.")),
     }
 }
 
@@ -256,6 +268,7 @@ pub fn run() {
                     app: app.handle().clone(),
                     pending: Mutex::new(HashMap::new()),
                 },
+                virtual_hid: Mutex::new(ghost_platform::host_virtual_hid_backend()),
             });
             Ok(())
         })
