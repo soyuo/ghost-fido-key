@@ -30,6 +30,13 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/lib/udev/rules.d/70-ghost-fido-key.rules": "../../../platforms/linux/udev/70-ghost-fido-key.rules"
+        }
+      }
+    }
   }
 }

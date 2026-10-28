@@ -71,3 +71,18 @@ jobs:
 
       - name: Build frontend
         run: npm --prefix apps/desktop run build
+
+      - name: Build Linux Debian package
+        if: runner.os == 'Linux'
+        run: npm --prefix apps/desktop run tauri -- build --bundles deb
+
+      - name: Verify Debian package includes the UHID rule
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          package="$(find target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit)"
+          if [[ -z "$package" ]]; then
+            echo "Tauri did not produce a Debian package" >&2
+            exit 1
+          fi
+          dpkg-deb --contents "$package" | grep -F '/usr/lib/udev/rules.d/70-ghost-fido-key.rules'
