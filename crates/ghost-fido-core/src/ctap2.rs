@@ -48,9 +48,9 @@ pub enum Ctap2Status {
     CborUnexpectedType = 0x11,
     InvalidCbor = 0x12,
     MissingParameter = 0x14,
-    UnsupportedOption = 0x2e,
-    NoCredentials = 0x31,
-    UserActionPending = 0x32,
+    UnsupportedOption = 0x2b,
+    NoCredentials = 0x2e,
+    UserActionPending = 0x23,
     RequestTooLarge = 0x39,
 }
 
