@@ -27,9 +27,19 @@ included only when a discoverable credential's user handle is supplied. The
 encoder rejects empty or oversized credential IDs and signatures. It does not
 perform approval, signing, or selection among multiple eligible credentials.
 
-`execute_get_assertion` currently supports exactly one matching credential. It
-rejects requests that disable UP or require unavailable UV, requests explicit
-local approval before signing, hashes `authenticatorData || clientDataHash`,
-converts the provider's fixed-width ES256 signature to DER, and commits the next
-signature counter before returning the encoded response. Ambiguous matches fail
-closed until a credential chooser and GetNextAssertion flow are implemented.
+`execute_get_assertion` returns discoverable credentials newest first when the
+allow-list is absent. For multiple matches, the first response includes
+`numberOfCredentials`. The service retains remaining credential IDs and the
+request in a continuation scoped to the CTAPHID channel; an empty-payload
+`GetNextAssertion` signs and returns the next credential without asking for
+approval again. Continuations expire 30 seconds after the initial response,
+and missing, expired, or exhausted sequences return `NotAllowed`. Any other
+command on that channel clears its continuation. Allow-list requests select a
+matching credential without a continuation or `numberOfCredentials`.
+
+Each response commits the next signature counter before it is returned. The
+user entity is limited to the user handle when user verification was not
+performed; stored name and display-name hints are not returned. The service's
+`handle_on_channel` entry point must receive the originating CTAPHID channel for
+independent concurrent continuation sequences. The legacy `handle` entry point
+uses one reserved channel for callers without transport channel context.
