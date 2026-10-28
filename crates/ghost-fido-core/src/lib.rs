@@ -3,6 +3,13 @@
 //! Protocol handling, credentials, cryptography, and persistence are not
 //! implemented yet. Keep operating-system APIs out of this crate.
 
+pub mod ctaphid;
+
+pub use ctaphid::{
+    CtapHidAssembler, CtapHidCommand, CtapHidMessage, FrameError, encode_continuations,
+    encode_initialization,
+};
+
 /// Protocol families the authenticator is intended to expose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
