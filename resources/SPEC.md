@@ -88,6 +88,7 @@ macOS entitlement와 가상 HID 공개 API의 실제 배포 가능성을 검증�
 - [FIDO CTAP HID descriptor 및 discovery](https://fidoalliance.org/specs/fido-v2.2-rd-20241003/fido-client-to-authenticator-protocol-v2.2-rd-20241003.pdf)
 - [Rust uhid-virt wrapper](https://docs.rs/uhid-virt/latest/uhid_virt/)
 - [Windows UDE Client Driver](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/writing-a-ude-client-driver)
+- [Windows UDE driver boundary scaffold](../platforms/windows/ude/README.md)
 - [Apple CoreHID HIDVirtualDevice](https://developer.apple.com/documentation/corehid/hidvirtualdevice)
 - [Apple 가상 HID entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.hid.virtual.device)
 - [Windows UDE 드라이버 개요](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/developing-windows-drivers-for-emulated-usb-host-controllers-and-devices)

@@ -12,6 +12,12 @@ mod linux_uhid;
 #[cfg(target_os = "linux")]
 pub use linux_uhid::LinuxUhidBackend;
 
+#[cfg(target_os = "windows")]
+mod windows_ude;
+
+#[cfg(target_os = "windows")]
+pub use windows_ude::WindowsUdeBackend;
+
 /// Host operating system selected at compile time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostPlatform {
