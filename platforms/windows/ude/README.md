@@ -43,13 +43,16 @@ mirrors its fixed-width little-endian fields in `windows_ude.rs`.
   newer minor version after checking the declared response size. A different
   major version, truncated or oversized response, wrong signature, nonzero
   reserved fields, or mismatched report sizes is unavailable.
-- The current native driver does not implement the IOCTL handler, and the Rust
-  adapter does not implement attach, detach, or report IO. A successful future
-  handshake alone therefore cannot mark the backend `Available`.
+- The native driver exposes `\\.\GhostFidoUde` with a read-only status ACL. It
+  reports only `CONTROLLER_READY`; FIDO profile, attach/detach, and report I/O
+  remain unimplemented. The Rust adapter requires all four capabilities and
+  also lacks attach, detach, and report operations, so this handshake cannot
+  mark the backend `Available`.
 
-The IOCTL grants read access only. The eventual control-device interface must
-also apply an explicit device ACL and validate every operation in kernel mode;
-the handshake is not an authorization boundary for report traffic.
+The IOCTL grants read access only. The controller device ACL allows status reads
+and grants full access only to Local System and Administrators. Every future
+operation must validate its inputs in kernel mode; the handshake is not an
+authorization boundary for report traffic.
 
 ## Build and signing gates
 

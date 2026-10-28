@@ -23,6 +23,7 @@ EVT_UDECX_USB_DEVICE_D0_ENTRY GhostFidoDeviceD0Entry;
 EVT_UDECX_USB_DEVICE_D0_EXIT GhostFidoDeviceD0Exit;
 EVT_UDECX_USB_ENDPOINT_RESET GhostFidoResetEndpoint;
 EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL GhostFidoEndpointIoctl;
+EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL GhostFidoEvtIoDeviceControl;
 
 // FIDO Alliance usage page 0xF1D0, CTAPHID usage 0x01, 64-byte IN/OUT.
 static const UCHAR GhostFidoReportDescriptor[] = {
@@ -49,9 +50,26 @@ GhostFidoEvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
     NTSTATUS status;
     WDFDEVICE device;
     WDF_OBJECT_ATTRIBUTES attributes;
+    WDF_IO_QUEUE_CONFIG queueConfig;
     UDECX_WDF_DEVICE_CONFIG controllerConfig;
+    UNICODE_STRING deviceName;
+    UNICODE_STRING symbolicLinkName;
+    UNICODE_STRING securityDescriptor;
 
     UNREFERENCED_PARAMETER(Driver);
+
+    RtlInitUnicodeString(&deviceName, L"\\Device\\GhostFidoUde");
+    status = WdfDeviceInitAssignName(DeviceInit, &deviceName);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    RtlInitUnicodeString(&securityDescriptor,
+                         L"D:P(A;;GR;;;WD)(A;;GA;;;SY)(A;;GA;;;BA)");
+    status = WdfDeviceInitAssignSDDLString(DeviceInit, &securityDescriptor);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
 
     status = UdecxInitializeWdfDeviceInit(DeviceInit);
     if (!NT_SUCCESS(status)) {
@@ -64,9 +82,24 @@ GhostFidoEvtDeviceAdd(_In_ WDFDRIVER Driver, _Inout_ PWDFDEVICE_INIT DeviceInit)
         return status;
     }
 
+    RtlInitUnicodeString(&symbolicLinkName, L"\\DosDevices\\GhostFidoUde");
+    status = WdfDeviceCreateSymbolicLink(device, &symbolicLinkName);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
     UDECX_WDF_DEVICE_CONFIG_INIT(&controllerConfig,
                                  GhostFidoQueryUsbCapability);
     status = UdecxWdfDeviceAddUsbDeviceEmulation(device, &controllerConfig);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    WDF_IO_QUEUE_CONFIG_INIT_DEFAULT_QUEUE(&queueConfig,
+                                          WdfIoQueueDispatchSequential);
+    queueConfig.EvtIoDeviceControl = GhostFidoEvtIoDeviceControl;
+    status = WdfIoQueueCreate(device, &queueConfig,
+                              WDF_NO_OBJECT_ATTRIBUTES, WDF_NO_HANDLE);
     if (!NT_SUCCESS(status)) {
         return status;
     }
@@ -87,6 +120,74 @@ NTSTATUS GhostFidoQueryUsbCapability(_In_ WDFDEVICE Device,
     UNREFERENCED_PARAMETER(OutputBuffer);
     *ResultLength = 0;
     return STATUS_NOT_SUPPORTED;
+}
+
+VOID GhostFidoEvtIoDeviceControl(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request,
+                                 _In_ size_t OutputBufferLength,
+                                 _In_ size_t InputBufferLength,
+                                 _In_ ULONG IoControlCode)
+{
+    NTSTATUS status;
+    WDFDEVICE device;
+    GHOST_FIDO_UDE_STATUS_REQUEST *statusRequest;
+    GHOST_FIDO_UDE_STATUS_RESPONSE *statusResponse;
+
+    device = WdfIoQueueGetDevice(Queue);
+    if (UdecxWdfDeviceTryHandleUserIoctl(device, Request)) {
+        return;
+    }
+
+    if (IoControlCode != IOCTL_GHOST_FIDO_UDE_QUERY_STATUS) {
+        WdfRequestComplete(Request, STATUS_INVALID_DEVICE_REQUEST);
+        return;
+    }
+
+    if (InputBufferLength < sizeof(*statusRequest) ||
+        OutputBufferLength < sizeof(*statusResponse)) {
+        WdfRequestComplete(Request, STATUS_BUFFER_TOO_SMALL);
+        return;
+    }
+    if (InputBufferLength != sizeof(*statusRequest)) {
+        WdfRequestComplete(Request, STATUS_INVALID_PARAMETER);
+        return;
+    }
+
+    status = WdfRequestRetrieveInputBuffer(Request, sizeof(*statusRequest),
+                                          (PVOID *)&statusRequest, NULL);
+    if (!NT_SUCCESS(status)) {
+        WdfRequestComplete(Request, status);
+        return;
+    }
+
+    if (statusRequest->Size != (ULONG)sizeof(*statusRequest) ||
+        statusRequest->Reserved != 0) {
+        WdfRequestComplete(Request, STATUS_INVALID_PARAMETER);
+        return;
+    }
+    if (statusRequest->ProtocolMajor != GHOST_FIDO_UDE_PROTOCOL_MAJOR ||
+        statusRequest->ProtocolMinor > GHOST_FIDO_UDE_PROTOCOL_MINOR) {
+        WdfRequestComplete(Request, STATUS_REVISION_MISMATCH);
+        return;
+    }
+
+    status = WdfRequestRetrieveOutputBuffer(Request, sizeof(*statusResponse),
+                                            (PVOID *)&statusResponse, NULL);
+    if (!NT_SUCCESS(status)) {
+        WdfRequestComplete(Request, status);
+        return;
+    }
+
+    RtlZeroMemory(statusResponse, sizeof(*statusResponse));
+    statusResponse->Size = (ULONG)sizeof(*statusResponse);
+    statusResponse->Signature = GHOST_FIDO_UDE_STATUS_SIGNATURE;
+    statusResponse->ProtocolMajor = GHOST_FIDO_UDE_PROTOCOL_MAJOR;
+    statusResponse->ProtocolMinor = GHOST_FIDO_UDE_PROTOCOL_MINOR;
+    statusResponse->Capabilities = GHOST_FIDO_UDE_CAP_CONTROLLER_READY;
+    statusResponse->InputReportSize = GHOST_FIDO_REPORT_SIZE;
+    statusResponse->OutputReportSize = GHOST_FIDO_REPORT_SIZE;
+
+    WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS,
+                                      sizeof(*statusResponse));
 }
 
 NTSTATUS GhostFidoAddDefaultEndpoint(_In_ UDECXUSBDEVICE UsbDevice,
