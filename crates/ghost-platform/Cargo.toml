@@ -18,5 +18,5 @@ libc = "0.2"
 uhid-virt = "0.0.8"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.62.2", features = ["Win32_Security_Cryptography"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 uuid = { version = "1", features = ["v4"] }

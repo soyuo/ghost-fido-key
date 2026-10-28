@@ -1491,7 +1491,7 @@ MakeCredential 성공 응답은 `fmt: none` attestation object와 RP hash·UP/AT
 
 MakeCredential 실행은 알고리즘·옵션 검사, RP-scoped excludeList presence check, 명시적 등록 승인, 보호 키 생성, metadata 기록과 응답 encoding을 연결한다. 등록 실패 뒤 생성한 키는 제거하며 credential debug 출력에서 ID·RP hash·user handle·key reference를 숨긴다. 저장은 아직 앱 실행 중 메모리만 사용한다. [`docs/ctap2-makecredential.md`](../docs/ctap2-makecredential.md)
 
-Credential domain은 private key bytes 대신 opaque key handle만 보관하고, 모든 allow-list/discoverable 조회를 RP ID hash로 격리한다. 중복 credential ID와 빈 metadata는 등록 전에 거부한다. [`docs/credential-domain.md`](../docs/credential-domain.md)
+Credential domain은 private key bytes 대신 opaque key handle만 보관하고, 모든 allow-list/discoverable 조회를 RP ID hash로 격리한다. 중복 credential ID와 빈 metadata는 등록 전에 거부한다. Windows credential metadata는 current-user DPAPI와 schema별 associated data로 보호한다. macOS/Linux protector와 desktop의 persistent-store 초기화는 후속 작업이다. [`docs/credential-domain.md`](../docs/credential-domain.md), [`docs/windows-credential-protection.md`](../docs/windows-credential-protection.md)
 
 프로그램은 지원 OS에서 가상 HID 장치의 연결과 분리를 제어하고, 사용자가 별도의 하드웨어 보안 키 없이 표준 WebAuthn 인증을 시도할 수 있는 환경을 제공하는 것을 목표로 한다. 각 OS와 브라우저 조합은 실제 검증을 통과한 경우에만 지원한다.
 
