@@ -398,6 +398,7 @@ pub struct VerificationRequest {
 pub enum VerificationDecision {
     Approved,
     Rejected,
+    Cancelled,
 }
 
 /// Local user-presence or verification provider.
@@ -407,6 +408,9 @@ pub trait UserVerification: Send + Sync {
         request: &VerificationRequest,
         timeout: Duration,
     ) -> Result<VerificationDecision, PlatformError>;
+
+    /// Cancels the active user-presence request, if one is waiting.
+    fn cancel_pending(&self) {}
 }
 
 /// Application lifecycle hooks for safely detaching platform resources.

@@ -90,6 +90,11 @@ pub fn execute_get_assertion(
                 Ctap2Status::OperationDenied,
             )));
         }
+        Ok(VerificationDecision::Cancelled) => {
+            return Ok(single_response(protocol_error(
+                Ctap2Status::KeepaliveCancel,
+            )));
+        }
         Err(error) if error.kind == PlatformErrorKind::Timeout => {
             return Ok(single_response(protocol_error(
                 Ctap2Status::UserActionTimeout,

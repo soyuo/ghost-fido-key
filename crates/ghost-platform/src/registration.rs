@@ -71,6 +71,9 @@ pub fn register_make_credential(
         Ok(VerificationDecision::Rejected) => {
             return Ok(protocol_error(Ctap2Status::OperationDenied));
         }
+        Ok(VerificationDecision::Cancelled) => {
+            return Ok(protocol_error(Ctap2Status::KeepaliveCancel));
+        }
         Err(error) if error.kind == PlatformErrorKind::Timeout => {
             return Ok(protocol_error(Ctap2Status::UserActionTimeout));
         }
@@ -196,6 +199,9 @@ pub fn check_credential_exclusion(
 
     match verification.request_confirmation(&verification_request, timeout) {
         Ok(VerificationDecision::Approved | VerificationDecision::Rejected) => {}
+        Ok(VerificationDecision::Cancelled) => {
+            return Ok(Some(protocol_error(Ctap2Status::KeepaliveCancel)));
+        }
         Err(error) if error.kind == PlatformErrorKind::Timeout => {}
         Err(error) => return Err(error),
     }
