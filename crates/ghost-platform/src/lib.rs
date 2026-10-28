@@ -229,6 +229,28 @@ pub enum KeyCreationPolicy {
     SoftwareKeyAfterExplicitConsent,
 }
 
+/// One-time proof that a user accepted the software-key security warning.
+/// The value cannot be constructed by platform code without calling `confirm`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SoftwareKeyConsent(ConsentMarker);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConsentMarker {
+    ExplicitlyAccepted,
+}
+
+impl SoftwareKeyConsent {
+    /// Create consent after the native approval flow confirms user acceptance.
+    #[must_use]
+    pub const fn confirm_user_acceptance(accepted: bool) -> Option<Self> {
+        if accepted {
+            Some(Self(ConsentMarker::ExplicitlyAccepted))
+        } else {
+            None
+        }
+    }
+}
+
 /// Opaque identifier for a key held by a provider. It never contains key bytes.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct KeyReference(String);
@@ -257,6 +279,7 @@ pub trait KeyStore: Send + Sync {
         &self,
         algorithm: SigningAlgorithm,
         policy: KeyCreationPolicy,
+        consent: Option<SoftwareKeyConsent>,
     ) -> Result<(KeyReference, KeyMetadata), PlatformError>;
 
     /// Signs a precomputed digest. For ES256 the input must be a 32-byte SHA-256 digest.
@@ -378,6 +401,7 @@ impl KeyStore for UnavailableBackend {
         &self,
         _algorithm: SigningAlgorithm,
         _policy: KeyCreationPolicy,
+        _consent: Option<SoftwareKeyConsent>,
     ) -> Result<(KeyReference, KeyMetadata), PlatformError> {
         Err(PlatformError::new(
             PlatformErrorKind::KeyStoreUnavailable,

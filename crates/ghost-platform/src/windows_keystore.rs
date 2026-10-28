@@ -3,7 +3,7 @@
 
 use crate::{
     HostPlatform, KeyCreationPolicy, KeyMetadata, KeyProtection, KeyReference, KeyStore,
-    PlatformError, PlatformErrorKind, SigningAlgorithm,
+    PlatformError, PlatformErrorKind, SigningAlgorithm, SoftwareKeyConsent,
 };
 
 use std::os::windows::ffi::OsStrExt;
@@ -75,8 +75,12 @@ impl KeyStore for WindowsKeyStore {
         &self,
         algorithm: SigningAlgorithm,
         policy: KeyCreationPolicy,
+        consent: Option<SoftwareKeyConsent>,
     ) -> Result<(KeyReference, KeyMetadata), PlatformError> {
         if policy != KeyCreationPolicy::PlatformProtectedOnly {
+            if consent.is_none() {
+                return Err(Self::fail("explicit software-key consent is required"));
+            }
             return Err(Self::fail(
                 "software provider is not implemented; no fallback was performed",
             ));
