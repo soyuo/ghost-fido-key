@@ -56,8 +56,10 @@ pub enum Ctap2Status {
     MissingParameter = 0x14,
     CredentialExcluded = 0x19,
     UnsupportedAlgorithm = 0x26,
+    OperationDenied = 0x27,
     UnsupportedOption = 0x2b,
     NoCredentials = 0x2e,
+    UserActionTimeout = 0x2f,
     UserActionPending = 0x23,
     RequestTooLarge = 0x39,
 }

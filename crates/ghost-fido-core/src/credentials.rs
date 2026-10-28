@@ -1,6 +1,6 @@
 //! Credential metadata and RP-isolated selection policy.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fmt};
 
 pub type RpIdHash = [u8; 32];
 
@@ -11,7 +11,20 @@ pub struct Es256PublicKey {
     pub y: [u8; 32],
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialKeyProtection {
+    HardwareBacked,
+    OsProtected,
+    Software,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CredentialKeyMetadata {
+    pub protection: CredentialKeyProtection,
+    pub exportable: bool,
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CredentialId(Vec<u8>);
 impl CredentialId {
     pub fn new(bytes: Vec<u8>) -> Result<Self, CredentialError> {
@@ -27,7 +40,13 @@ impl CredentialId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl fmt::Debug for CredentialId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CredentialId([REDACTED])")
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct KeyHandle(Vec<u8>);
 impl KeyHandle {
     pub fn new(bytes: Vec<u8>) -> Result<Self, CredentialError> {
@@ -43,14 +62,36 @@ impl KeyHandle {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl fmt::Debug for KeyHandle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("KeyHandle([REDACTED])")
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
 pub struct CredentialRecord {
     pub id: CredentialId,
     pub rp_id_hash: RpIdHash,
     pub user_handle: Vec<u8>,
     pub key_handle: KeyHandle,
+    pub key_metadata: CredentialKeyMetadata,
     pub discoverable: bool,
     pub sign_count: u32,
+}
+
+impl fmt::Debug for CredentialRecord {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CredentialRecord")
+            .field("id", &self.id)
+            .field("rp_id_hash", &"[REDACTED]")
+            .field("user_handle", &"[REDACTED]")
+            .field("key_handle", &self.key_handle)
+            .field("key_metadata", &self.key_metadata)
+            .field("discoverable", &self.discoverable)
+            .field("sign_count", &self.sign_count)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
