@@ -244,6 +244,34 @@ pub trait VirtualHidBackend: Send {
     fn receive_output_report(&mut self, timeout: Duration) -> Result<Vec<u8>, PlatformError>;
 }
 
+/// Construct the virtual HID adapter selected for the current target.
+///
+/// Each implementation reports observed readiness and fails closed until its
+/// native transport is ready. Unsupported targets receive the unavailable
+/// placeholder rather than an adapter inferred from their operating system.
+#[must_use]
+pub fn host_virtual_hid_backend() -> Box<dyn VirtualHidBackend> {
+    #[cfg(target_os = "linux")]
+    {
+        return Box::new(LinuxUhidBackend::new());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return Box::new(WindowsUdeBackend::new());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        return Box::new(MacOsCoreHidBackend::new());
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    {
+        Box::new(UnavailableBackend)
+    }
+}
+
 /// Cryptographic algorithm supported by the first FIDO credential profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SigningAlgorithm {
