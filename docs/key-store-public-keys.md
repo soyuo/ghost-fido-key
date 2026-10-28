@@ -12,5 +12,15 @@ coordinate size before returning the point. CNG stores X and Y as big-endian
 unsigned values in the public blob, as described by Microsoft's
 [`BCRYPT_ECCKEY_BLOB` documentation](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/ns-bcrypt-bcrypt_ecckey_blob).
 
-macOS and unavailable providers still fail closed until their native key
-bridges exist. No private-key blob export or software-key fallback is added.
+The macOS provider creates a persistent P-256 key in the Data Protection
+Keychain. `PlatformProtectedOnly` requests a Secure Enclave token and fails
+closed if the enclave cannot create the key. Software-backed Security.framework
+keys require both the software-key policy and its explicit consent token; their
+metadata reports `Software` and `exportable: true`. Private keys are never
+exported by the provider. Public coordinates are validated from the uncompressed
+X9.63 public point, while signatures are converted from strict ASN.1 DER to the
+64-byte P1363 form used by the authenticator.
+
+Secure Enclave key access depends on the Data Protection Keychain and the
+application's signing identity and entitlements. A database backup does not
+include the key. See Apple's [TN3137 on macOS Keychain APIs](https://developer.apple.com/documentation/technotes/tn3137-on-mac-keychains).
