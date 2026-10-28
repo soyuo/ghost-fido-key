@@ -87,7 +87,7 @@ jobs:
           fi
           contents="$(dpkg-deb --contents "$package")"
           printf '%s\n' "$contents"
-          if ! grep -Fq '/usr/lib/udev/rules.d/70-ghost-fido-key.rules' <<< "$contents"; then
+          if ! grep -Fq 'usr/lib/udev/rules.d/70-ghost-fido-key.rules' <<< "$contents"; then
             echo "The Debian package is missing the UHID udev rule" >&2
             exit 1
           fi
