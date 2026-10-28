@@ -31,3 +31,14 @@ authenticator data contains the RP hash, UP/AT flags, a zero sign counter, the
 AAGUID, credential ID, and ES256 COSE public key. It can set UV only when the
 caller has established user verification. IDs must contain 1–1023 bytes. This
 response is not an attestation of hardware provenance.
+
+`ghost-platform::register_make_credential` checks for an offered ES256
+algorithm, runs the RP-scoped exclusion check, waits for explicit local
+registration approval, then creates the protected key and stores its opaque
+reference and protection metadata. It returns protocol errors for unsupported
+options, user rejection, and timeout. If record insertion fails after key
+creation, it deletes the new key. The caller owns the in-memory credential
+store; persistence is still required before credentials survive app restart.
+
+Credential IDs, RP hashes, user handles, and provider key references are
+redacted from credential `Debug` output.

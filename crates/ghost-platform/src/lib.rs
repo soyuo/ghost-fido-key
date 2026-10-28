@@ -15,7 +15,9 @@ mod registration;
 #[cfg(target_os = "linux")]
 pub use linux_uhid::LinuxUhidBackend;
 
-pub use registration::check_credential_exclusion;
+pub use registration::{
+    MakeCredentialExecutionError, check_credential_exclusion, register_make_credential,
+};
 
 #[cfg(target_os = "windows")]
 mod windows_ude;

@@ -13,8 +13,8 @@ pub use cbor::{
     encode as encode_cbor,
 };
 pub use credentials::{
-    CredentialError, CredentialId, CredentialRecord, CredentialStore, Es256PublicKey, KeyHandle,
-    RpIdHash,
+    CredentialError, CredentialId, CredentialKeyMetadata, CredentialKeyProtection,
+    CredentialRecord, CredentialStore, Es256PublicKey, KeyHandle, RpIdHash,
 };
 pub use ctap2::{
     Ctap2Command, Ctap2Error, Ctap2Handler, Ctap2Request, Ctap2Response, Ctap2Status,
