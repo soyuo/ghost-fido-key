@@ -468,9 +468,6 @@ impl VirtualHidBackend for WindowsUdeBackend {
     }
 
     fn detach(&mut self) -> Result<(), PlatformError> {
-        if self.state == DeviceState::Detached {
-            return Ok(());
-        }
         self.state = DeviceState::Stopping;
         match self.send_operation(IOCTL_GHOST_FIDO_UDE_DETACH) {
             Ok(()) => {
