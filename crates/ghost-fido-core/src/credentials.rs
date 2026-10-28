@@ -4,6 +4,13 @@ use std::collections::BTreeMap;
 
 pub type RpIdHash = [u8; 32];
 
+/// Non-secret P-256 public key coordinates for an ES256 credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Es256PublicKey {
+    pub x: [u8; 32],
+    pub y: [u8; 32],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CredentialId(Vec<u8>);
 impl CredentialId {

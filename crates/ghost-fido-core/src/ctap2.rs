@@ -2,7 +2,7 @@
 
 use crate::{
     cbor::{CborError, CborValue, decode, encode},
-    credentials::{CredentialRecord, CredentialStore, RpIdHash},
+    credentials::{CredentialRecord, CredentialStore, Es256PublicKey, RpIdHash},
 };
 
 use core::fmt;
@@ -110,6 +110,23 @@ pub fn encode_response(status: Ctap2Status, payload: &[u8]) -> Vec<u8> {
     response.push(status.wire());
     response.extend_from_slice(payload);
     response
+}
+
+#[must_use]
+pub fn encode_es256_cose_public_key(public_key: &Es256PublicKey) -> Vec<u8> {
+    encode(&CborValue::Map(vec![
+        (CborValue::Unsigned(1), CborValue::Unsigned(2)),
+        (CborValue::Unsigned(3), CborValue::Negative(-7)),
+        (CborValue::Negative(-1), CborValue::Unsigned(1)),
+        (
+            CborValue::Negative(-2),
+            CborValue::Bytes(public_key.x.to_vec()),
+        ),
+        (
+            CborValue::Negative(-3),
+            CborValue::Bytes(public_key.y.to_vec()),
+        ),
+    ]))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

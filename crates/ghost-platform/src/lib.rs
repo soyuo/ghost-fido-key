@@ -4,6 +4,7 @@
 //! traits and report observed capabilities instead of inferring them from the
 //! host operating-system name.
 
+use ghost_fido_core::Es256PublicKey;
 use std::{fmt, time::Duration};
 
 #[cfg(target_os = "linux")]
@@ -225,6 +226,14 @@ pub struct KeyMetadata {
     pub exportable: bool,
 }
 
+/// Opaque private-key reference and non-secret public material from key creation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatedSigningKey {
+    pub reference: KeyReference,
+    pub metadata: KeyMetadata,
+    pub public_key: Es256PublicKey,
+}
+
 /// Selects whether creation of a software-protected key was explicitly approved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyCreationPolicy {
@@ -277,14 +286,15 @@ impl fmt::Debug for KeyReference {
     }
 }
 
-/// Platform key storage contract. Implementations return signatures, never private key material.
+/// Platform key storage contract. Implementations return public material and
+/// signatures, never private key material.
 pub trait KeyStore: Send + Sync {
     fn create_signing_key(
         &self,
         algorithm: SigningAlgorithm,
         policy: KeyCreationPolicy,
         consent: Option<SoftwareKeyConsent>,
-    ) -> Result<(KeyReference, KeyMetadata), PlatformError>;
+    ) -> Result<CreatedSigningKey, PlatformError>;
 
     /// Signs a precomputed digest. For ES256 the input must be a 32-byte SHA-256 digest.
     fn sign(
@@ -407,7 +417,7 @@ impl KeyStore for UnavailableBackend {
         _algorithm: SigningAlgorithm,
         _policy: KeyCreationPolicy,
         _consent: Option<SoftwareKeyConsent>,
-    ) -> Result<(KeyReference, KeyMetadata), PlatformError> {
+    ) -> Result<CreatedSigningKey, PlatformError> {
         Err(PlatformError::new(
             PlatformErrorKind::KeyStoreUnavailable,
             HostPlatform::current(),

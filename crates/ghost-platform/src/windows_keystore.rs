@@ -2,17 +2,19 @@
 #![allow(unsafe_code)]
 
 use crate::{
-    HostPlatform, KeyCreationPolicy, KeyMetadata, KeyProtection, KeyReference, KeyStore,
-    PlatformError, PlatformErrorKind, SigningAlgorithm, SoftwareKeyConsent,
+    CreatedSigningKey, HostPlatform, KeyCreationPolicy, KeyMetadata, KeyProtection, KeyReference,
+    KeyStore, PlatformError, PlatformErrorKind, SigningAlgorithm, SoftwareKeyConsent,
 };
+use ghost_fido_core::Es256PublicKey;
 
 use std::os::windows::ffi::OsStrExt;
 
 use windows::{
     Win32::Security::Cryptography::{
-        CERT_KEY_SPEC, NCRYPT_ALLOW_SIGNING_FLAG, NCRYPT_ECC_CURVE_NAME_PROPERTY,
-        NCRYPT_ECDSA_ALGORITHM, NCRYPT_FLAGS, NCRYPT_KEY_HANDLE, NCRYPT_KEY_USAGE_PROPERTY,
-        NCRYPT_PROV_HANDLE, NCRYPT_SILENT_FLAG, NCryptCreatePersistedKey, NCryptDeleteKey,
+        BCRYPT_ECCPUBLIC_BLOB, BCRYPT_ECDSA_PUBLIC_P256_MAGIC, CERT_KEY_SPEC,
+        NCRYPT_ALLOW_SIGNING_FLAG, NCRYPT_ECC_CURVE_NAME_PROPERTY, NCRYPT_ECDSA_ALGORITHM,
+        NCRYPT_FLAGS, NCRYPT_KEY_HANDLE, NCRYPT_KEY_USAGE_PROPERTY, NCRYPT_PROV_HANDLE,
+        NCRYPT_SILENT_FLAG, NCryptCreatePersistedKey, NCryptDeleteKey, NCryptExportKey,
         NCryptFinalizeKey, NCryptFreeObject, NCryptOpenKey, NCryptOpenStorageProvider,
         NCryptSetProperty, NCryptSignHash,
     },
@@ -68,6 +70,56 @@ impl WindowsKeyStore {
             .chain(Some(0))
             .collect())
     }
+
+    fn export_public_key(key: NCRYPT_KEY_HANDLE) -> Result<Es256PublicKey, PlatformError> {
+        let mut required = 0;
+        // SAFETY: key is finalized and valid; a null output requests the required blob size.
+        unsafe {
+            NCryptExportKey(
+                key,
+                None,
+                BCRYPT_ECCPUBLIC_BLOB,
+                None,
+                None,
+                &mut required,
+                NCRYPT_FLAGS(0),
+            )
+        }
+        .map_err(Self::fail)?;
+        if required != 72 {
+            return Err(Self::fail("unexpected P-256 public-key blob size"));
+        }
+        let mut blob = vec![0; required as usize];
+        let mut written = 0;
+        // SAFETY: output buffer has the provider-reported size and `written` is writable.
+        unsafe {
+            NCryptExportKey(
+                key,
+                None,
+                BCRYPT_ECCPUBLIC_BLOB,
+                None,
+                Some(&mut blob),
+                &mut written,
+                NCRYPT_FLAGS(0),
+            )
+        }
+        .map_err(Self::fail)?;
+        if written != 72
+            || u32::from_le_bytes(blob[0..4].try_into().expect("four-byte header"))
+                != BCRYPT_ECDSA_PUBLIC_P256_MAGIC
+            || u32::from_le_bytes(blob[4..8].try_into().expect("four-byte header")) != 32
+        {
+            return Err(Self::fail("CNG did not return a P-256 ECDSA public key"));
+        }
+        Ok(Es256PublicKey {
+            x: blob[8..40]
+                .try_into()
+                .expect("validated 32-byte X coordinate"),
+            y: blob[40..72]
+                .try_into()
+                .expect("validated 32-byte Y coordinate"),
+        })
+    }
 }
 
 impl KeyStore for WindowsKeyStore {
@@ -76,7 +128,7 @@ impl KeyStore for WindowsKeyStore {
         algorithm: SigningAlgorithm,
         policy: KeyCreationPolicy,
         consent: Option<SoftwareKeyConsent>,
-    ) -> Result<(KeyReference, KeyMetadata), PlatformError> {
+    ) -> Result<CreatedSigningKey, PlatformError> {
         if policy != KeyCreationPolicy::PlatformProtectedOnly {
             if consent.is_none() {
                 return Err(Self::fail("explicit software-key consent is required"));
@@ -134,16 +186,25 @@ impl KeyStore for WindowsKeyStore {
             let _ = unsafe { NCryptFreeObject(provider.into()) };
             return Err(Self::fail(error));
         }
+        let public_key = match Self::export_public_key(key) {
+            Ok(public_key) => public_key,
+            Err(error) => {
+                let _ = unsafe { NCryptDeleteKey(key, 0) };
+                let _ = unsafe { NCryptFreeObject(provider.into()) };
+                return Err(error);
+            }
+        };
         // SAFETY: CNG handles are released after the persisted key is finalized.
         unsafe { NCryptFreeObject(key.into()) }.map_err(Self::fail)?;
         unsafe { NCryptFreeObject(provider.into()) }.map_err(Self::fail)?;
-        Ok((
-            KeyReference::new(format!("cng:tpm:{name}")),
-            KeyMetadata {
+        Ok(CreatedSigningKey {
+            reference: KeyReference::new(format!("cng:tpm:{name}")),
+            metadata: KeyMetadata {
                 protection: KeyProtection::HardwareBacked,
                 exportable: false,
             },
-        ))
+            public_key,
+        })
     }
 
     fn sign(

@@ -13,13 +13,14 @@ pub use cbor::{
     encode as encode_cbor,
 };
 pub use credentials::{
-    CredentialError, CredentialId, CredentialRecord, CredentialStore, KeyHandle, RpIdHash,
+    CredentialError, CredentialId, CredentialRecord, CredentialStore, Es256PublicKey, KeyHandle,
+    RpIdHash,
 };
 pub use ctap2::{
     Ctap2Command, Ctap2Error, Ctap2Handler, Ctap2Request, Ctap2Response, Ctap2Status,
     GetAssertionError, GetAssertionRequest, GetInfoError, GetInfoProfile, MakeCredentialError,
     MakeCredentialOptions, MakeCredentialRequest, MakeCredentialRp, MakeCredentialUser,
-    PublicKeyCredentialParameter, encode_get_info, encode_response,
+    PublicKeyCredentialParameter, encode_es256_cose_public_key, encode_get_info, encode_response,
 };
 pub use ctaphid::{
     BROADCAST_CHANNEL, ChannelError, CtapHidAssembler, CtapHidChannelAllocator, CtapHidCommand,
