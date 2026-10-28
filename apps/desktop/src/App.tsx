@@ -46,6 +46,7 @@ function App() {
   const [showCredentials, setShowCredentials] = useState(false);
   const [credentials, setCredentials] = useState<CredentialSummary[]>([]);
   const [credentialError, setCredentialError] = useState<string | null>(null);
+  const [resetAction, setResetAction] = useState(false);
 
   const refreshStatus = () => invoke<PlatformStatus>("platform_status").then(setStatus);
   const refreshCredentials = () => invoke<CredentialSummary[]>("list_credentials").then(setCredentials);
@@ -163,6 +164,23 @@ function App() {
     }
   };
 
+  const resetCredentials = async () => {
+    if (!window.confirm("이 컴퓨터에 저장된 모든 credential과 signing key를 삭제합니다. 이 작업은 되돌릴 수 없습니다.")) return;
+    if (window.prompt("확인을 위해 RESET을 입력하세요.") !== "RESET") return;
+
+    setResetAction(true);
+    setCredentialError(null);
+    try {
+      await invoke<number>("reset_credentials", { confirmed: true });
+      await loadCredentials();
+    } catch (cause) {
+      await loadCredentials();
+      setCredentialError(typeof cause === "string" ? cause : "인증기 자격 증명을 초기화하지 못했습니다.");
+    } finally {
+      setResetAction(false);
+    }
+  };
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -277,9 +295,14 @@ function App() {
                 <p className="eyebrow">Credential management</p>
                 <h2>등록된 자격 증명</h2>
               </div>
-              <button type="button" disabled={status.authenticatorRunning} onClick={() => void loadCredentials()}>
-                새로고침
-              </button>
+              <div className="credential-list-actions">
+                <button type="button" disabled={status.authenticatorRunning || resetAction} onClick={() => void loadCredentials()}>
+                  새로고침
+                </button>
+                <button type="button" className="credential-reset" disabled={status.authenticatorRunning || resetAction} onClick={() => void resetCredentials()}>
+                  {resetAction ? "초기화 중…" : "모든 자격 증명 초기화"}
+                </button>
+              </div>
             </div>
             {credentialError && <p className="status-message" role="alert">{credentialError}</p>}
             {credentials.length === 0 ? (
