@@ -271,6 +271,13 @@ pub struct GetAssertionRequest {
     pub rp_id: String,
     pub client_data_hash: [u8; 32],
     pub allow_list: Option<Vec<Vec<u8>>>,
+    pub options: GetAssertionOptions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GetAssertionOptions {
+    pub user_presence: Option<bool>,
+    pub user_verification: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -639,6 +646,7 @@ impl GetAssertionRequest {
         let mut rp_id = None;
         let mut client_data_hash = None;
         let mut allow_list = None;
+        let mut options = None;
         for (key, value) in entries {
             let CborValue::Unsigned(key) = key else {
                 return Err(GetAssertionError::UnexpectedType(0));
@@ -680,6 +688,12 @@ impl GetAssertionRequest {
                     }
                     allow_list = Some(parse_credential_descriptors(descriptors, 3)?);
                 }
+                5 => {
+                    if options.is_some() {
+                        return Err(GetAssertionError::InvalidParameter(5));
+                    }
+                    options = Some(parse_get_assertion_options(value)?);
+                }
                 _ => {}
             }
         }
@@ -687,6 +701,7 @@ impl GetAssertionRequest {
             rp_id: rp_id.ok_or(GetAssertionError::MissingParameter(1))?,
             client_data_hash: client_data_hash.ok_or(GetAssertionError::MissingParameter(2))?,
             allow_list,
+            options: options.unwrap_or_default(),
         })
     }
 
@@ -699,6 +714,31 @@ impl GetAssertionRequest {
     pub fn find_credentials<'a>(&self, store: &'a CredentialStore) -> Vec<&'a CredentialRecord> {
         store.find_for_assertion(self.rp_id_hash(), self.allow_list.as_deref())
     }
+}
+
+fn parse_get_assertion_options(value: CborValue) -> Result<GetAssertionOptions, GetAssertionError> {
+    let CborValue::Map(entries) = value else {
+        return Err(GetAssertionError::UnexpectedType(5));
+    };
+    let mut options = GetAssertionOptions::default();
+    for (key, value) in entries {
+        let CborValue::Text(key) = key else {
+            return Err(GetAssertionError::UnexpectedType(5));
+        };
+        let slot = match key.as_str() {
+            "up" => &mut options.user_presence,
+            "uv" => &mut options.user_verification,
+            _ => continue,
+        };
+        if slot.is_some() {
+            return Err(GetAssertionError::InvalidParameter(5));
+        }
+        let CborValue::Bool(value) = value else {
+            return Err(GetAssertionError::UnexpectedType(5));
+        };
+        *slot = Some(value);
+    }
+    Ok(options)
 }
 
 fn parse_credential_descriptors(
