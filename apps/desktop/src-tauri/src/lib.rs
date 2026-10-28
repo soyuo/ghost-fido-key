@@ -390,7 +390,7 @@ fn start_authenticator(
     }
     let (key_store, key_creation_policy, software_key_consent) =
         runtime_key_provider(software_key_risk_acknowledged)?;
-    let mut backend = ghost_platform::host_virtual_hid_backend();
+    let backend = ghost_platform::host_virtual_hid_backend();
     let availability = backend.availability();
     if availability.state != CapabilityState::Available {
         return Err(availability

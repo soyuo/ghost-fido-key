@@ -95,7 +95,7 @@ pub fn run(
         };
         let Ok(mut service) = AuthenticatorService::new(
             &mut store,
-            &key_store,
+            key_store.as_ref(),
             service_verification.as_ref(),
             config,
         ) else {
