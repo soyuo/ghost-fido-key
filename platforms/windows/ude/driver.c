@@ -4,6 +4,7 @@
 
 #include <ntddk.h>
 #include <wdf.h>
+#include <usb.h>
 #include <Udecx.h>
 #include "ghost_fido_ude_protocol.h"
 
