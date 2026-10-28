@@ -62,6 +62,7 @@ pub enum Ctap2Status {
     UserActionTimeout = 0x2f,
     UserActionPending = 0x23,
     RequestTooLarge = 0x39,
+    NotAllowed = 0x30,
 }
 
 impl Ctap2Status {
@@ -193,6 +194,7 @@ pub enum GetAssertionResponseError {
     EmptySignature,
     SignatureTooLong(usize),
     InvalidUserHandle,
+    InvalidNumberOfCredentials,
 }
 
 #[must_use]
@@ -215,6 +217,24 @@ pub fn encode_get_assertion_response(
     signature: &[u8],
     sign_count: u32,
 ) -> Result<Ctap2Response, GetAssertionResponseError> {
+    encode_get_assertion_response_with_count(
+        rp_id_hash,
+        credential_id,
+        user_handle,
+        signature,
+        sign_count,
+        None,
+    )
+}
+
+pub fn encode_get_assertion_response_with_count(
+    rp_id_hash: RpIdHash,
+    credential_id: &[u8],
+    user_handle: Option<&[u8]>,
+    signature: &[u8],
+    sign_count: u32,
+    number_of_credentials: Option<u64>,
+) -> Result<Ctap2Response, GetAssertionResponseError> {
     if credential_id.is_empty() {
         return Err(GetAssertionResponseError::EmptyCredentialId);
     }
@@ -231,6 +251,9 @@ pub fn encode_get_assertion_response(
     }
     if user_handle.is_some_and(|handle| handle.is_empty() || handle.len() > 64) {
         return Err(GetAssertionResponseError::InvalidUserHandle);
+    }
+    if number_of_credentials.is_some_and(|count| count < 2) {
+        return Err(GetAssertionResponseError::InvalidNumberOfCredentials);
     }
 
     let authenticator_data = get_assertion_authenticator_data(rp_id_hash, sign_count);
@@ -253,6 +276,9 @@ pub fn encode_get_assertion_response(
         ),
         (CborValue::Unsigned(3), CborValue::Bytes(signature.to_vec())),
     ];
+    if let Some(count) = number_of_credentials {
+        response.push((CborValue::Unsigned(5), CborValue::Unsigned(count)));
+    }
     if let Some(user_handle) = user_handle {
         response.push((
             CborValue::Unsigned(4),

@@ -1,14 +1,20 @@
 //! Credential metadata and RP-isolated selection policy.
 
-use std::{collections::BTreeMap, fmt, path::Path, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    path::Path,
+    sync::Arc,
+};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::cbor::{CborLimits, CborValue, decode_with_limits, encode as encode_cbor};
 
-const STORAGE_SCHEMA_VERSION: i64 = 2;
+const STORAGE_SCHEMA_VERSION: i64 = 3;
 const STORAGE_AAD_V1: &[u8] = b"ghost-fido/credential-store/v1";
 const STORAGE_AAD_V2: &[u8] = b"ghost-fido/credential-store/v2";
+const STORAGE_AAD_V3: &[u8] = b"ghost-fido/credential-store/v3";
 const MAX_PERSISTED_RECORDS: usize = 4096;
 const MAX_PERSISTED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PROTECTED_BYTES: usize = MAX_PERSISTED_BYTES + 4096;
@@ -90,6 +96,8 @@ pub struct CredentialRecord {
     pub key_handle: KeyHandle,
     pub key_metadata: CredentialKeyMetadata,
     pub discoverable: bool,
+    /// Store-assigned monotonic ordering used for discoverable credential selection.
+    pub creation_order: u64,
     pub sign_count: u32,
 }
 
@@ -105,6 +113,7 @@ impl fmt::Debug for CredentialRecord {
             .field("key_handle", &self.key_handle)
             .field("key_metadata", &self.key_metadata)
             .field("discoverable", &self.discoverable)
+            .field("creation_order", &self.creation_order)
             .field("sign_count", &self.sign_count)
             .finish()
     }
@@ -119,6 +128,7 @@ pub enum CredentialError {
     DuplicateIdentifier,
     NotFound,
     CounterOverflow,
+    CreationOrderOverflow,
     StorageFailure,
     ProtectedDataInvalid,
     UnsupportedSchemaVersion(i64),
@@ -152,6 +162,7 @@ pub trait CredentialProtector: Send + Sync {
 pub struct CredentialStore {
     records: BTreeMap<CredentialId, CredentialRecord>,
     sqlite: Option<SqliteBackend>,
+    next_creation_order: u64,
 }
 
 struct SqliteBackend {
@@ -197,7 +208,7 @@ impl CredentialStore {
                 }
                 let payload = encode_records(&BTreeMap::new())?;
                 let protected = protector
-                    .protect(&payload, STORAGE_AAD_V2)
+                    .protect(&payload, STORAGE_AAD_V3)
                     .map_err(|_| CredentialError::ProtectedDataInvalid)?;
                 if protected.is_empty() || protected.len() > MAX_PROTECTED_BYTES {
                     return Err(CredentialError::ProtectedDataInvalid);
@@ -227,18 +238,24 @@ impl CredentialStore {
                     .map_err(|_| CredentialError::StorageFailure)?;
                 BTreeMap::new()
             }
-            1 => {
+            old_version @ (1 | 2) => {
                 let transaction = connection
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(|_| CredentialError::StorageFailure)?;
                 let protected = read_protected_payload(&transaction)?;
+                let old_aad = if old_version == 1 {
+                    STORAGE_AAD_V1
+                } else {
+                    STORAGE_AAD_V2
+                };
                 let plaintext = protector
-                    .unprotect(&protected, STORAGE_AAD_V1)
+                    .unprotect(&protected, old_aad)
                     .map_err(|_| CredentialError::ProtectedDataInvalid)?;
-                let records = decode_records(&plaintext, false)?;
+                let mut records = decode_records(&plaintext, old_version as u8)?;
+                assign_legacy_creation_order(&mut records)?;
                 let migrated_plaintext = encode_records(&records)?;
                 let migrated_protected = protector
-                    .protect(&migrated_plaintext, STORAGE_AAD_V2)
+                    .protect(&migrated_plaintext, STORAGE_AAD_V3)
                     .map_err(|_| CredentialError::ProtectedDataInvalid)?;
                 validate_protected_payload(&migrated_protected)?;
 
@@ -254,23 +271,29 @@ impl CredentialStore {
             STORAGE_SCHEMA_VERSION => {
                 let protected = read_protected_payload(&connection)?;
                 let plaintext = protector
-                    .unprotect(&protected, STORAGE_AAD_V2)
+                    .unprotect(&protected, STORAGE_AAD_V3)
                     .map_err(|_| CredentialError::ProtectedDataInvalid)?;
-                decode_records(&plaintext, true)?
+                decode_records(&plaintext, 3)?
             }
             other => return Err(CredentialError::UnsupportedSchemaVersion(other)),
         };
 
+        let next_creation_order = records
+            .values()
+            .map(|record| record.creation_order)
+            .max()
+            .unwrap_or(0);
         Ok(Self {
             records,
             sqlite: Some(SqliteBackend {
                 connection,
                 protector,
             }),
+            next_creation_order,
         })
     }
 
-    pub fn register(&mut self, record: CredentialRecord) -> Result<(), CredentialError> {
+    pub fn register(&mut self, mut record: CredentialRecord) -> Result<(), CredentialError> {
         if record.user_handle.is_empty() {
             return Err(CredentialError::EmptyUserHandle);
         }
@@ -291,10 +314,16 @@ impl CredentialStore {
         if self.sqlite.is_some() && self.records.len() >= MAX_PERSISTED_RECORDS {
             return Err(CredentialError::RecordLimitExceeded);
         }
+        let creation_order = self
+            .next_creation_order
+            .checked_add(1)
+            .ok_or(CredentialError::CreationOrderOverflow)?;
+        record.creation_order = creation_order;
         let mut next_records = self.records.clone();
         next_records.insert(record.id.clone(), record);
         self.persist(&next_records)?;
         self.records = next_records;
+        self.next_creation_order = creation_order;
         Ok(())
     }
     #[must_use]
@@ -385,7 +414,7 @@ impl CredentialStore {
         let plaintext = encode_records(records)?;
         let protected = backend
             .protector
-            .protect(&plaintext, STORAGE_AAD_V2)
+            .protect(&plaintext, STORAGE_AAD_V3)
             .map_err(|_| CredentialError::ProtectedDataInvalid)?;
         validate_protected_payload(&protected)?;
         let transaction = backend
@@ -483,6 +512,7 @@ fn encode_records(
                     .user_display_name
                     .as_ref()
                     .map_or(CborValue::Null, |name| CborValue::Text(name.clone())),
+                CborValue::Unsigned(record.creation_order),
             ])
         })
         .collect::<Vec<_>>();
@@ -495,7 +525,7 @@ fn encode_records(
 
 fn decode_records(
     bytes: &[u8],
-    with_user_labels: bool,
+    version: u8,
 ) -> Result<BTreeMap<CredentialId, CredentialRecord>, CredentialError> {
     if bytes.len() > MAX_PERSISTED_BYTES {
         return Err(CredentialError::ProtectedDataInvalid);
@@ -516,11 +546,17 @@ fn decode_records(
         return Err(CredentialError::RecordLimitExceeded);
     }
     let mut decoded = BTreeMap::new();
+    let mut creation_orders = BTreeSet::new();
+    let with_user_labels = version >= 2;
+    let with_creation_order = version >= 3;
     for value in records {
         let CborValue::Array(fields) = value else {
             return Err(CredentialError::ProtectedDataInvalid);
         };
-        let record = decode_record_fields(&fields, with_user_labels)?;
+        let record = decode_record_fields(&fields, with_user_labels, with_creation_order)?;
+        if with_creation_order && !creation_orders.insert(record.creation_order) {
+            return Err(CredentialError::ProtectedDataInvalid);
+        }
         let id = record.id.clone();
         if decoded.insert(id, record).is_some() {
             return Err(CredentialError::ProtectedDataInvalid);
@@ -532,6 +568,7 @@ fn decode_records(
 fn decode_record_fields(
     fields: &[CborValue],
     with_user_labels: bool,
+    with_creation_order: bool,
 ) -> Result<CredentialRecord, CredentialError> {
     let (
         id,
@@ -544,34 +581,68 @@ fn decode_record_fields(
         sign_count,
         user_name,
         user_display_name,
+        creation_order,
     ) = if with_user_labels {
-        let [
-            CborValue::Bytes(id),
-            CborValue::Bytes(rp_id_hash),
-            CborValue::Bytes(user_handle),
-            CborValue::Bytes(key_handle),
-            CborValue::Unsigned(protection),
-            CborValue::Bool(exportable),
-            CborValue::Bool(discoverable),
-            CborValue::Unsigned(sign_count),
-            user_name,
-            user_display_name,
-        ] = fields
-        else {
-            return Err(CredentialError::ProtectedDataInvalid);
-        };
-        (
-            id,
-            rp_id_hash,
-            user_handle,
-            key_handle,
-            protection,
-            exportable,
-            discoverable,
-            sign_count,
-            decode_user_label(user_name)?,
-            decode_user_label(user_display_name)?,
-        )
+        if with_creation_order {
+            let [
+                CborValue::Bytes(id),
+                CborValue::Bytes(rp_id_hash),
+                CborValue::Bytes(user_handle),
+                CborValue::Bytes(key_handle),
+                CborValue::Unsigned(protection),
+                CborValue::Bool(exportable),
+                CborValue::Bool(discoverable),
+                CborValue::Unsigned(sign_count),
+                user_name,
+                user_display_name,
+                CborValue::Unsigned(creation_order),
+            ] = fields
+            else {
+                return Err(CredentialError::ProtectedDataInvalid);
+            };
+            (
+                id,
+                rp_id_hash,
+                user_handle,
+                key_handle,
+                protection,
+                exportable,
+                discoverable,
+                sign_count,
+                decode_user_label(user_name)?,
+                decode_user_label(user_display_name)?,
+                *creation_order,
+            )
+        } else {
+            let [
+                CborValue::Bytes(id),
+                CborValue::Bytes(rp_id_hash),
+                CborValue::Bytes(user_handle),
+                CborValue::Bytes(key_handle),
+                CborValue::Unsigned(protection),
+                CborValue::Bool(exportable),
+                CborValue::Bool(discoverable),
+                CborValue::Unsigned(sign_count),
+                user_name,
+                user_display_name,
+            ] = fields
+            else {
+                return Err(CredentialError::ProtectedDataInvalid);
+            };
+            (
+                id,
+                rp_id_hash,
+                user_handle,
+                key_handle,
+                protection,
+                exportable,
+                discoverable,
+                sign_count,
+                decode_user_label(user_name)?,
+                decode_user_label(user_display_name)?,
+                0,
+            )
+        }
     } else {
         let [
             CborValue::Bytes(id),
@@ -597,10 +668,14 @@ fn decode_record_fields(
             sign_count,
             None,
             None,
+            0,
         )
     };
 
     if rp_id_hash.len() != 32 || user_handle.is_empty() {
+        return Err(CredentialError::ProtectedDataInvalid);
+    }
+    if with_creation_order && creation_order == 0 {
         return Err(CredentialError::ProtectedDataInvalid);
     }
     let key_protection = match protection {
@@ -625,9 +700,22 @@ fn decode_record_fields(
             exportable: *exportable,
         },
         discoverable: *discoverable,
+        creation_order,
         sign_count: u32::try_from(*sign_count)
             .map_err(|_| CredentialError::ProtectedDataInvalid)?,
     })
+}
+
+fn assign_legacy_creation_order(
+    records: &mut BTreeMap<CredentialId, CredentialRecord>,
+) -> Result<(), CredentialError> {
+    for (index, record) in records.values_mut().enumerate() {
+        record.creation_order = u64::try_from(index)
+            .ok()
+            .and_then(|index| index.checked_add(1))
+            .ok_or(CredentialError::CreationOrderOverflow)?;
+    }
+    Ok(())
 }
 
 fn decode_user_label(value: &CborValue) -> Result<Option<String>, CredentialError> {

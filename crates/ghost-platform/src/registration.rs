@@ -141,6 +141,7 @@ pub fn register_make_credential(
             exportable: created.metadata.exportable,
         },
         discoverable: request.options.resident_key.unwrap_or(false),
+        creation_order: 0,
         sign_count: 0,
     };
     if let Err(error) = store.register(record) {

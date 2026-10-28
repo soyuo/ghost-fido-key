@@ -1,10 +1,11 @@
 //! Single-credential CTAP2 GetAssertion execution.
 
-use std::time::Duration;
+use std::{cmp::Reverse, time::Duration};
 
 use ghost_fido_core::{
-    CredentialError, CredentialStore, Ctap2Response, Ctap2Status, GetAssertionRequest, KeyHandle,
-    encode_get_assertion_response, get_assertion_authenticator_data,
+    CredentialError, CredentialId, CredentialStore, Ctap2Response, Ctap2Status,
+    GetAssertionRequest, KeyHandle, encode_get_assertion_response_with_count,
+    get_assertion_authenticator_data,
 };
 use sha2::{Digest, Sha256};
 
@@ -22,6 +23,12 @@ pub enum GetAssertionExecutionError {
     ResponseEncoding,
 }
 
+#[derive(Debug)]
+pub struct GetAssertionExecution {
+    pub response: Ctap2Response,
+    pub remaining_credentials: Vec<CredentialId>,
+}
+
 impl From<PlatformError> for GetAssertionExecutionError {
     fn from(error: PlatformError) -> Self {
         Self::Platform(error)
@@ -34,38 +41,41 @@ impl From<CredentialError> for GetAssertionExecutionError {
     }
 }
 
-/// Approves and signs a GetAssertion request when exactly one credential matches.
+/// Approves and signs a GetAssertion request, retaining any continuation credentials.
 pub fn execute_get_assertion(
     request: &GetAssertionRequest,
     store: &mut CredentialStore,
     key_store: &dyn KeyStore,
     verification: &dyn UserVerification,
     timeout: Duration,
-) -> Result<Ctap2Response, GetAssertionExecutionError> {
+) -> Result<GetAssertionExecution, GetAssertionExecutionError> {
     if request.options.user_verification == Some(true)
         || request.options.user_presence == Some(false)
     {
-        return Ok(protocol_error(Ctap2Status::UnsupportedOption));
+        return Ok(single_response(protocol_error(
+            Ctap2Status::UnsupportedOption,
+        )));
     }
 
-    let matching = request.find_credentials(store);
+    let mut matching = request.find_credentials(store);
     if matching.is_empty() {
-        return Ok(protocol_error(Ctap2Status::NoCredentials));
+        return Ok(single_response(protocol_error(Ctap2Status::NoCredentials)));
     }
-    if matching.len() != 1 {
-        return Ok(protocol_error(Ctap2Status::OperationDenied));
+    if request.allow_list.is_none() {
+        matching.sort_by_key(|record| Reverse(record.creation_order));
     }
 
-    let record = matching[0];
-    let credential_id = record.id.clone();
-    let key_handle = record.key_handle.clone();
-    let user_handle = record.user_handle.clone();
-    let include_user = request.allow_list.is_none() && record.discoverable;
-    let next_sign_count = record
-        .sign_count
-        .checked_add(1)
-        .ok_or(CredentialError::CounterOverflow)?;
-    let rp_id_hash = request.rp_id_hash();
+    let credential_count = matching.len();
+    let credential_id = matching[0].id.clone();
+    let remaining_credentials = if request.allow_list.is_none() {
+        matching
+            .iter()
+            .skip(1)
+            .map(|record| record.id.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
     drop(matching);
 
     let confirmation = VerificationRequest {
@@ -76,14 +86,66 @@ pub fn execute_get_assertion(
     match verification.request_confirmation(&confirmation, timeout) {
         Ok(VerificationDecision::Approved) => {}
         Ok(VerificationDecision::Rejected) => {
-            return Ok(protocol_error(Ctap2Status::OperationDenied));
+            return Ok(single_response(protocol_error(
+                Ctap2Status::OperationDenied,
+            )));
         }
         Err(error) if error.kind == PlatformErrorKind::Timeout => {
-            return Ok(protocol_error(Ctap2Status::UserActionTimeout));
+            return Ok(single_response(protocol_error(
+                Ctap2Status::UserActionTimeout,
+            )));
         }
         Err(error) => return Err(error.into()),
     }
 
+    let number_of_credentials =
+        (request.allow_list.is_none() && credential_count > 1).then_some(credential_count as u64);
+    let response = sign_assertion_for_credential(
+        request,
+        &credential_id,
+        store,
+        key_store,
+        number_of_credentials,
+    )?;
+    Ok(GetAssertionExecution {
+        response,
+        remaining_credentials,
+    })
+}
+
+/// Signs the next credential in an already approved GetAssertion continuation.
+pub fn execute_next_assertion(
+    request: &GetAssertionRequest,
+    credential_id: &CredentialId,
+    store: &mut CredentialStore,
+    key_store: &dyn KeyStore,
+) -> Result<Ctap2Response, GetAssertionExecutionError> {
+    sign_assertion_for_credential(request, credential_id, store, key_store, None)
+}
+
+fn sign_assertion_for_credential(
+    request: &GetAssertionRequest,
+    credential_id: &CredentialId,
+    store: &mut CredentialStore,
+    key_store: &dyn KeyStore,
+    number_of_credentials: Option<u64>,
+) -> Result<Ctap2Response, GetAssertionExecutionError> {
+    let id = [credential_id.as_bytes().to_vec()];
+    let Some(record) = store
+        .find_for_assertion(request.rp_id_hash(), Some(&id))
+        .into_iter()
+        .next()
+    else {
+        return Ok(protocol_error(Ctap2Status::NotAllowed));
+    };
+    let key_handle = record.key_handle.clone();
+    let user_handle = record.user_handle.clone();
+    let include_user = request.allow_list.is_none() && record.discoverable;
+    let next_sign_count = record
+        .sign_count
+        .checked_add(1)
+        .ok_or(CredentialError::CounterOverflow)?;
+    let rp_id_hash = request.rp_id_hash();
     let reference = key_reference(&key_handle)?;
     let authenticator_data = get_assertion_authenticator_data(rp_id_hash, next_sign_count);
     let mut signed_data =
@@ -95,21 +157,29 @@ pub fn execute_get_assertion(
     let signature = encode_p1363_es256_der(&raw_signature)
         .ok_or(GetAssertionExecutionError::InvalidSignature)?;
 
-    let response = encode_get_assertion_response(
+    let response = encode_get_assertion_response_with_count(
         rp_id_hash,
         credential_id.as_bytes(),
         include_user.then_some(user_handle.as_slice()),
         &signature,
         next_sign_count,
+        number_of_credentials,
     )
     .map_err(|_| GetAssertionExecutionError::ResponseEncoding)?;
-    let committed_sign_count = store.increment_sign_count(&credential_id)?;
+    let committed_sign_count = store.increment_sign_count(credential_id)?;
     if committed_sign_count != next_sign_count {
         return Err(GetAssertionExecutionError::Credential(
             CredentialError::StorageFailure,
         ));
     }
     Ok(response)
+}
+
+fn single_response(response: Ctap2Response) -> GetAssertionExecution {
+    GetAssertionExecution {
+        response,
+        remaining_credentials: Vec::new(),
+    }
 }
 
 fn key_reference(handle: &KeyHandle) -> Result<KeyReference, GetAssertionExecutionError> {
