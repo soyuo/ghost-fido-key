@@ -106,6 +106,19 @@ pub fn encode_response(status: Ctap2Status, payload: &[u8]) -> Vec<u8> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ctap2Response {
+    pub status: Ctap2Status,
+    pub payload: Vec<u8>,
+}
+
+impl Ctap2Response {
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        encode_response(self.status, &self.payload)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetInfoProfile {
     pub versions: Vec<String>,
     pub aaguid: [u8; 16],
@@ -118,6 +131,32 @@ pub struct GetInfoProfile {
 pub enum GetInfoError {
     MissingVersion,
     InvalidMessageSize,
+}
+
+/// Dispatches requests using an explicitly configured authenticator profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ctap2Handler {
+    get_info_payload: Vec<u8>,
+}
+
+impl Ctap2Handler {
+    pub fn new(profile: &GetInfoProfile) -> Result<Self, GetInfoError> {
+        Ok(Self {
+            get_info_payload: encode_get_info(profile)?,
+        })
+    }
+
+    #[must_use]
+    pub fn handle(&self, request: &Ctap2Request) -> Ctap2Response {
+        let (status, payload) = match request.command {
+            Ctap2Command::GetInfo if request.payload.is_empty() => {
+                (Ctap2Status::Success, self.get_info_payload.clone())
+            }
+            Ctap2Command::GetInfo => (Ctap2Status::InvalidLength, Vec::new()),
+            _ => (Ctap2Status::InvalidCommand, Vec::new()),
+        };
+        Ctap2Response { status, payload }
+    }
 }
 
 pub fn encode_get_info(profile: &GetInfoProfile) -> Result<Vec<u8>, GetInfoError> {

@@ -16,8 +16,8 @@ pub use credentials::{
     CredentialError, CredentialId, CredentialRecord, CredentialStore, KeyHandle, RpIdHash,
 };
 pub use ctap2::{
-    Ctap2Command, Ctap2Error, Ctap2Request, Ctap2Status, GetInfoError, GetInfoProfile,
-    encode_get_info, encode_response,
+    Ctap2Command, Ctap2Error, Ctap2Handler, Ctap2Request, Ctap2Response, Ctap2Status, GetInfoError,
+    GetInfoProfile, encode_get_info, encode_response,
 };
 pub use ctaphid::{
     BROADCAST_CHANNEL, ChannelError, CtapHidAssembler, CtapHidChannelAllocator, CtapHidCommand,

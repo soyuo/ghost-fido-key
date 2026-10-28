@@ -1,6 +1,6 @@
 //! Transport-neutral CTAPHID report framing.
 
-use crate::ctap2::{Ctap2Error, Ctap2Request, Ctap2Status, encode_response};
+use crate::ctap2::{Ctap2Error, Ctap2Request, Ctap2Response, Ctap2Status, encode_response};
 use core::fmt;
 use std::{
     collections::BTreeMap,
@@ -376,6 +376,15 @@ impl CtapHidSession {
             return Err(FrameError::InvalidChannel);
         }
         encode_ctap2_response(channel, status, payload)
+    }
+
+    /// Frames a CTAP2 handler result on its originating active channel.
+    pub fn respond_ctap2_result(
+        &self,
+        channel: u32,
+        response: &Ctap2Response,
+    ) -> Result<Vec<[u8; HID_REPORT_SIZE]>, FrameError> {
+        self.respond_ctap2(channel, response.status, &response.payload)
     }
 }
 
