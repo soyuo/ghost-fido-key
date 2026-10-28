@@ -11,12 +11,16 @@ use std::{fmt, time::Duration};
 mod linux_uhid;
 
 mod assertion;
+mod authenticator;
 mod registration;
 
 #[cfg(target_os = "linux")]
 pub use linux_uhid::LinuxUhidBackend;
 
 pub use assertion::{GetAssertionExecutionError, execute_get_assertion};
+pub use authenticator::{
+    AuthenticatorService, AuthenticatorServiceConfig, AuthenticatorServiceError,
+};
 pub use registration::{
     MakeCredentialExecutionError, check_credential_exclusion, register_make_credential,
 };
