@@ -21,7 +21,8 @@ pub use ctap2::{
 };
 pub use ctaphid::{
     BROADCAST_CHANNEL, ChannelError, CtapHidAssembler, CtapHidChannelAllocator, CtapHidCommand,
-    CtapHidMessage, FrameError, encode_continuations, encode_initialization,
+    CtapHidDispatch, CtapHidErrorCode, CtapHidMessage, FrameError, dispatch as dispatch_ctaphid,
+    encode_continuations, encode_initialization,
 };
 
 /// Protocol families the authenticator is intended to expose.
