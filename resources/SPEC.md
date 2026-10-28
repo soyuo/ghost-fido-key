@@ -1475,7 +1475,7 @@ CTAPHID broadcast INIT는 8-byte nonce를 검증한 뒤 고유 channel을 할당
 
 CTAPHID channel allocator는 broadcast channel(`0xffffffff`)과 channel zero를 예약하고, 동시 요청별 deadline을 추적해 만료 시 channel을 회수한다. 타이머와 오류 report 전송은 호출자에 남겨 OS별 runtime 차이를 격리한다. [`docs/ctaphid-channels.md`](../docs/ctaphid-channels.md)
 
-CTAP2 core는 command byte와 status-prefixed response, bounded CBOR, 명시적으로 설정한 GetInfo 응답 및 typed MakeCredential/GetAssertion 요청을 제공한다. `ghost-platform::AuthenticatorService`는 GetInfo, MakeCredential, GetAssertion, GetNextAssertion을 기존 provider 흐름에 연결한다. Assertion continuation은 CTAPHID channel마다 보관하고 30초 후 만료되며, 다른 명령이 해당 channel에서 처리되면 지운다. 나머지 명령은 명시적 오류로 닫히며 CTAPHID transport 연결은 별도 단계다. 경계와 표준 status 값은 [`docs/ctap2-dispatch.md`](../docs/ctap2-dispatch.md)에 기록한다.
+CTAP2 core는 command byte와 status-prefixed response, bounded CBOR, 명시적으로 설정한 GetInfo 응답 및 typed MakeCredential/GetAssertion 요청을 제공한다. `ghost-platform::AuthenticatorService`는 GetInfo, MakeCredential, GetAssertion, GetNextAssertion을 기존 provider 흐름에 연결한다. `AuthenticatorHidSession`은 CTAPHID report session의 요청을 채널 정보와 함께 서비스에 전달하고 CTAP2 응답을 다시 report로 인코딩한다. Assertion continuation은 CTAPHID channel마다 보관하고 30초 후 만료되며, 다른 명령이 해당 channel에서 처리되거나 채널이 취소·만료되면 지운다. OS report I/O와 앱의 live backend 연결은 별도 단계다. 경계와 표준 status 값은 [`docs/ctap2-dispatch.md`](../docs/ctap2-dispatch.md), [`docs/ctaphid-service.md`](../docs/ctaphid-service.md)에 기록한다.
 
 CTAP2 입력 CBOR는 definite-length 값만 허용하며 기본 16 depth, 128 collection items, 8192 bytes 제한을 적용한다. 잘린 입력, indefinite form, 지원하지 않는 simple/float 값, 잘못된 UTF-8과 trailing data는 handler 전에 거부한다. [`docs/cbor-validation.md`](../docs/cbor-validation.md)
 
