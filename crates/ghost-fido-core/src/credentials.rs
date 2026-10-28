@@ -112,6 +112,20 @@ impl CredentialStore {
             })
             .collect()
     }
+
+    #[must_use]
+    pub fn has_matching_credentials(
+        &self,
+        rp_id_hash: RpIdHash,
+        credential_ids: &[Vec<u8>],
+    ) -> bool {
+        self.records.values().any(|record| {
+            record.rp_id_hash == rp_id_hash
+                && credential_ids
+                    .iter()
+                    .any(|id| id.as_slice() == record.id.as_bytes())
+        })
+    }
     pub fn increment_sign_count(&mut self, id: &CredentialId) -> Result<u32, CredentialError> {
         let record = self.records.get_mut(id).ok_or(CredentialError::NotFound)?;
         record.sign_count = record

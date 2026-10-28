@@ -9,8 +9,12 @@ use std::{fmt, time::Duration};
 #[cfg(target_os = "linux")]
 mod linux_uhid;
 
+mod registration;
+
 #[cfg(target_os = "linux")]
 pub use linux_uhid::LinuxUhidBackend;
+
+pub use registration::check_credential_exclusion;
 
 #[cfg(target_os = "windows")]
 mod windows_ude;
@@ -298,6 +302,7 @@ pub trait KeyStore: Send + Sync {
 pub enum VerificationAction {
     RegisterCredential,
     Authenticate,
+    CredentialExclusionCheck,
 }
 
 /// Minimum RP context presented to the local user for an approval request.
