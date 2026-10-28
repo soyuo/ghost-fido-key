@@ -41,13 +41,19 @@
 - macOS에서 CoreHID virtual device API와 필요한 entitlement를 확인한다. entitlement 요청 가능성, 코드 서명, 배포 및 브라우저에서 보이는 장치 여부를 먼저 확인한다.
 - 각 OS에서 장치 열거 이후 Chrome/Edge 등 테스트 대상 브라우저가 FIDO authenticator를 발견하고 HID report를 교환하는지 확인한다.
 - USB/IP, UdeCx, UHID, CoreHID 등의 경로를 각각 해당 OS 내 구현으로 평가한다. 한 OS용 transport를 다른 OS의 공통 해법으로 가정하지 않는다.
-- 장치 API나 배포 권한이 현실적으로 확보되지 않는 플랫폼은 지원 범위에서 제외하거나 제한 사항으로 남긴다.
+- 장치 API나 배포 권한을 확보할 수 없는 필수 플랫폼·아키텍처는 v1 차단 항목으로 보고한다. 사용자 승인 없이 v1 필수 범위에서 제외하지 않는다.
+- 조사 근거는 공식 Linux kernel, Microsoft WDK/UDE/Windows on Arm, Apple CoreHID/entitlement 문서를 우선하고 각 플랫폼·아키텍처의 날짜와 실제 기기 결과를 기록한다.
+- Linux x64/ARM64에서 `/dev/uhid` device-node 권한과 udev/package 경로를 확인한다. UHID create/open, input/output, get/set report 및 destroy lifecycle을 검증한다.
+- Windows x64/ARM64에서 WDK로 native driver를 빌드하고 서명, 관리자 설치, 제거, 재부팅 후 상태를 확인한다. ARM64 app emulation을 ARM64 kernel driver 지원으로 간주하지 않는다.
+- macOS Intel/Apple silicon에서 CoreHID entitlement 발급 가능 여부를 확인하고 개발 서명과 배포 서명의 차이를 기록한다. FIDO descriptor 및 양방향 report 처리로 WebAuthn 경로를 검증한다.
+- 모든 후보 조합에서 signed/package된 앱으로 Chrome과 Edge의 FIDO 등록 및 assertion을 검증한다. HID 열거만 성공한 결과는 WebAuthn 통과로 처리하지 않는다.
 
 ### 1단계 완료 기준
 
-- 각 출시 후보 OS에 대해 장치 생성부터 브라우저 발견까지 재현 가능한 실험 결과가 있다.
-- 설치 권한, 드라이버·entitlement·서명 필요성, 설치 제거 영향을 기록했다.
-- 첫 출시 플랫폼과 제외 플랫폼을 근거와 함께 `SPEC.md` 지원 매트릭스에 확정했다.
+- 각 필수 OS와 x64/ARM64 조합에 대해 장치 생성부터 browser WebAuthn 등록 및 assertion까지 재현 가능한 결과가 있다.
+- 설치 권한, 드라이버·entitlement·서명 필요성, 설치·제거 영향을 기록했다.
+- 통과하지 못한 필수 조합은 v1 차단 항목으로 기록한다. 세 OS 및 필수 아키텍처 검증을 모두 통과하기 전에는 v1 지원 완료를 선언하지 않는다.
+- 결과 및 공식 근거를 `SPEC.md` 지원 매트릭스에 반영한다.
 
 ## 2단계: Rust workspace와 Tauri 데스크톱 골격
 

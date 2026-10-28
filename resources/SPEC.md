@@ -53,7 +53,24 @@ Tauri는 React/TypeScript UI 구현을 공유하지만 가상 HID 장치·드라
 | Windows | UdeCx/KMDF 가상 USB/HID 드라이버 | 보안 업데이트 중인 Windows x64/ARM64에서 드라이버 서명·설치·제거, 장치 열거와 브라우저 report 왕복 |
 | macOS | CoreHID virtual device API와 `com.apple.developer.hid.virtual.device` entitlement 검토 | 보안 업데이트 중인 macOS 및 x64/ARM64 지원 조합에서 entitlement, 코드 서명, HID 열거와 브라우저 탐색 |
 
-macOS entitlement와 가상 HID 공개 API의 가용성을 확인하기 전에는 macOS 제품 배포를 약속하지 않는다. Windows와 Linux 역시 장치가 OS에 열거된 것만으로 WebAuthn 경로가 검증되었다고 간주하지 않는다.
+macOS entitlement와 가상 HID 공개 API의 실제 배포 가능성을 검증하기 전에는 macOS 제품 배포를 약속하지 않는다. Windows와 Linux 역시 장치가 OS에 열거된 것만으로 WebAuthn 경로가 검증되었다고 간주하지 않는다.
+
+#### 조사 결과와 지원 차단 조건
+
+| 필수 조합 | 공식 문서로 확인된 기반 | 현재 판정 | 제품 지원 전 증거 |
+| --- | --- | --- | --- |
+| Ubuntu LTS x64 | UHID userspace API 및 `/dev/uhid` event protocol 존재 | candidate; 배포 권한과 WebAuthn 미검증 | 대상 Ubuntu LTS의 장치 생성·report 왕복, 일반 사용자 권한, Chrome/Edge 등록·assertion |
+| Ubuntu LTS ARM64 | UHID userspace API는 CPU 중립적인 Linux HID 경로 | candidate; ARM64 실제 빌드·장치·WebAuthn 미검증 | ARM64 빌드 및 위와 같은 실장치 검증 |
+| Windows x64 | UDE/UdeCx와 KMDF client driver 개발 경로 문서화 | candidate; product driver 및 브라우저 미검증 | 서명·설치 가능한 x64 driver, HID/FIDO 발견, Chrome/Edge 등록·assertion |
+| Windows ARM64 | WDK ARM64 driver 개발/배포 지원 문서화 | candidate; native UDE driver 및 브라우저 미검증 | native ARM64 driver build/sign/install 및 ARM64 기기에서 end-to-end WebAuthn |
+| macOS x64 | CoreHID virtual HID API와 entitlement가 문서화됨 | blocked pending entitlement/distribution and runtime proof | Intel Mac에서 entitlement가 포함된 배포 서명 앱, HID report와 browser WebAuthn 왕복 |
+| macOS ARM64 | CoreHID virtual HID API와 entitlement가 문서화됨 | blocked pending entitlement/distribution and runtime proof | Apple silicon에서 entitlement가 포함된 배포 서명 앱, HID report와 browser WebAuthn 왕복 |
+
+- Linux UHID는 userspace HID transport driver가 `/dev/uhid`를 열고 create, input, output, get/set report, destroy 이벤트를 교환하는 인터페이스다. `/dev/uhid` device node는 udev 등으로 제공되므로 Ubuntu LTS의 x64/ARM64에서 일반 사용자 권한 경로와 package 설치 규칙을 별도로 검증한다.
+- Windows UDE 가상 USB host controller와 기기는 WDK/UdeCx를 사용하는 KMDF driver로 구현해야 한다. Windows on Arm에서는 kernel-mode driver가 native ARM64여야 하며, x64 앱 에뮬레이션은 driver를 대체하지 않는다. 서명, 설치 elevation, 제거를 실제 x64/ARM64 기기에서 검증한다.
+- macOS CoreHID `HIDVirtualDevice`는 가상 HID 생성 API를 제공하지만 `com.apple.developer.hid.virtual.device` entitlement가 필요하다. entitlement 승인, 배포 서명, 지원 macOS 버전, Intel/Apple silicon의 report 동작 및 Chrome/Edge WebAuthn 왕복이 입증될 때까지 macOS를 배포 가능하다고 간주하지 않는다.
+- 세 OS 모두 descriptor가 HID로 열거되는 것과 브라우저가 이를 FIDO authenticator로 사용하는 것은 별도 게이트다. 서명·패키징한 실제 빌드에서 등록과 인증 CTAPHID 왕복을 확인한 OS/version/architecture만 지원표에 올린다.
+- OS 공급자의 보안 지원 버전은 바뀌므로 하드코딩하지 않고 각 릴리스 시점에 공식 지원 정책을 다시 확인한다.
 
 ### 0.5 문서 간 우선순위 및 보안 경계
 
@@ -71,6 +88,9 @@ macOS entitlement와 가상 HID 공개 API의 가용성을 확인하기 전에�
 - [Windows UDE Client Driver](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/writing-a-ude-client-driver)
 - [Apple CoreHID HIDVirtualDevice](https://developer.apple.com/documentation/corehid/hidvirtualdevice)
 - [Apple 가상 HID entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.hid.virtual.device)
+- [Windows UDE 드라이버 개요](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/developing-windows-drivers-for-emulated-usb-host-controllers-and-devices)
+- [Windows ARM 드라이버 요건](https://learn.microsoft.com/en-us/windows/arm/faq)
+- [Windows ARM64 WDK 지원](https://learn.microsoft.com/en-us/windows-hardware/drivers/develop/building-arm64-drivers)
 
 ---
 
