@@ -1,18 +1,25 @@
 # CTAPHID authenticator service adapter
 
-`AuthenticatorHidSession` joins the transport-neutral `CtapHidSession` to a
-configured `AuthenticatorService`. The transport owner passes each complete
-64-byte output report to `receive_report` with a monotonic timestamp and sends
-any reports returned in `AuthenticatorHidEvent::Reports` back to the HID host.
-Initialization and ping responses are already framed by the core session;
-typed CTAP2 requests are routed with their originating channel and framed by
-the adapter.
+`AuthenticatorHidSession` owns transport-neutral `CtapHidSession` state. The
+transport owner passes each complete 64-byte output report to `receive_report`
+with a monotonic timestamp and sends reports returned in
+`AuthenticatorHidEvent::Reports` to the HID host. Initialization and ping
+responses are framed by the core session.
 
-The adapter returns `Pending` while a fragmented request is incomplete,
-`Cancelled(channel)` for CTAPHID CANCEL, and protocol `Message` events the
-transport owner must handle. Framing and provider failures remain structured
-errors. Call `expire` during the transport loop to release expired channels and
-their GetNextAssertion continuation state even when no new report arrives.
+A completed CBOR request is emitted as
+`AuthenticatorHidEvent::Ctap2Request { channel, request }`. The caller executes
+it through `AuthenticatorService` and passes the response to
+`respond_ctap2`. This keeps the report loop available while the service waits
+for user approval. The adapter allows one active CTAP2 request at a time and
+returns CTAPHID `CHANNEL_BUSY` for another request until the first response is
+framed.
+
+A valid CTAPHID CANCEL cancels pending user verification only when it targets
+the active CTAP2 channel. The service executor should return CTAP2
+`KEEPALIVE_CANCEL` and frame it with `respond_ctap2`. Channel expiry also
+cancels the active approval. The transport owner must clear that channel's
+`AuthenticatorService` continuation state when it receives a cancellation or
+expiry event.
 
 This layer does not own an OS device handle, background thread, or event loop.
 Each platform backend remains responsible for attachment, report I/O, shutdown,
