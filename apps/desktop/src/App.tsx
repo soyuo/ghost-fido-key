@@ -14,6 +14,7 @@ type PlatformStatus = {
   credentialStoreAvailable: boolean;
   credentialStoreStatus: string;
   statusMessage: string;
+  authenticatorRunning: boolean;
 };
 
 type ApprovalPrompt = {
@@ -29,6 +30,11 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [approvalRequests, setApprovalRequests] = useState<ApprovalPrompt[]>([]);
   const [approvalError, setApprovalError] = useState<string | null>(null);
+  const [showSoftwareKeyWarning, setShowSoftwareKeyWarning] = useState(false);
+  const [runtimeAction, setRuntimeAction] = useState(false);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
+
+  const refreshStatus = () => invoke<PlatformStatus>("platform_status").then(setStatus);
 
   useEffect(() => {
     if (!isTauri()) {
@@ -36,8 +42,7 @@ function App() {
       return;
     }
 
-    void invoke<PlatformStatus>("platform_status")
-      .then(setStatus)
+    void refreshStatus()
       .catch(() => setError("백엔드 상태를 불러오지 못했습니다."));
   }, []);
 
@@ -84,6 +89,33 @@ function App() {
       .catch(() => setApprovalError("That approval request has expired or is no longer active."));
   };
 
+  const startAuthenticator = async () => {
+    setRuntimeAction(true);
+    setRuntimeError(null);
+    try {
+      await invoke("start_authenticator", { softwareKeyRiskAcknowledged: true });
+      setShowSoftwareKeyWarning(false);
+      await refreshStatus();
+    } catch {
+      setRuntimeError("인증기를 시작하지 못했습니다. 가상 HID 권한과 키 저장소 상태를 확인하세요.");
+    } finally {
+      setRuntimeAction(false);
+    }
+  };
+
+  const stopAuthenticator = async () => {
+    setRuntimeAction(true);
+    setRuntimeError(null);
+    try {
+      await invoke("stop_authenticator");
+      await refreshStatus();
+    } catch {
+      setRuntimeError("인증기를 정상적으로 중지하지 못했습니다.");
+    } finally {
+      setRuntimeAction(false);
+    }
+  };
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -105,10 +137,12 @@ function App() {
             <div>
               <p className="status-label">가상 인증기</p>
               <h2>
-                {status?.deviceAttached
+                {status?.authenticatorRunning
                   ? "연결됨"
-                  : status?.virtualHidAvailable
+                  : status?.virtualHidAvailable && status?.hostPlatform === "Linux"
                     ? "연결 대기"
+                    : status?.virtualHidAvailable
+                      ? "사용 준비됨"
                     : "사용할 수 없음"}
               </h2>
             </div>
@@ -119,6 +153,31 @@ function App() {
           <p className="status-message">
             {error ?? status?.statusMessage ?? "시스템 상태를 확인하고 있습니다…"}
           </p>
+          {isTauri() && status?.hostPlatform === "Linux" && !status.authenticatorRunning && status.virtualHidAvailable && status.credentialStoreAvailable && !showSoftwareKeyWarning && (
+            <div className="runtime-actions">
+              <button type="button" disabled={runtimeAction} onClick={() => setShowSoftwareKeyWarning(true)}>
+                인증기 시작
+              </button>
+            </div>
+          )}
+          {isTauri() && status?.authenticatorRunning && (
+            <div className="runtime-actions">
+              <button type="button" disabled={runtimeAction} onClick={stopAuthenticator}>인증기 중지</button>
+            </div>
+          )}
+          {showSoftwareKeyWarning && (
+            <section className="software-key-warning" aria-labelledby="software-key-title">
+              <p className="eyebrow">보안 확인</p>
+              <h2 id="software-key-title">소프트웨어 보안 키 사용</h2>
+              <p>개인 키는 하드웨어 보안 모듈이 아닌 소프트웨어로 생성되며 Linux Secret Service에 저장됩니다. 보호 수준은 Secret Service 설정에 따르고, 해당 계정이나 저장소에 접근할 수 있는 사용자가 키를 추출할 수 있습니다.</p>
+              <p>동의하면 이번 앱 실행 세션에서만 소프트웨어 키 생성을 허용합니다.</p>
+              <div className="approval-actions">
+                <button type="button" disabled={runtimeAction} onClick={() => setShowSoftwareKeyWarning(false)}>취소</button>
+                <button type="button" disabled={runtimeAction} onClick={() => void startAuthenticator()}>{runtimeAction ? "시작 중…" : "위험을 이해했고 시작"}</button>
+              </div>
+            </section>
+          )}
+          {runtimeError && <p className="status-message" role="alert">{runtimeError}</p>}
           <div className="card-divider" />
           <dl className="details">
             <div>
@@ -180,7 +239,7 @@ function App() {
 
         <div className="notice" role="note">
           <span className="notice-icon" aria-hidden="true">i</span>
-          <p>이 개발 버전은 실제 보안 키를 만들거나 인증 요청에 응답하지 않습니다.</p>
+          <p>{status?.authenticatorRunning ? "인증기가 실행 중입니다. 자격 증명 생성과 인증은 각각 사용자 승인이 필요합니다." : "인증기 시작은 Linux에서 지원됩니다. 소프트웨어 키는 명시적으로 동의한 세션에서만 생성됩니다."}</p>
         </div>
       </section>
 

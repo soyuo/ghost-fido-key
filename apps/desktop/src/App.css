@@ -50,6 +50,13 @@ h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.025em; }
 .approval-actions button { padding: 8px 14px; border: 1px solid #617080; border-radius: 8px; color: #e8edf5; background: #202a37; cursor: pointer; }
 .approval-actions button:last-child { border-color: #6cbb91; color: #102017; background: #9fe2c0; font-weight: 700; }
 .approval-actions button:focus-visible { outline: 2px solid #9fe2c0; outline-offset: 2px; }
+.runtime-actions { display: flex; justify-content: flex-end; margin: 16px 0; }
+.runtime-actions button { padding: 9px 16px; border: 1px solid #6cbb91; border-radius: 8px; color: #102017; background: #9fe2c0; font-weight: 700; cursor: pointer; }
+.runtime-actions button:disabled, .approval-actions button:disabled { opacity: 0.6; cursor: wait; }
+.software-key-warning { margin-top: 16px; padding: 20px; border: 1px solid #8b6540; border-radius: 13px; background: rgba(44, 33, 22, 0.96); }
+.software-key-warning .eyebrow { margin-bottom: 8px; }
+.software-key-warning h2 { margin-bottom: 12px; }
+.software-key-warning p:not(.eyebrow) { color: #c6b797; font-size: 13px; line-height: 1.6; }
 .app-footer { display: flex; justify-content: space-between; gap: 16px; margin-top: auto; padding: 18px 46px; border-top: 1px solid #252c37; color: #747f8e; font-size: 11px; }
 
 @media (max-width: 560px) {
