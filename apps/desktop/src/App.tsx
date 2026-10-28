@@ -8,6 +8,8 @@ type PlatformStatus = {
   hostPlatform: string;
   virtualHidAvailable: boolean;
   deviceAttached: boolean;
+  keyStorageStatus: string;
+  userVerificationStatus: string;
   statusMessage: string;
 };
 
@@ -67,7 +69,11 @@ function App() {
             </div>
             <div>
               <dt>보안 키 보호</dt>
-              <dd>아직 설정되지 않음</dd>
+              <dd>{status?.keyStorageStatus ?? "확인 중"}</dd>
+            </div>
+            <div>
+              <dt>사용자 확인</dt>
+              <dd>{status?.userVerificationStatus ?? "확인 중"}</dd>
             </div>
           </dl>
         </div>

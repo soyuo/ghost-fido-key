@@ -1,8 +1,10 @@
-//! Operating-system boundary for virtual FIDO HID transports.
+//! Shared contracts for operating-system services used by the authenticator.
 //!
-//! This crate currently defines the seam only. It does not create a device.
+//! This crate contains no native API calls. Platform adapters implement these
+//! traits and report observed capabilities instead of inferring them from the
+//! host operating-system name.
 
-use std::fmt;
+use std::{fmt, time::Duration};
 
 /// Host operating system selected at compile time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,58 +31,292 @@ impl HostPlatform {
     }
 }
 
-/// Lifecycle state exposed to the application UI.
+/// Result of checking one platform feature at runtime.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityStatus {
+    pub state: CapabilityState,
+    /// A diagnostic suitable for logs or a user-facing explanation.
+    pub detail: Option<String>,
+}
+
+impl CapabilityStatus {
+    #[must_use]
+    pub const fn available() -> Self {
+        Self {
+            state: CapabilityState::Available,
+            detail: None,
+        }
+    }
+
+    #[must_use]
+    pub fn unavailable(state: CapabilityState, detail: impl Into<String>) -> Self {
+        Self {
+            state,
+            detail: Some(detail.into()),
+        }
+    }
+}
+
+/// Why a platform capability can or cannot be used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityState {
+    Available,
+    PermissionRequired,
+    DriverMissing,
+    EntitlementUnavailable,
+    Unsupported,
+    NotImplemented,
+    Error,
+}
+
+/// Runtime capabilities reported by an OS adapter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlatformCapabilities {
+    pub virtual_hid: CapabilityStatus,
+    pub protected_key_storage: CapabilityStatus,
+    pub user_verification: CapabilityStatus,
+}
+
+/// Virtual authenticator attachment lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceState {
     Detached,
+    Starting,
     Attached,
+    Stopping,
+    Failed,
 }
 
-/// Errors returned by a platform-specific virtual HID implementation.
+/// Stable categories for platform errors, with the diagnostic retained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlatformErrorKind {
+    NotImplemented,
+    PermissionDenied,
+    DriverMissing,
+    EntitlementUnavailable,
+    Unsupported,
+    Io,
+    Timeout,
+    InvalidReport,
+    KeyStoreUnavailable,
+    UserVerificationUnavailable,
+    UserRejected,
+}
+
+/// Error returned from a platform provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PlatformError {
-    /// The target operating system does not have an implementation yet.
-    NotImplemented(HostPlatform),
+pub struct PlatformError {
+    pub kind: PlatformErrorKind,
+    pub platform: HostPlatform,
+    pub detail: String,
+}
+
+impl PlatformError {
+    #[must_use]
+    pub fn new(kind: PlatformErrorKind, platform: HostPlatform, detail: impl Into<String>) -> Self {
+        Self {
+            kind,
+            platform,
+            detail: detail.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn not_implemented(platform: HostPlatform, feature: &str) -> Self {
+        Self::new(
+            PlatformErrorKind::NotImplemented,
+            platform,
+            format!("{feature} is not implemented for {platform:?}"),
+        )
+    }
 }
 
 impl fmt::Display for PlatformError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotImplemented(platform) => {
-                write!(formatter, "virtual HID is not implemented for {platform:?}")
-            }
-        }
+        write!(
+            formatter,
+            "{:?} on {:?}: {}",
+            self.kind, self.platform, self.detail
+        )
     }
 }
 
 impl std::error::Error for PlatformError {}
 
-/// Contract implemented by each operating-system transport adapter.
-pub trait VirtualHidBackend {
-    /// Reports whether this backend can create a virtual FIDO HID device.
-    fn is_available(&self) -> bool;
+/// Contract implemented by each operating-system virtual HID adapter.
+pub trait VirtualHidBackend: Send {
+    /// Reports observed availability, including actionable failure details.
+    fn availability(&self) -> CapabilityStatus;
 
-    /// Attaches the virtual device to the operating system.
+    /// Convenience check for callers that only need a yes/no answer.
+    fn is_available(&self) -> bool {
+        self.availability().state == CapabilityState::Available
+    }
+
+    /// Creates and attaches the virtual FIDO HID device.
     fn attach(&mut self) -> Result<(), PlatformError>;
 
-    /// Detaches the virtual device from the operating system.
+    /// Detaches the virtual device. Detach should be safe to call repeatedly.
     fn detach(&mut self) -> Result<(), PlatformError>;
 
     /// Returns the current attachment state.
     fn state(&self) -> DeviceState;
+
+    /// Sends one HID input report from the authenticator to the host.
+    fn send_input_report(&mut self, report: &[u8]) -> Result<(), PlatformError>;
+
+    /// Receives one HID output report from the host, waiting no longer than `timeout`.
+    fn receive_output_report(&mut self, timeout: Duration) -> Result<Vec<u8>, PlatformError>;
 }
 
-/// Placeholder backend that fails closed until a native adapter is implemented.
+/// Cryptographic algorithm supported by the first FIDO credential profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigningAlgorithm {
+    /// ECDSA over P-256 with SHA-256 (COSE algorithm -7).
+    Es256,
+}
+
+/// Protection provided for a generated private key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyProtection {
+    HardwareBacked,
+    OsProtected,
+    Software,
+}
+
+/// Non-secret properties of a key stored by a provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyMetadata {
+    pub protection: KeyProtection,
+    pub exportable: bool,
+}
+
+/// Selects whether creation of a software-protected key was explicitly approved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyCreationPolicy {
+    PlatformProtectedOnly,
+    /// Use this only after the user has accepted an explicit security warning.
+    SoftwareKeyAfterExplicitConsent,
+}
+
+/// Opaque identifier for a key held by a provider. It never contains key bytes.
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct KeyReference(String);
+
+impl KeyReference {
+    #[must_use]
+    pub fn new(provider_reference: impl Into<String>) -> Self {
+        Self(provider_reference.into())
+    }
+
+    #[must_use]
+    pub fn as_provider_reference(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for KeyReference {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("KeyReference([REDACTED])")
+    }
+}
+
+/// Platform key storage contract. Implementations return signatures, never private key material.
+pub trait KeyStore: Send + Sync {
+    fn create_signing_key(
+        &self,
+        algorithm: SigningAlgorithm,
+        policy: KeyCreationPolicy,
+    ) -> Result<(KeyReference, KeyMetadata), PlatformError>;
+
+    fn sign(
+        &self,
+        key: &KeyReference,
+        algorithm: SigningAlgorithm,
+        message: &[u8],
+    ) -> Result<Vec<u8>, PlatformError>;
+
+    fn delete_key(&self, key: &KeyReference) -> Result<(), PlatformError>;
+}
+
+/// User-visible action that requires local confirmation before signing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerificationAction {
+    RegisterCredential,
+    Authenticate,
+}
+
+/// Minimum RP context presented to the local user for an approval request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerificationRequest {
+    pub relying_party_id: String,
+    pub relying_party_name: Option<String>,
+    pub action: VerificationAction,
+}
+
+/// Result of an explicit local confirmation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerificationDecision {
+    Approved,
+    Rejected,
+}
+
+/// Local user-presence or verification provider.
+pub trait UserVerification: Send + Sync {
+    fn request_confirmation(
+        &self,
+        request: &VerificationRequest,
+        timeout: Duration,
+    ) -> Result<VerificationDecision, PlatformError>;
+}
+
+/// Application lifecycle hooks for safely detaching platform resources.
+pub trait PlatformLifecycle: Send + Sync {
+    /// Release temporary handles and detach active virtual devices during shutdown.
+    fn shutdown(&self) -> Result<(), PlatformError>;
+}
+
+/// Placeholder provider that fails closed until native adapters are implemented.
 #[derive(Debug, Default)]
 pub struct UnavailableBackend;
 
+impl UnavailableBackend {
+    #[must_use]
+    pub fn capabilities(&self) -> PlatformCapabilities {
+        let not_implemented = |feature: &str| {
+            CapabilityStatus::unavailable(
+                CapabilityState::NotImplemented,
+                format!(
+                    "{feature} is not implemented for {:?}",
+                    HostPlatform::current()
+                ),
+            )
+        };
+
+        PlatformCapabilities {
+            virtual_hid: self.availability(),
+            protected_key_storage: not_implemented("protected key storage"),
+            user_verification: not_implemented("user verification"),
+        }
+    }
+}
+
 impl VirtualHidBackend for UnavailableBackend {
-    fn is_available(&self) -> bool {
-        false
+    fn availability(&self) -> CapabilityStatus {
+        CapabilityStatus::unavailable(
+            CapabilityState::NotImplemented,
+            format!(
+                "virtual FIDO HID is not implemented for {:?}",
+                HostPlatform::current()
+            ),
+        )
     }
 
     fn attach(&mut self) -> Result<(), PlatformError> {
-        Err(PlatformError::NotImplemented(HostPlatform::current()))
+        Err(PlatformError::not_implemented(
+            HostPlatform::current(),
+            "virtual FIDO HID",
+        ))
     }
 
     fn detach(&mut self) -> Result<(), PlatformError> {
@@ -89,5 +325,74 @@ impl VirtualHidBackend for UnavailableBackend {
 
     fn state(&self) -> DeviceState {
         DeviceState::Detached
+    }
+
+    fn send_input_report(&mut self, _report: &[u8]) -> Result<(), PlatformError> {
+        Err(PlatformError::not_implemented(
+            HostPlatform::current(),
+            "HID input reports",
+        ))
+    }
+
+    fn receive_output_report(&mut self, _timeout: Duration) -> Result<Vec<u8>, PlatformError> {
+        Err(PlatformError::not_implemented(
+            HostPlatform::current(),
+            "HID output reports",
+        ))
+    }
+}
+
+impl KeyStore for UnavailableBackend {
+    fn create_signing_key(
+        &self,
+        _algorithm: SigningAlgorithm,
+        _policy: KeyCreationPolicy,
+    ) -> Result<(KeyReference, KeyMetadata), PlatformError> {
+        Err(PlatformError::new(
+            PlatformErrorKind::KeyStoreUnavailable,
+            HostPlatform::current(),
+            "protected key storage is not implemented",
+        ))
+    }
+
+    fn sign(
+        &self,
+        _key: &KeyReference,
+        _algorithm: SigningAlgorithm,
+        _message: &[u8],
+    ) -> Result<Vec<u8>, PlatformError> {
+        Err(PlatformError::new(
+            PlatformErrorKind::KeyStoreUnavailable,
+            HostPlatform::current(),
+            "signing is unavailable because key storage is not implemented",
+        ))
+    }
+
+    fn delete_key(&self, _key: &KeyReference) -> Result<(), PlatformError> {
+        Err(PlatformError::new(
+            PlatformErrorKind::KeyStoreUnavailable,
+            HostPlatform::current(),
+            "key deletion is unavailable because key storage is not implemented",
+        ))
+    }
+}
+
+impl UserVerification for UnavailableBackend {
+    fn request_confirmation(
+        &self,
+        _request: &VerificationRequest,
+        _timeout: Duration,
+    ) -> Result<VerificationDecision, PlatformError> {
+        Err(PlatformError::new(
+            PlatformErrorKind::UserVerificationUnavailable,
+            HostPlatform::current(),
+            "local user verification is not implemented",
+        ))
+    }
+}
+
+impl PlatformLifecycle for UnavailableBackend {
+    fn shutdown(&self) -> Result<(), PlatformError> {
+        Ok(())
     }
 }
