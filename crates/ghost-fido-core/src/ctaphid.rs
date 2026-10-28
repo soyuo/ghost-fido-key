@@ -1,5 +1,6 @@
 //! Transport-neutral CTAPHID report framing.
 
+use crate::ctap2::{Ctap2Error, Ctap2Request, Ctap2Status, encode_response};
 use core::fmt;
 use std::{
     collections::BTreeMap,
@@ -49,11 +50,7 @@ pub fn dispatch(
         CtapHidCommand::Ping if message.channel != BROADCAST_CHANNEL && channel_is_active => {
             Ok(CtapHidDispatch::Ping(message.payload))
         }
-        CtapHidCommand::Cbor
-            if message.channel != BROADCAST_CHANNEL
-                && channel_is_active
-                && !message.payload.is_empty() =>
-        {
+        CtapHidCommand::Cbor if message.channel != BROADCAST_CHANNEL && channel_is_active => {
             Ok(CtapHidDispatch::Cbor(message.payload))
         }
         CtapHidCommand::Cancel
@@ -73,7 +70,6 @@ pub fn dispatch(
         {
             Err(CtapHidErrorCode::InvalidChannel)
         }
-        CtapHidCommand::Cbor if message.payload.is_empty() => Err(CtapHidErrorCode::InvalidLength),
         CtapHidCommand::Keepalive | CtapHidCommand::Error => Err(CtapHidErrorCode::InvalidCommand),
         _ => Ok(CtapHidDispatch::Unsupported),
     }
@@ -266,6 +262,7 @@ pub struct CtapHidSession {
 pub enum SessionEvent {
     Pending,
     Message(CtapHidDispatch),
+    Ctap2Request { channel: u32, request: Ctap2Request },
     Response([u8; HID_REPORT_SIZE]),
     Responses(Vec<[u8; HID_REPORT_SIZE]>),
     Cancelled(u32),
@@ -342,6 +339,19 @@ impl CtapHidSession {
                 }
             }
             Ok(CtapHidDispatch::Cancel) => Ok(SessionEvent::Cancelled(channel)),
+            Ok(CtapHidDispatch::Cbor(payload)) => match Ctap2Request::decode(&payload) {
+                Ok(request) => Ok(SessionEvent::Ctap2Request { channel, request }),
+                Err(error) => {
+                    let status = match error {
+                        Ctap2Error::EmptyRequest | Ctap2Error::UnsupportedCommand(_) => {
+                            Ctap2Status::InvalidCommand
+                        }
+                        Ctap2Error::InvalidCbor(_) => Ctap2Status::InvalidCbor,
+                    };
+                    let reports = encode_ctap2_response(channel, status, &[])?;
+                    session_response(reports)
+                }
+            },
             Ok(action) => Ok(SessionEvent::Message(action)),
             Err(code) => Ok(SessionEvent::Response(encode_error(channel, code)?)),
         }
@@ -353,6 +363,39 @@ impl CtapHidSession {
             self.pending.remove(channel);
         }
         expired
+    }
+
+    /// Frames a CTAP2 result on its originating channel while it remains active.
+    pub fn respond_ctap2(
+        &self,
+        channel: u32,
+        status: Ctap2Status,
+        payload: &[u8],
+    ) -> Result<Vec<[u8; HID_REPORT_SIZE]>, FrameError> {
+        if !self.channels.is_active(channel) {
+            return Err(FrameError::InvalidChannel);
+        }
+        encode_ctap2_response(channel, status, payload)
+    }
+}
+
+/// Adds the CTAP2 status byte and frames a response as CTAPHID CBOR reports.
+pub fn encode_ctap2_response(
+    channel: u32,
+    status: Ctap2Status,
+    payload: &[u8],
+) -> Result<Vec<[u8; HID_REPORT_SIZE]>, FrameError> {
+    let response = encode_response(status, payload);
+    let first = encode_initialization(channel, CtapHidCommand::Cbor, &response)?;
+    let mut reports = vec![first];
+    reports.extend(encode_continuations(channel, &response)?);
+    Ok(reports)
+}
+
+fn session_response(reports: Vec<[u8; HID_REPORT_SIZE]>) -> Result<SessionEvent, FrameError> {
+    match reports.as_slice() {
+        [report] => Ok(SessionEvent::Response(*report)),
+        _ => Ok(SessionEvent::Responses(reports)),
     }
 }
 

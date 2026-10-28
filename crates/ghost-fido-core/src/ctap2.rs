@@ -1,6 +1,6 @@
 //! Minimal CTAP2 command and status boundary.
 
-use crate::cbor::{CborValue, encode};
+use crate::cbor::{CborError, CborValue, decode, encode};
 
 use core::fmt;
 
@@ -64,6 +64,7 @@ impl Ctap2Status {
 pub enum Ctap2Error {
     EmptyRequest,
     UnsupportedCommand(u8),
+    InvalidCbor(CborError),
 }
 
 impl fmt::Display for Ctap2Error {
@@ -71,6 +72,7 @@ impl fmt::Display for Ctap2Error {
         match self {
             Self::EmptyRequest => f.write_str("CTAP2 request is empty"),
             Self::UnsupportedCommand(c) => write!(f, "unsupported CTAP2 command 0x{c:02x}"),
+            Self::InvalidCbor(error) => write!(f, "invalid CTAP2 CBOR payload: {error}"),
         }
     }
 }
@@ -84,8 +86,12 @@ pub struct Ctap2Request {
 impl Ctap2Request {
     pub fn decode(bytes: &[u8]) -> Result<Self, Ctap2Error> {
         let (&command, payload) = bytes.split_first().ok_or(Ctap2Error::EmptyRequest)?;
+        let command = command.try_into()?;
+        if !payload.is_empty() {
+            decode(payload).map_err(Ctap2Error::InvalidCbor)?;
+        }
         Ok(Self {
-            command: command.try_into()?,
+            command,
             payload: payload.to_vec(),
         })
     }
