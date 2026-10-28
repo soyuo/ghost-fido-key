@@ -1483,6 +1483,8 @@ CTAP2 입력 CBOR는 definite-length 값만 허용하며 기본 16 depth, 128 co
 
 `GetAssertionRequest`는 CBOR 필수 필드, 32-byte `clientDataHash`, optional `public-key` allow-list descriptor를 검증한다. RP ID의 SHA-256 hash를 사용해 allow-list 또는 discoverable credential을 RP별로 조회하며, 사용자 승인·서명·assertion 응답은 별도 handler 단계에서 수행한다. [`docs/ctap2-getassertion.md`](../docs/ctap2-getassertion.md)
 
+`MakeCredentialRequest`는 CBOR 필수 필드, RP/user entity, ordered public-key algorithm, excludeList 및 등록 옵션을 검증한다. key 생성·보호 저장·attestation·서명은 provider/handler 작업으로 남아 있다. [`docs/ctap2-makecredential.md`](../docs/ctap2-makecredential.md)
+
 Credential domain은 private key bytes 대신 opaque key handle만 보관하고, 모든 allow-list/discoverable 조회를 RP ID hash로 격리한다. 중복 credential ID와 빈 metadata는 등록 전에 거부한다. [`docs/credential-domain.md`](../docs/credential-domain.md)
 
 프로그램은 지원 OS에서 가상 HID 장치의 연결과 분리를 제어하고, 사용자가 별도의 하드웨어 보안 키 없이 표준 WebAuthn 인증을 시도할 수 있는 환경을 제공하는 것을 목표로 한다. 각 OS와 브라우저 조합은 실제 검증을 통과한 경우에만 지원한다.

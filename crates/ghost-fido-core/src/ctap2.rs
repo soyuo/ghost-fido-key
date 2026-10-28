@@ -52,6 +52,7 @@ pub enum Ctap2Status {
     CborUnexpectedType = 0x11,
     InvalidCbor = 0x12,
     MissingParameter = 0x14,
+    UnsupportedAlgorithm = 0x26,
     UnsupportedOption = 0x2b,
     NoCredentials = 0x2e,
     UserActionPending = 0x23,
@@ -124,6 +125,331 @@ pub struct GetAssertionRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MakeCredentialRp {
+    pub id: String,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MakeCredentialUser {
+    pub id: Vec<u8>,
+    pub name: Option<String>,
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublicKeyCredentialParameter {
+    pub algorithm: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MakeCredentialOptions {
+    pub resident_key: Option<bool>,
+    pub user_verification: Option<bool>,
+    pub user_presence: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MakeCredentialRequest {
+    pub client_data_hash: [u8; 32],
+    pub rp: MakeCredentialRp,
+    pub user: MakeCredentialUser,
+    pub public_key_credential_parameters: Vec<PublicKeyCredentialParameter>,
+    pub exclude_list: Option<Vec<Vec<u8>>>,
+    pub options: MakeCredentialOptions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MakeCredentialError {
+    InvalidCbor(CborError),
+    MissingParameter(u64),
+    UnexpectedType(u64),
+    InvalidParameter(u64),
+}
+
+impl From<GetAssertionError> for MakeCredentialError {
+    fn from(error: GetAssertionError) -> Self {
+        match error {
+            GetAssertionError::InvalidCbor(error) => Self::InvalidCbor(error),
+            GetAssertionError::MissingParameter(parameter) => Self::MissingParameter(parameter),
+            GetAssertionError::UnexpectedType(parameter) => Self::UnexpectedType(parameter),
+            GetAssertionError::InvalidParameter(parameter) => Self::InvalidParameter(parameter),
+        }
+    }
+}
+
+impl MakeCredentialError {
+    #[must_use]
+    pub const fn status(&self) -> Ctap2Status {
+        match self {
+            Self::InvalidCbor(_) => Ctap2Status::InvalidCbor,
+            Self::MissingParameter(_) => Ctap2Status::MissingParameter,
+            Self::UnexpectedType(_) => Ctap2Status::CborUnexpectedType,
+            Self::InvalidParameter(_) => Ctap2Status::InvalidParameter,
+        }
+    }
+}
+
+impl MakeCredentialRequest {
+    pub fn decode(payload: &[u8]) -> Result<Self, MakeCredentialError> {
+        let value = decode(payload).map_err(MakeCredentialError::InvalidCbor)?;
+        let CborValue::Map(entries) = value else {
+            return Err(MakeCredentialError::UnexpectedType(0));
+        };
+        let mut client_data_hash = None;
+        let mut rp = None;
+        let mut user = None;
+        let mut public_key_credential_parameters = None;
+        let mut exclude_list = None;
+        let mut options = None;
+        for (key, value) in entries {
+            let CborValue::Unsigned(key) = key else {
+                return Err(MakeCredentialError::UnexpectedType(0));
+            };
+            match key {
+                1 => {
+                    if client_data_hash.is_some() {
+                        return Err(MakeCredentialError::InvalidParameter(1));
+                    }
+                    let CborValue::Bytes(hash) = value else {
+                        return Err(MakeCredentialError::UnexpectedType(1));
+                    };
+                    client_data_hash = Some(
+                        hash.try_into()
+                            .map_err(|_| MakeCredentialError::InvalidParameter(1))?,
+                    );
+                }
+                2 => {
+                    if rp.is_some() {
+                        return Err(MakeCredentialError::InvalidParameter(2));
+                    }
+                    rp = Some(parse_make_credential_rp(value)?);
+                }
+                3 => {
+                    if user.is_some() {
+                        return Err(MakeCredentialError::InvalidParameter(3));
+                    }
+                    user = Some(parse_make_credential_user(value)?);
+                }
+                4 => {
+                    if public_key_credential_parameters.is_some() {
+                        return Err(MakeCredentialError::InvalidParameter(4));
+                    }
+                    public_key_credential_parameters = Some(parse_public_key_parameters(value)?);
+                }
+                5 => {
+                    if exclude_list.is_some() {
+                        return Err(MakeCredentialError::InvalidParameter(5));
+                    }
+                    let CborValue::Array(descriptors) = value else {
+                        return Err(MakeCredentialError::UnexpectedType(5));
+                    };
+                    exclude_list = Some(parse_credential_descriptors(descriptors, 5)?);
+                }
+                7 => {
+                    if options.is_some() {
+                        return Err(MakeCredentialError::InvalidParameter(7));
+                    }
+                    options = Some(parse_make_credential_options(value)?);
+                }
+                _ => {}
+            }
+        }
+        let public_key_credential_parameters =
+            public_key_credential_parameters.ok_or(MakeCredentialError::MissingParameter(4))?;
+        if public_key_credential_parameters.is_empty() {
+            return Err(MakeCredentialError::InvalidParameter(4));
+        }
+        Ok(Self {
+            client_data_hash: client_data_hash.ok_or(MakeCredentialError::MissingParameter(1))?,
+            rp: rp.ok_or(MakeCredentialError::MissingParameter(2))?,
+            user: user.ok_or(MakeCredentialError::MissingParameter(3))?,
+            public_key_credential_parameters,
+            exclude_list,
+            options: options.unwrap_or_default(),
+        })
+    }
+}
+
+fn parse_make_credential_rp(value: CborValue) -> Result<MakeCredentialRp, MakeCredentialError> {
+    let CborValue::Map(fields) = value else {
+        return Err(MakeCredentialError::UnexpectedType(2));
+    };
+    let mut id = None;
+    let mut name = None;
+    for (key, value) in fields {
+        let CborValue::Text(key) = key else {
+            return Err(MakeCredentialError::UnexpectedType(2));
+        };
+        match key.as_str() {
+            "id" => {
+                if id.is_some() {
+                    return Err(MakeCredentialError::InvalidParameter(2));
+                }
+                let CborValue::Text(value) = value else {
+                    return Err(MakeCredentialError::UnexpectedType(2));
+                };
+                if value.is_empty() {
+                    return Err(MakeCredentialError::InvalidParameter(2));
+                }
+                id = Some(value);
+            }
+            "name" => {
+                if name.is_some() {
+                    return Err(MakeCredentialError::InvalidParameter(2));
+                }
+                let CborValue::Text(value) = value else {
+                    return Err(MakeCredentialError::UnexpectedType(2));
+                };
+                name = Some(value);
+            }
+            _ => {}
+        }
+    }
+    Ok(MakeCredentialRp {
+        id: id.ok_or(MakeCredentialError::MissingParameter(2))?,
+        name,
+    })
+}
+
+fn parse_make_credential_user(value: CborValue) -> Result<MakeCredentialUser, MakeCredentialError> {
+    let CborValue::Map(fields) = value else {
+        return Err(MakeCredentialError::UnexpectedType(3));
+    };
+    let mut id = None;
+    let mut name = None;
+    let mut display_name = None;
+    for (key, value) in fields {
+        let CborValue::Text(key) = key else {
+            return Err(MakeCredentialError::UnexpectedType(3));
+        };
+        match key.as_str() {
+            "id" => {
+                if id.is_some() {
+                    return Err(MakeCredentialError::InvalidParameter(3));
+                }
+                let CborValue::Bytes(value) = value else {
+                    return Err(MakeCredentialError::UnexpectedType(3));
+                };
+                if value.is_empty() || value.len() > 64 {
+                    return Err(MakeCredentialError::InvalidParameter(3));
+                }
+                id = Some(value);
+            }
+            "name" => {
+                if name.is_some() {
+                    return Err(MakeCredentialError::InvalidParameter(3));
+                }
+                let CborValue::Text(value) = value else {
+                    return Err(MakeCredentialError::UnexpectedType(3));
+                };
+                name = Some(value);
+            }
+            "displayName" => {
+                if display_name.is_some() {
+                    return Err(MakeCredentialError::InvalidParameter(3));
+                }
+                let CborValue::Text(value) = value else {
+                    return Err(MakeCredentialError::UnexpectedType(3));
+                };
+                display_name = Some(value);
+            }
+            _ => {}
+        }
+    }
+    Ok(MakeCredentialUser {
+        id: id.ok_or(MakeCredentialError::MissingParameter(3))?,
+        name,
+        display_name,
+    })
+}
+
+fn parse_public_key_parameters(
+    value: CborValue,
+) -> Result<Vec<PublicKeyCredentialParameter>, MakeCredentialError> {
+    let CborValue::Array(parameters) = value else {
+        return Err(MakeCredentialError::UnexpectedType(4));
+    };
+    let mut parsed: Vec<PublicKeyCredentialParameter> = Vec::with_capacity(parameters.len());
+    for parameter in parameters {
+        let CborValue::Map(fields) = parameter else {
+            return Err(MakeCredentialError::UnexpectedType(4));
+        };
+        let mut credential_type = None;
+        let mut algorithm = None;
+        for (key, value) in fields {
+            let CborValue::Text(key) = key else {
+                return Err(MakeCredentialError::UnexpectedType(4));
+            };
+            match key.as_str() {
+                "type" => {
+                    if credential_type.is_some() {
+                        return Err(MakeCredentialError::InvalidParameter(4));
+                    }
+                    let CborValue::Text(value) = value else {
+                        return Err(MakeCredentialError::UnexpectedType(4));
+                    };
+                    if value != "public-key" {
+                        return Err(MakeCredentialError::InvalidParameter(4));
+                    }
+                    credential_type = Some(());
+                }
+                "alg" => {
+                    if algorithm.is_some() {
+                        return Err(MakeCredentialError::InvalidParameter(4));
+                    }
+                    algorithm = Some(match value {
+                        CborValue::Negative(value) => value,
+                        CborValue::Unsigned(value) => value
+                            .try_into()
+                            .map_err(|_| MakeCredentialError::InvalidParameter(4))?,
+                        _ => return Err(MakeCredentialError::UnexpectedType(4)),
+                    });
+                }
+                _ => {}
+            }
+        }
+        if credential_type.is_none() {
+            return Err(MakeCredentialError::MissingParameter(4));
+        }
+        let algorithm = algorithm.ok_or(MakeCredentialError::MissingParameter(4))?;
+        if parsed.iter().any(|entry| entry.algorithm == algorithm) {
+            return Err(MakeCredentialError::InvalidParameter(4));
+        }
+        parsed.push(PublicKeyCredentialParameter { algorithm });
+    }
+    Ok(parsed)
+}
+
+fn parse_make_credential_options(
+    value: CborValue,
+) -> Result<MakeCredentialOptions, MakeCredentialError> {
+    let CborValue::Map(entries) = value else {
+        return Err(MakeCredentialError::UnexpectedType(7));
+    };
+    let mut options = MakeCredentialOptions::default();
+    for (key, value) in entries {
+        let CborValue::Text(key) = key else {
+            return Err(MakeCredentialError::UnexpectedType(7));
+        };
+        let slot = match key.as_str() {
+            "rk" => &mut options.resident_key,
+            "uv" => &mut options.user_verification,
+            "up" => &mut options.user_presence,
+            _ => continue,
+        };
+        if slot.is_some() {
+            return Err(MakeCredentialError::InvalidParameter(7));
+        }
+        let CborValue::Bool(value) = value else {
+            return Err(MakeCredentialError::UnexpectedType(7));
+        };
+        *slot = Some(value);
+    }
+    Ok(options)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GetAssertionError {
     InvalidCbor(CborError),
     MissingParameter(u64),
@@ -191,7 +517,7 @@ impl GetAssertionRequest {
                     if descriptors.is_empty() {
                         return Err(GetAssertionError::InvalidParameter(3));
                     }
-                    allow_list = Some(parse_allow_list(descriptors)?);
+                    allow_list = Some(parse_credential_descriptors(descriptors, 3)?);
                 }
                 _ => {}
             }
@@ -214,41 +540,44 @@ impl GetAssertionRequest {
     }
 }
 
-fn parse_allow_list(descriptors: Vec<CborValue>) -> Result<Vec<Vec<u8>>, GetAssertionError> {
+fn parse_credential_descriptors(
+    descriptors: Vec<CborValue>,
+    parameter: u64,
+) -> Result<Vec<Vec<u8>>, GetAssertionError> {
     descriptors
         .into_iter()
         .map(|descriptor| {
             let CborValue::Map(fields) = descriptor else {
-                return Err(GetAssertionError::UnexpectedType(3));
+                return Err(GetAssertionError::UnexpectedType(parameter));
             };
             let mut credential_type = None;
             let mut id = None;
             for (key, value) in fields {
                 let CborValue::Text(key) = key else {
-                    return Err(GetAssertionError::UnexpectedType(3));
+                    return Err(GetAssertionError::UnexpectedType(parameter));
                 };
                 match key.as_str() {
                     "type" => {
                         if credential_type.is_some() {
-                            return Err(GetAssertionError::InvalidParameter(3));
+                            return Err(GetAssertionError::InvalidParameter(parameter));
                         }
                         let CborValue::Text(value) = value else {
-                            return Err(GetAssertionError::UnexpectedType(3));
+                            return Err(GetAssertionError::UnexpectedType(parameter));
                         };
                         if value != "public-key" {
-                            return Err(GetAssertionError::InvalidParameter(3));
+                            return Err(GetAssertionError::InvalidParameter(parameter));
                         }
                         credential_type = Some(());
                     }
                     "id" => {
                         if id.is_some() {
-                            return Err(GetAssertionError::InvalidParameter(3));
+                            return Err(GetAssertionError::InvalidParameter(parameter));
                         }
                         let CborValue::Bytes(value) = value else {
-                            return Err(GetAssertionError::UnexpectedType(3));
+                            return Err(GetAssertionError::UnexpectedType(parameter));
                         };
                         if value.is_empty() {
-                            return Err(GetAssertionError::InvalidParameter(3));
+                            return Err(GetAssertionError::InvalidParameter(parameter));
                         }
                         id = Some(value);
                     }
@@ -256,7 +585,7 @@ fn parse_allow_list(descriptors: Vec<CborValue>) -> Result<Vec<Vec<u8>>, GetAsse
                 }
             }
             if credential_type.is_none() || id.is_none() {
-                return Err(GetAssertionError::MissingParameter(3));
+                return Err(GetAssertionError::MissingParameter(parameter));
             }
             Ok(id.expect("validated above"))
         })
