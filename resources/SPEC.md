@@ -1471,6 +1471,8 @@ Windows 가상 USB 호스트 컨트롤러 및 장치 구현을 위한 참고 자
 
 공통 CTAPHID report framing은 `ghost-fido-core`가 소유하며, OS 어댑터는 64-byte report transport만 제공한다. framing 계층은 채널, 명령, 순번, payload 크기를 검증하고 CTAP command/CBOR 처리는 후속 단계로 분리한다. 구현 경계는 [`docs/ctaphid-framing.md`](../docs/ctaphid-framing.md)에 기록한다.
 
+CTAP2 dispatch는 command byte와 status-prefixed response envelope만 먼저 소유한다. CBOR, credential, PIN/UV 처리는 별도 구현 전까지 지원하지 않는 명령 또는 명시적 오류로 닫힌다. 경계는 [`docs/ctap2-dispatch.md`](../docs/ctap2-dispatch.md)에 기록한다.
+
 프로그램은 지원 OS에서 가상 HID 장치의 연결과 분리를 제어하고, 사용자가 별도의 하드웨어 보안 키 없이 표준 WebAuthn 인증을 시도할 수 있는 환경을 제공하는 것을 목표로 한다. 각 OS와 브라우저 조합은 실제 검증을 통과한 경우에만 지원한다.
 
 이 프로젝트의 핵심은 **USB 장치의 물리적 존재를 구현하는 것이 아니라, USB FIDO2 인증기의 표준 인터페이스와 인증 동작을
