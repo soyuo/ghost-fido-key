@@ -8,5 +8,7 @@ fn main() {
     println!("{} {}", product.name, product.version);
     println!("Host platform: {:?}", HostPlatform::current());
     println!("Virtual HID available: {}", backend.is_available());
-    println!("Scaffold only: protocol, UI, storage, and native drivers are not implemented.");
+    println!(
+        "Scaffold only: CTAP workflows are not connected to live HID transport; UI and native platform integration remain incomplete."
+    );
 }
