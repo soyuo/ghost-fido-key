@@ -10,6 +10,8 @@ type PlatformStatus = {
   deviceAttached: boolean;
   keyStorageStatus: string;
   userVerificationStatus: string;
+  credentialStoreAvailable: boolean;
+  credentialStoreStatus: string;
   statusMessage: string;
 };
 
@@ -76,6 +78,17 @@ function App() {
               <dd>{status?.userVerificationStatus ?? "확인 중"}</dd>
             </div>
           </dl>
+          <p
+            className="status-message"
+            role="status"
+            aria-label={
+              status?.credentialStoreAvailable
+                ? "Credential storage available"
+                : "Credential storage unavailable"
+            }
+          >
+            {status?.credentialStoreStatus ?? "Credential storage status is unavailable."}
+          </p>
         </div>
 
         <div className="notice" role="note">
