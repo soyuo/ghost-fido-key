@@ -12,6 +12,13 @@ coordinate size before returning the point. CNG stores X and Y as big-endian
 unsigned values in the public blob, as described by Microsoft's
 [`BCRYPT_ECCKEY_BLOB` documentation](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/ns-bcrypt-bcrypt_ecckey_blob).
 
+Linux currently has no hardware-backed key provider. Its `LinuxKeyStore`
+refuses `PlatformProtectedOnly` requests; an ES256 software key is created only
+with both the explicit software-key policy and consent token. The private
+scalar is kept in the default Secret Service collection, and metadata reports
+`Software` and `exportable: true`. Availability of Secret Service does not
+imply TPM-backed or non-extractable key protection.
+
 The macOS provider creates a persistent P-256 key in the Data Protection
 Keychain. `PlatformProtectedOnly` requests a Secure Enclave token and fails
 closed if the enclave cannot create the key. Software-backed Security.framework
