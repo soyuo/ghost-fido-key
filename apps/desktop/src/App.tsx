@@ -44,6 +44,10 @@ function App() {
 
     void refreshStatus()
       .catch(() => setError("백엔드 상태를 불러오지 못했습니다."));
+    const refreshTimer = window.setInterval(() => {
+      void refreshStatus().catch(() => setError("백엔드 상태를 불러오지 못했습니다."));
+    }, 1000);
+    return () => window.clearInterval(refreshTimer);
   }, []);
 
   useEffect(() => {
@@ -96,8 +100,8 @@ function App() {
       await invoke("start_authenticator", { softwareKeyRiskAcknowledged: true });
       setShowSoftwareKeyWarning(false);
       await refreshStatus();
-    } catch {
-      setRuntimeError("인증기를 시작하지 못했습니다. 가상 HID 권한과 키 저장소 상태를 확인하세요.");
+    } catch (cause) {
+      setRuntimeError(typeof cause === "string" ? cause : "인증기를 시작하지 못했습니다. 가상 HID 권한과 키 저장소 상태를 확인하세요.");
     } finally {
       setRuntimeAction(false);
     }
@@ -109,8 +113,8 @@ function App() {
     try {
       await invoke("stop_authenticator");
       await refreshStatus();
-    } catch {
-      setRuntimeError("인증기를 정상적으로 중지하지 못했습니다.");
+    } catch (cause) {
+      setRuntimeError(typeof cause === "string" ? cause : "인증기를 정상적으로 중지하지 못했습니다.");
     } finally {
       setRuntimeAction(false);
     }
@@ -137,8 +141,10 @@ function App() {
             <div>
               <p className="status-label">가상 인증기</p>
               <h2>
-                {status?.authenticatorRunning
+                {status?.deviceAttached
                   ? "연결됨"
+                  : status?.authenticatorRunning
+                    ? "연결 중"
                   : status?.virtualHidAvailable && status?.hostPlatform === "Linux"
                     ? "연결 대기"
                     : status?.virtualHidAvailable
