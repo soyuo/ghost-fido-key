@@ -1,0 +1,38 @@
+name: Task
+description: Track a bounded engineering or documentation task
+title: "[Task] "
+body:
+  - type: markdown
+    attributes:
+      value: "Please write this issue in English. Search for an existing issue and link related work before creating a duplicate."
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: State the outcome this task should deliver.
+    validations:
+      required: true
+  - type: textarea
+    id: rationale
+    attributes:
+      label: Context
+      description: Explain why this task is needed and provide relevant repository context.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Define observable completion conditions.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: related
+    attributes:
+      label: Related issues or pull requests
+      description: Link dependencies, prior decisions, and related work.
+    validations:
+      required: false

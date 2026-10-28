@@ -1,0 +1,47 @@
+name: Feature request
+description: Propose a user-facing capability or improvement
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: "Please write this issue in English and search for related requests first."
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and motivation
+      description: What user need or problem should this address?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed outcome
+      description: Describe the desired behavior without prescribing unnecessary implementation details.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: List observable outcomes that define completion.
+      placeholder: |
+        - [ ] The user can ...
+        - [ ] Unsupported platforms report ...
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope and constraints
+      description: Note relevant platforms, compatibility needs, and exclusions.
+    validations:
+      required: false
+  - type: textarea
+    id: related
+    attributes:
+      label: Related issues or pull requests
+      description: Link prior or related work.
+    validations:
+      required: false

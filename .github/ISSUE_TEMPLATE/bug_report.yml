@@ -1,0 +1,47 @@
+name: Bug report
+description: Report a reproducible defect
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: "Please write this issue in English and search for an existing report first."
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the defect and its impact.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide the shortest reliable reproduction.
+      placeholder: |
+        1. Start the application
+        2. Connect the virtual authenticator
+        3. Observe the failure
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS/version, architecture, application version, and browser if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: related
+    attributes:
+      label: Related issues or pull requests
+      description: Link any related work.
+    validations:
+      required: false
