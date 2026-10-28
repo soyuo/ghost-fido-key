@@ -1,0 +1,2 @@
+# Grant only the active local seat access to the virtual HID control device.
+SUBSYSTEM=="misc", KERNEL=="uhid", TAG+="uaccess"
