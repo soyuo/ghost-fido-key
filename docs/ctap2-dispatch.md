@@ -2,7 +2,7 @@
 
 `ghost-fido-core` decodes CTAP2 command bytes, validates bounded CBOR, serves an explicitly configured GetInfo profile, and validates typed MakeCredential/GetAssertion requests. `ghost-platform::AuthenticatorService` routes GetInfo, MakeCredential, GetAssertion, and GetNextAssertion through the existing provider-backed workflows. Provider and storage failures remain structured service errors for the transport/application layer to handle.
 
-The service requires an explicit GetInfo profile, credential store, key store, user-confirmation provider, registration policy, and timeout. Its channel-aware entry point scopes multi-credential continuation state to the originating CTAPHID channel and clears it on any new command. It returns `InvalidCommand` for unsupported commands. CTAPHID framing and native HID lifecycle remain separate.
+The service requires an explicit GetInfo profile, credential store, key store, user-confirmation provider, registration policy, and timeout. Its channel-aware entry point scopes multi-credential continuation state to the originating CTAPHID channel and clears it on any new command. `AuthenticatorHidSession` connects that service to `CtapHidSession`: it routes complete CBOR requests, frames CTAP2 results, and clears assertion state when a channel is cancelled or expires. The OS transport owner still reads and writes the returned fixed-size reports; native HID lifecycle remains separate.
 
 Selected status wire values follow the FIDO CTAP 2.1 error table:
 

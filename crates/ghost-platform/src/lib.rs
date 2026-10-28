@@ -12,6 +12,7 @@ mod linux_uhid;
 
 mod assertion;
 mod authenticator;
+mod ctaphid_service;
 mod registration;
 
 #[cfg(target_os = "linux")]
@@ -24,6 +25,7 @@ pub use assertion::{
 pub use authenticator::{
     AuthenticatorService, AuthenticatorServiceConfig, AuthenticatorServiceError,
 };
+pub use ctaphid_service::{AuthenticatorHidError, AuthenticatorHidEvent, AuthenticatorHidSession};
 pub use registration::{
     MakeCredentialExecutionError, check_credential_exclusion, register_make_credential,
 };
