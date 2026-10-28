@@ -1111,6 +1111,7 @@ dependencies = [
  "ghost-fido-core",
  "libc",
  "uhid-virt",
+ "windows",
 ]
 
 [[package]]
