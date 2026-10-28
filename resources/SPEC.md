@@ -1,13 +1,74 @@
-# Virtual FIDO2 Security Key
+﻿# Virtual FIDO2 Security Key
 
 > 물리 USB 없이 동작하는 소프트웨어 기반 가상 USB 보안 키 시스템 설계 명세서
 
-**문서 버전:** 1.0  
-**작성 기준일:** 2026-10-26  
-**프로젝트 유형:** Windows Desktop Application / Virtual USB Device / FIDO2
-Authenticator  
-**목표 플랫폼:** Windows 11 x64  
-**개발 상태:** 설계 단계
+**문서 버전:** 1.1
+**작성 기준일:** 2026-10-28
+**프로젝트 유형:** Cross-platform Desktop Application / Virtual HID / FIDO2 Authenticator
+**목표 플랫폼:** Windows, macOS, Linux (지원 버전은 플랫폼 검증 단계에서 확정)
+**공통 언어:** Rust
+**데스크톱 UI:** Tauri 2 (계획)
+**개발 상태:** 멀티플랫폼 아키텍처 결정 및 기술 검증 단계
+
+## 0. 멀티플랫폼 아키텍처 개정 사항
+
+이 절은 Windows 전용 초안에서 멀티플랫폼 설계로 전환하기 위한 최신 기준선이다. 아래 내용과 본문 중 플랫폼별 구현 세부가 충돌하면 이 절과 `resources/STEP.md`를 우선한다. 기존 Windows 전용 절은 공통 CTAP·보안 요구사항의 참고 자료로 남기며, 플랫폼별 구현 근거 없이 다른 운영체제에 그대로 적용하지 않는다.
+
+### 0.1 제품 범위
+
+제품 목표는 물리 USB 없이 운영체제의 인증기 탐색 경로에 가상 FIDO HID 인증기를 제공하는 데스크톱 애플리케이션이다. Windows, macOS, Linux 지원을 지향하되 지원 여부는 OS 버전·CPU 아키텍처·브라우저 조합별 검증을 통과한 범위로 한정한다. 모든 웹사이트와 모든 운영체제 버전에서 동작한다고 보장하지 않는다.
+
+첫 출시 후보 범위는 Windows 10/11 x64, macOS 11 이상(지원 CPU 아키텍처는 빌드·드라이버 검증으로 확정), Linux x86_64 및 aarch64의 선정 배포판이다. 이는 잠정 범위이며 각 플랫폼의 설치·권한·장치 인식·브라우저 상호운용 검증 후 정식 지원표로 확정한다.
+
+### 0.2 공통 기술과 플랫폼별 기술
+
+| 영역 | 기준 기술 | 책임 |
+| --- | --- | --- |
+| 데스크톱 UI | Tauri 2, Rust backend, 웹 프런트엔드 | 상태, 설정, 승인, 플랫폼 상태 표시 |
+| 공통 인증기 코어 | Rust workspace | CTAPHID, CBOR, CTAP2, 자격 증명 정책 및 공통 오류 모델 |
+| 플랫폼 경계 | Rust trait/API 및 제한된 IPC | 공통 코어와 OS 기능을 분리하고 실패를 명시적으로 전달 |
+| Linux 가상 HID | `/dev/uhid` 사용자 공간 어댑터 후보 | UHID 장치 수명주기와 HID report 전달; 권한과 배포 규칙 별도 검증 |
+| Windows 가상 HID | UdeCx/KMDF 기반 네이티브 드라이버 후보 | Windows 장치 열거 및 endpoint 전달; 서명·설치·제거 검증 |
+| macOS 가상 HID | CoreHID virtual device API 및 entitlement 후보 | entitlement 발급, 서명, 배포와 브라우저 인식 가능성을 먼저 검증 |
+| 암호 키 보관 | 플랫폼별 `KeyStore` provider | TPM, Secure Enclave 또는 OS 보호 저장소 등 실제 제공 능력을 보고하고 정책 적용 |
+| 메타데이터 | SQLite 등 공통 저장소 후보 | 민감한 개인 키 원문은 저장하지 않고 OS 보호 저장소의 key reference만 저장 |
+
+Tauri는 UI 구현을 공유하지만 가상 HID 장치·드라이버·보안 저장소를 자동으로 멀티플랫폼화하지 않는다. OS별 드라이버, entitlement, 권한, 패키징과 호환성 검증은 각 플랫폼에서 따로 수행한다.
+
+### 0.3 모듈 책임 경계
+
+- `ghost-fido-core`: 플랫폼 API에 의존하지 않는 CTAPHID·CTAP2·CBOR 및 인증기 도메인 로직을 소유한다.
+- `ghost-platform`: 장치 lifecycle, HID report I/O, 키 보관, 사용자 확인 기능을 trait 기반 provider로 노출한다.
+- `apps/ghost-fido`: 개발용 실행 진입점이다. 제품 UI는 `apps/desktop`에 Tauri 앱으로 추가한다.
+- `platforms/linux`, `platforms/windows`, `platforms/macos`: 각 OS의 네이티브 어댑터와 드라이버 프로젝트를 둔다. 커널·드라이버 코드는 플랫폼 요구에 따라 Rust 이외의 언어를 사용할 수 있다.
+- CTAP 코어는 실제 USB 버스나 특정 OS의 장치 API를 직접 호출하지 않는다.
+
+모든 provider는 가용 여부와 보안 보장을 명시해야 한다. 구현되지 않았거나 entitlement·권한이 없는 provider는 장치를 사용할 수 있다고 표시하지 않고 안전하게 실패한다.
+
+### 0.4 플랫폼별 기술 검증 게이트
+
+| 플랫폼 | 조사할 경로 | 출시 전 필수 증거 |
+| --- | --- | --- |
+| Linux | 커널 UHID (`/dev/uhid`) | 권한·udev 설치 방식, 대상 배포판에서 HID 열거, 브라우저의 FIDO 발견과 CTAPHID 왕복 |
+| Windows | UdeCx/KMDF 가상 USB/HID 드라이버 | 드라이버 개발·서명·배포·제거 절차, 장치 관리자 열거, 브라우저 FIDO 발견 및 report 왕복 |
+| macOS | CoreHID virtual device API와 `com.apple.developer.hid.virtual.device` entitlement 검토 | entitlement 요청·배포 가능성, 코드 서명·권한, HID 등록 및 브라우저 FIDO 탐색 확인 |
+
+macOS entitlement와 가상 HID 공개 API의 가용성을 확인하기 전에는 macOS 제품 배포를 약속하지 않는다. Windows와 Linux 역시 장치가 OS에 열거된 것만으로 WebAuthn 경로가 검증되었다고 간주하지 않는다.
+
+### 0.5 문서 간 우선순위 및 보안 경계
+
+`STEP.md`는 구현 순서와 단계별 통과 기준을 정의한다. 이 절은 멀티플랫폼 제품 범위와 아키텍처의 현재 기준이다. 아래 본문의 Windows 전용 기술명과 UI 예시는 해당 OS의 구현 예로만 해석한다.
+
+공통 보안 원칙은 유지한다. 사용자 명시적 승인 없는 서명을 금지하고, 타사 제조사 VID/PID, AAGUID, 인증서 또는 attestation을 사칭하지 않으며, 물리 보안 키와 동등한 보안 보증을 하지 않는다. 플랫폼별 하드웨어 키 보호 능력은 지원 OS별로 따로 설명한다.
+
+### 0.6 공식 플랫폼 참고 자료
+
+- [Rust 플랫폼 지원 등급](https://doc.rust-lang.org/rustc/platform-support.html)
+- [Tauri 2 플랫폼별 사전 요구사항](https://v2.tauri.app/start/prerequisites/)
+- [Linux UHID 문서](https://docs.kernel.org/hid/uhid.html)
+- [Windows UDE Client Driver](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/writing-a-ude-client-driver)
+- [Apple CoreHID HIDVirtualDevice](https://developer.apple.com/documentation/corehid/hidvirtualdevice)
+- [Apple 가상 HID entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.developer.hid.virtual.device)
 
 ---
 
@@ -121,15 +182,15 @@ Windows WebAuthn Plugin API를 활용하는 소프트웨어 인증기 방식도 
 
 | ID | 목표 | 우선순위 |
 | --- | --- | --- |
-| G-001 | 물리 USB 없는 가상 USB 장치 생성 | 필수 |
-| G-002 | Windows USB HID 장치 열거 | 필수 |
+| G-001 | 물리 USB 없는 가상 FIDO HID 장치 생성 | 필수 |
+| G-002 | 지원 운영체제의 FIDO HID 장치 열거 | 필수 |
 | G-003 | FIDO CTAPHID 통신 지원 | 필수 |
 | G-004 | CTAP2 인증기 구현 | 필수 |
 | G-005 | WebAuthn 등록 및 인증 | 필수 |
 | G-006 | 패스키 자격 증명 관리 | 필수 |
-| G-007 | TPM 2.0 보호 키 연동 | 필수 목표 |
+| G-007 | 플랫폼별 보호 키 저장소 연동 | 필수 목표 |
 | G-008 | 사용자 승인 인터페이스 | 필수 |
-| G-009 | 가상 USB 연결 및 분리 | 필수 |
+| G-009 | OS별 가상 HID 연결 및 분리 | 필수 |
 | G-010 | PIN 설정 및 검증 | 필수 |
 | G-011 | 암호화된 메타데이터 저장 | 필수 |
 | G-012 | 브라우저 호환성 테스트 | 필수 |
@@ -144,7 +205,7 @@ v1에서는 다음을 필수 지원하지 않는다.
 - 물리적 USB 보안 키 제작
 - 실제 USB 컨트롤러 펌웨어 교체
 - BLE/NFC 보안 키
-- macOS/Linux 네이티브 지원
+- 지원 매트릭스에 포함되지 않은 운영체제 및 버전 지원
 - 서로 다른 PC 사이의 자동 패스키 동기화
 - 클라우드 인증 정보 저장
 - 타사 보안 키의 개인 키 추출
@@ -158,19 +219,15 @@ v1에서는 다음을 필수 지원하지 않는다.
 
 | 항목 | 권장 환경 |
 | --- | --- |
-| OS | Windows 11 64-bit |
-| UI | C# / .NET 8 이상 |
-| 관리 서비스 | C# / .NET |
-| 인증 엔진 | C# / .NET |
-| USB/IP 에뮬레이션 | USB/IP 프로토콜 기반 |
-| 가상 USB 컨트롤러 | VHCI 호환 드라이버 |
-| 정식 드라이버 대안 | Windows UdeCx / KMDF |
-| 암호화 | Windows CNG |
-| 키 보관 | TPM 2.0 |
-| 인증 승인 | 프로그램 UI / Windows Hello 연동 검토 |
-| 메타데이터 저장 | SQLite |
+| OS | Windows, macOS, Linux; 버전과 아키텍처는 단계별 지원 매트릭스로 확정 |
+| 공통 코어 | Rust workspace |
+| 데스크톱 UI | Tauri 2와 Rust backend; 프런트엔드 기술은 UI scaffold 단계에서 확정 |
+| 플랫폼 HID | Linux UHID, Windows UdeCx/KMDF, macOS CoreHID 후보; 각각 독립 검증 |
+| 키 보관 | 플랫폼별 `KeyStore` provider; 하드웨어 보호 수준을 기능별로 보고 |
+| 승인 및 확인 | 공통 승인 정책과 OS별 사용자 확인 provider |
+| 메타데이터 저장 | SQLite 후보, 개인 키 원문 저장 금지 |
 | 통신 직렬화 | CBOR |
-| 진단 및 테스트 | .NET Test / Windows SDK / WebAuthn 테스트 환경 |
+| 진단 및 테스트 | Rust tooling, Tauri tooling, OS별 SDK 및 WebAuthn 테스트 환경 |
 
 선정된 기술은 초기 권장안이며, 드라이버 호환성 및 라이선스 검토 결과에 따라 세부 구현을 변경할 수 있다.
 
@@ -1181,147 +1238,49 @@ virtual-fido/
 
 ## 20. 구현 단계
 
-### Phase 1 — 가상 USB 기반 구현
+`resources/STEP.md`가 현재 구현 순서와 단계별 완료 기준의 기준 문서다. 이 절의 이전 Windows 전용 Phase 계획을 대체한다.
 
-목표는 물리 장치 없이 Windows가 가상 USB 장치를 인식하는 것이다.
-
-작업:
-
-- USB/IP 및 VHCI 구성 검증
-- 가상 USB 컨트롤러 접근
-- HID Descriptor 생성
-- 가상 장치 연결
-- 장치 관리자 열거 확인
-- 가상 장치 분리
-- 비정상 종료 후 정리
-
-**완료 기준:** 물리 USB 없이 가상 HID 장치가 정상적으로 연결·분리된다.
-
-### Phase 2 — CTAPHID 구현
-
-작업:
-
-- HID 리포트 전송
-- INIT
-- PING
-- CBOR 전송
-- 채널 관리
-- 메시지 분할과 재조립
-- CANCEL
-- KEEPALIVE
-- ERROR
-
-**완료 기준:** 테스트 클라이언트와 정상적인 CTAPHID 명령을 교환한다.
-
-### Phase 3 — CTAP2 인증기 구현
-
-작업:
-
-- GetInfo
-- MakeCredential
-- GetAssertion
-- ClientPIN
-- 자격 증명 저장
-- CBOR 처리
-- 인증 데이터 생성
-- 서명 생성
-- PIN 오류 및 취소 처리
-
-**완료 기준:** 테스트 환경에서 WebAuthn 등록과 인증에 성공한다.
-
-### Phase 4 — 보안 기능 통합
-
-작업:
-
-- TPM 키 생성
-- TPM 서명 연동
-- SQLite 암호화 저장
-- 사용자 승인 UI
-- PIN 및 잠금 정책
-- IPC 접근 제한
-- 로그 보안
-- 초기화 및 복구
-
-**완료 기준:** 개인 키 추출 없이 서명하고, 승인되지 않은 요청을 거부한다.
-
-### Phase 5 — 데스크톱 애플리케이션 완성
-
-작업:
-
-- 연결 및 분리 버튼
-- 장치 상태 표시
-- 인증 승인 팝업
-- 패스키 목록
-- 설정 화면
-- 오류 진단
-- 설치 프로그램
-- 서비스 수명주기
-
-**완료 기준:** 사용자가 명령줄 없이 시스템을 조작할 수 있다.
-
-### Phase 6 — 브라우저 호환성 테스트
-
-작업:
-
-- Chrome 인증
-- Edge 인증
-- Windows 장치 인식 테스트
-- 보안 키 등록
-- 패스키 로그인
-- PIN 입력
-- 사용자 승인
-- 등록된 키 재사용
-- 사이트별 호환성 비교
-
-**완료 기준:** 최소 하나의 표준 WebAuthn 테스트 환경에서 가상 USB 경로를 통한 등록과 재인증에 성공한다.
-
-### Phase 7 — 안정성 및 보안 검증
-
-작업:
-
-- CTAP 파서 퍼징
-- 비정상 메시지 검증
-- 서비스 강제 종료
-- 드라이버 오류 복구
-- 저장소 손상 복구
-- TPM 오류 처리
-- PIN 반복 실패
-- 사용자 승인 타임아웃
-- IPC 권한 검사
-- 장치 반복 연결·분리
-- 장시간 실행 안정성 테스트
-
-**완료 기준:** 정의된 오류 및 보안 검증을 통과하고 알려진 중대한 결함이 해결된다.
+1. 지원 OS·버전·아키텍처와 Tauri/Rust 빌드 조건을 확정한다.
+2. Linux UHID, Windows UdeCx/KMDF, macOS CoreHID 후보를 각각 최소 구현으로 검증하고 출시 플랫폼을 선정한다.
+3. Rust 공통 core와 Tauri UI, OS adapter 경계를 구현한다.
+4. 각 지원 OS의 가상 HID와 lifecycle을 구현한다.
+5. 공통 CTAPHID, CBOR, CTAP2와 credential 흐름을 구현한다.
+6. OS별 키 저장소, 사용자 확인, UI 승인과 데이터 보호를 통합한다.
+7. 각 OS·브라우저 조합에서 WebAuthn 상호운용, 안정성, 보안, 설치·업데이트·제거를 검증한다.
+8. 검증된 플랫폼만 지원 대상으로 공개한다.
 
 ## 21. 테스트 및 인수 기준
+
+각 테스트는 지원한다고 선언하는 OS·버전·아키텍처 조합에서 반복한다. 결과에는 OS 빌드, 브라우저 버전, backend 및 key provider 상태를 기록한다.
 
 | 테스트 ID | 검증 내용 | 기대 결과 |
 | --- | --- | --- |
 | T-001 | 실제 USB 미연결 상태에서 실행 | 정상 실행 |
-| T-002 | 가상 USB 연결 | Windows 장치 열거 성공 |
-| T-003 | FIDO HID 탐색 | CTAPHID 장치 발견 |
+| T-002 | 플랫폼 adapter를 통한 가상 HID 연결 | 대상 OS에서 HID 장치 열거 성공 |
+| T-003 | FIDO HID 탐색 | 지원 브라우저가 authenticator 발견 |
 | T-004 | CTAPHID INIT | 정상 응답 |
 | T-005 | CTAPHID PING | 데이터 일치 |
 | T-006 | CTAP GetInfo | 유효한 응답 |
 | T-007 | 신규 Credential 생성 | 정상 생성 |
-| T-008 | Credential 기반 인증 | 서명 검증 성공 |
+| T-008 | Credential 기반 인증 | RP 서명 검증 성공 |
 | T-009 | 잘못된 PIN | 오류 반환 |
 | T-010 | 인증 요청 거부 | 인증 실패 |
 | T-011 | 승인 타임아웃 | 요청 취소 |
-| T-012 | TPM 비추출형 키 사용 | 키 내보내기 실패 |
-| T-013 | 프로그램 정상 종료 | 가상 장치 분리 |
-| T-014 | 프로그램 강제 종료 | 복구 정책 적용 |
+| T-012 | 선택한 보호 키 provider 사용 | provider 정책에 따른 비추출성 검증 |
+| T-013 | 프로그램 정상 종료 | 가상 HID 장치 분리 |
+| T-014 | 프로그램 강제 종료 | 플랫폼 복구 정책 적용 |
 | T-015 | 패스키 삭제 | 재인증에 사용 불가 |
 | T-016 | 인증기 초기화 | 기존 자격 증명 폐기 |
-| T-017 | Chrome 테스트 | 등록 및 인증 |
-| T-018 | Edge 테스트 | 등록 및 인증 |
+| T-017 | Chrome 테스트 | 지원 OS에서 등록 및 인증 |
+| T-018 | Edge 테스트 | 지원 OS에서 등록 및 인증 |
 | T-019 | 장치 반복 연결 | 장치 상태 정상 |
 | T-020 | IPC 무단 호출 | 접근 거부 |
 | T-021 | 저장소 변조 | 무결성 오류 |
 | T-022 | 로그인 세션 잠금 | 인증 차단 또는 정책에 따른 취소 |
+| T-023 | 플랫폼 권한·드라이버·entitlement 누락 | 안전하게 비활성화되고 실행 가능한 안내 제공 |
+| T-024 | 설치·업데이트·제거 | 장치 정리 및 사용자 데이터 정책 준수 |
 
-모든 테스트는 결과를 로그 또는 자동 테스트 보고서로 기록해야 한다.
-
+모든 테스트는 자동화 결과 또는 수동 재현 절차로 기록한다. 장치 열거만 성공하고 브라우저가 발견하지 못한 경우 T-003과 WebAuthn 인수 기준은 통과한 것으로 보지 않는다.
 ## 22. 품질 및 비기능 요구사항
 
 ### 22.1 안정성
@@ -1429,21 +1388,21 @@ Windows 가상 USB 호스트 컨트롤러 및 장치 구현을 위한 참고 자
 
 | 항목 | 최종 결정 |
 | --- | --- |
-| 프로젝트 형태 | Windows 데스크톱 소프트웨어 |
+| 프로젝트 형태 | Rust 공통 코어를 사용하는 멀티플랫폼 데스크톱 소프트웨어 |
 | 물리 USB 필요 여부 | 불필요 |
 | 일반 USB 개조 | 하지 않음 |
-| 가상 USB 생성 | v1 필수 |
-| 장치 유형 | Virtual USB HID FIDO2 |
-| USB 에뮬레이션 | USB/IP + VHCI 우선 검토 |
-| 대체 구현 | Windows UdeCx |
+| 가상 FIDO HID 생성 | 지원을 선언하는 각 OS에서 필수 |
+| 장치 유형 | OS별 가상 HID 기반 FIDO2 |
+| 공통 UI | Tauri 2 |
+| OS별 장치 경로 | Linux UHID, Windows UdeCx/KMDF, macOS CoreHID 후보 검증 |
 | 브라우저 인터페이스 | WebAuthn |
 | 인증 프로토콜 | CTAP2 / CTAPHID |
 | 패스키 생성 | 지원 |
 | 패스키 인증 | 지원 |
 | 사용자 존재 확인 | 앱 내 명시적 승인 |
-| 사용자 검증 | PIN / Windows Hello 연동 검토 |
-| 개인 키 저장 | TPM 비추출형 우선 |
-| 암호화 메타데이터 | SQLite + Windows 암호화 |
+| 사용자 검증 | PIN과 OS별 사용자 확인 기능을 분리 검증 |
+| 개인 키 저장 | OS별 보호 키 저장소, 가용성과 보장 수준 표시 |
+| 암호화 메타데이터 | SQLite 후보 + OS별 보호 기능 |
 | 소프트웨어 키 대체 모드 | 보안 검토 후 결정 |
 | 프로그램 실행 | 가상 USB 연결 기능 제공 |
 | 프로그램 종료 | 가상 USB 연결 해제 |
@@ -1453,19 +1412,19 @@ Windows 가상 USB 호스트 컨트롤러 및 장치 구현을 위한 참고 자
 
 ## 26. v1 최종 완료 정의
 
-프로젝트 v1.0은 다음 조건을 모두 만족하면 완료된 것으로 간주한다.
+프로젝트 v1.0은 지원한다고 선언하는 각 OS·버전·아키텍처 조합에서 다음 조건을 만족하면 완료된 것으로 간주한다. 멀티플랫폼 지원을 주장하려면 세 OS 모두의 필수 검증을 통과해야 한다.
 
 1. 물리적인 USB 장치 없이 설치하고 실행할 수 있다.
-2. 프로그램이 Windows 내부에 가상 USB HID 장치를 생성한다.
-3. Windows가 가상 장치를 USB FIDO 인터페이스로 열거한다.
+2. 프로그램이 해당 OS의 승인된 가상 HID 경로를 통해 장치를 생성한다.
+3. OS와 대상 브라우저가 가상 장치를 FIDO authenticator로 발견한다.
 4. CTAPHID 및 필수 CTAP2 명령이 정상 동작한다.
 5. 테스트 웹사이트에서 신규 패스키를 생성하고 등록할 수 있다.
 6. 등록한 패스키로 인증에 성공할 수 있다.
 7. 인증 과정에서 사용자 승인을 요구한다.
-8. 가능한 환경에서 TPM 비추출형 키를 사용한다.
+8. 플랫폼별 키 저장소의 보호 수준을 정확히 표시하고 해당 provider 정책을 따른다.
 9. 저장된 자격 증명을 조회하고 삭제할 수 있다.
 10. PIN 설정 및 사용자 확인 정책이 동작한다.
-11. 프로그램 종료 시 가상 USB 장치가 분리된다.
+11. 프로그램 종료 시 가상 HID 장치가 분리된다.
 12. 비정상 종료 시 잔여 장치 상태를 복구할 수 있다.
 13. 인증용 개인 키를 로그나 평문 파일로 노출하지 않는다.
 14. 프로토콜 오류 및 보안 테스트를 통과한다.
@@ -1475,16 +1434,13 @@ Windows 가상 USB 호스트 컨트롤러 및 장치 구현을 위한 참고 자
 
 ## 27. 프로젝트 최종 정의
 
-**Virtual FIDO2 Security Key는 물리 USB 없이 Windows에 가상 USB HID 기반 FIDO2 인증 장치를
-생성하고, CTAPHID·CTAP2·WebAuthn을 통해 웹사이트 패스키 등록과 인증을 수행하는 소프트웨어 보안 키 시스템이다.**
+**Virtual FIDO2 Security Key는 Rust 공통 인증기 코어와 Tauri 데스크톱 UI를 사용하고, 각 지원 OS의 가상 HID 경로를 통해 물리 USB 없이 FIDO2 인증 장치를 제공하는 멀티플랫폼 소프트웨어 인증기다.**
 
-가상 USB 계층은 운영체제와 브라우저에 표준 USB FIDO 인증기 통신 인터페이스를 제공하며, 인증 엔진은 자격 증명 관리, 사용자 승인,
-PIN 처리, 서명 생성 및 오류 처리를 담당한다.
+각 OS 어댑터는 운영체제의 HID 장치 lifecycle과 report I/O를 담당한다. 공통 인증 엔진은 CTAPHID·CTAP2·CBOR, 자격 증명 관리, 사용자 승인, PIN 처리, 서명 요청 및 오류 처리를 담당한다.
 
-개인 키는 가능한 경우 TPM 2.0의 비추출형 저장 방식을 사용하고, 사용자 계정 정보와 인증기 메타데이터는 보호된 로컬 저장소에서 관리한다.
+개인 키는 OS별 보호 키 저장 provider를 통해 관리한다. TPM, Secure Enclave 또는 OS 보호 저장소의 가용성은 플랫폼별로 확인하고 실제 보장 수준을 사용자에게 표시한다. 사용자 계정 정보와 인증기 메타데이터는 보호된 로컬 저장소에서 관리한다.
 
-프로그램은 가상 USB 장치의 연결과 분리를 제어하고, 사용자가 별도의 하드웨어 보안 키를 소유하지 않아도 표준 WebAuthn 인증을 사용할
-수 있는 환경을 제공하는 것을 목표로 한다.
+프로그램은 지원 OS에서 가상 HID 장치의 연결과 분리를 제어하고, 사용자가 별도의 하드웨어 보안 키 없이 표준 WebAuthn 인증을 시도할 수 있는 환경을 제공하는 것을 목표로 한다. 각 OS와 브라우저 조합은 실제 검증을 통과한 경우에만 지원한다.
 
 이 프로젝트의 핵심은 **USB 장치의 물리적 존재를 구현하는 것이 아니라, USB FIDO2 인증기의 표준 인터페이스와 인증 동작을
 소프트웨어로 구현하는 것**이다.
