@@ -8,8 +8,8 @@ pub mod ctaphid;
 
 pub use ctap2::{Ctap2Command, Ctap2Error, Ctap2Request, Ctap2Status, encode_response};
 pub use ctaphid::{
-    CtapHidAssembler, CtapHidCommand, CtapHidMessage, FrameError, encode_continuations,
-    encode_initialization,
+    BROADCAST_CHANNEL, ChannelError, CtapHidAssembler, CtapHidChannelAllocator, CtapHidCommand,
+    CtapHidMessage, FrameError, encode_continuations, encode_initialization,
 };
 
 /// Protocol families the authenticator is intended to expose.

@@ -1,11 +1,16 @@
 //! Transport-neutral CTAPHID report framing.
 
 use core::fmt;
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
 
 pub const HID_REPORT_SIZE: usize = 64;
 pub const INIT_PAYLOAD_SIZE: usize = HID_REPORT_SIZE - 7;
 pub const CONTINUATION_PAYLOAD_SIZE: usize = HID_REPORT_SIZE - 5;
 pub const MAX_PAYLOAD_SIZE: usize = 7609;
+pub const BROADCAST_CHANNEL: u32 = 0xffff_ffff;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -47,6 +52,76 @@ pub enum FrameError {
     InvalidSequence { expected: u8, actual: u8 },
     UnexpectedContinuation,
     IncompleteMessage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelError {
+    Exhausted,
+}
+
+/// Tracks concurrent CTAPHID channels and their deadlines without choosing an
+/// executor or timer implementation for the platform layer.
+#[derive(Debug)]
+pub struct CtapHidChannelAllocator {
+    capacity: usize,
+    next_candidate: u32,
+    active: BTreeMap<u32, Instant>,
+}
+
+impl CtapHidChannelAllocator {
+    #[must_use]
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            next_candidate: 1,
+            active: BTreeMap::new(),
+        }
+    }
+
+    pub fn allocate(&mut self, now: Instant, timeout: Duration) -> Result<u32, ChannelError> {
+        self.expire(now);
+        if self.active.len() >= self.capacity {
+            return Err(ChannelError::Exhausted);
+        }
+        for _ in 0..=self.capacity.saturating_add(1) {
+            let candidate = self.next_candidate;
+            self.next_candidate = self.next_candidate.wrapping_add(1).max(1);
+            if candidate != BROADCAST_CHANNEL
+                && candidate != 0
+                && !self.active.contains_key(&candidate)
+            {
+                self.active.insert(candidate, now + timeout);
+                return Ok(candidate);
+            }
+        }
+        Err(ChannelError::Exhausted)
+    }
+
+    pub fn release(&mut self, channel: u32) -> bool {
+        self.active.remove(&channel).is_some()
+    }
+
+    pub fn expire(&mut self, now: Instant) -> Vec<u32> {
+        let expired: Vec<u32> = self
+            .active
+            .iter()
+            .filter_map(|(&channel, &deadline)| (deadline <= now).then_some(channel))
+            .collect();
+        for channel in &expired {
+            self.active.remove(channel);
+        }
+        expired
+    }
+
+    #[must_use]
+    pub fn is_active(&self, channel: u32) -> bool {
+        self.active.contains_key(&channel)
+    }
+
+    #[must_use]
+    pub const fn capacity(&self) -> usize {
+        self.capacity
+    }
 }
 
 impl fmt::Display for FrameError {
