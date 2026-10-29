@@ -144,9 +144,6 @@ actor GhostFidoVirtualDevice {
 
         let newDelegate = GhostFidoVirtualDeviceDelegate(outputReports: outputReports)
         await newDevice.activate(delegate: newDelegate)
-        guard newDevice.hidDevice != nil else {
-            throw HIDDeviceError.notReady
-        }
         device = newDevice
         delegate = newDelegate
         outputReports.activate()

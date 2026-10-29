@@ -1,3 +1,4 @@
+import CoreHID
 import Foundation
 import Security
 
