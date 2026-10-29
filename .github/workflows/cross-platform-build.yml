@@ -227,7 +227,7 @@ jobs:
           if ($env:PROCESSOR_ARCHITECTURE -ne 'ARM64') {
             throw "Expected an ARM64 runner, got $env:PROCESSOR_ARCHITECTURE"
           }
-          $rustInfo = rustc -vV
+          $rustInfo = (rustc -vV) -join "`n"
           $rustInfo
           if ($rustInfo -notmatch '(?m)^host: aarch64-pc-windows-msvc$') {
             throw 'The Rust toolchain host is not Windows ARM64'
