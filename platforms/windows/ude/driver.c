@@ -1087,6 +1087,8 @@ GhostFidoEvtIoDeviceControl(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request,
     statusResponse->Capabilities = GHOST_FIDO_UDE_CAP_CONTROLLER_READY;
     statusResponse->InputReportSize = GHOST_FIDO_REPORT_SIZE;
     statusResponse->OutputReportSize = GHOST_FIDO_REPORT_SIZE;
+    statusResponse->VendorId = GHOST_FIDO_VENDOR_ID;
+    statusResponse->ProductId = GHOST_FIDO_PRODUCT_ID;
 
     WdfRequestCompleteWithInformation(Request, STATUS_SUCCESS,
                                       sizeof(*statusResponse));

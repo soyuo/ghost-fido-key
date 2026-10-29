@@ -6,7 +6,7 @@
 #endif
 
 #define GHOST_FIDO_UDE_PROTOCOL_MAJOR 1u
-#define GHOST_FIDO_UDE_PROTOCOL_MINOR 1u
+#define GHOST_FIDO_UDE_PROTOCOL_MINOR 2u
 #define GHOST_FIDO_UDE_STATUS_SIGNATURE 0x44554647u /* "GFUD" on the wire */
 #define GHOST_FIDO_UDE_MAX_STATUS_SIZE 256u
 
@@ -51,6 +51,8 @@ typedef struct GHOST_FIDO_UDE_STATUS_RESPONSE {
     ULONG InputReportSize;
     ULONG OutputReportSize;
     ULONG Reserved[2];
+    ULONG VendorId;
+    ULONG ProductId;
 } GHOST_FIDO_UDE_STATUS_RESPONSE;
 
 typedef struct GHOST_FIDO_UDE_OPERATION_REQUEST {

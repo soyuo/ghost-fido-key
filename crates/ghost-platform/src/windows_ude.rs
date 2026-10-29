@@ -31,10 +31,10 @@ const IOCTL_GHOST_FIDO_UDE_DETACH: u32 = ctl_code(0x22, 0x802, 0, 2);
 const IOCTL_GHOST_FIDO_UDE_WRITE_INPUT_REPORT: u32 = ctl_code(0x22, 0x803, 0, 2);
 const IOCTL_GHOST_FIDO_UDE_READ_OUTPUT_REPORT: u32 = ctl_code(0x22, 0x804, 0, 1);
 const UDE_PROTOCOL_MAJOR: u32 = 1;
-const UDE_PROTOCOL_MINOR: u32 = 1;
+const UDE_PROTOCOL_MINOR: u32 = 2;
 const UDE_STATUS_SIGNATURE: u32 = 0x4455_4647;
 const UDE_STATUS_REQUEST_SIZE: u32 = 16;
-const UDE_STATUS_RESPONSE_SIZE: usize = 36;
+const UDE_STATUS_RESPONSE_SIZE: usize = 44;
 const UDE_MAX_STATUS_SIZE: usize = 256;
 const UDE_REQUIRED_CAPABILITIES: u32 = 0x0f;
 const FIDO_REPORT_SIZE: u32 = 64;
@@ -95,6 +95,14 @@ struct UdeStatus {
     capabilities: u32,
     input_report_size: u32,
     output_report_size: u32,
+    vendor_id: u32,
+    product_id: u32,
+}
+
+impl UdeStatus {
+    fn has_valid_identity(&self) -> bool {
+        (1..=0xfffe).contains(&self.vendor_id) && (1..=0xfffe).contains(&self.product_id)
+    }
 }
 
 enum UdeQueryError {
@@ -223,6 +231,8 @@ impl WindowsUdeBackend {
             capabilities: read_u32(16),
             input_report_size: read_u32(20),
             output_report_size: read_u32(24),
+            vendor_id: read_u32(36),
+            product_id: read_u32(40),
         })
     }
 
@@ -379,6 +389,13 @@ impl Default for WindowsUdeBackend {
 impl VirtualHidBackend for WindowsUdeBackend {
     fn availability(&self) -> CapabilityStatus {
         match self.query_status() {
+            Ok(status) if !status.has_valid_identity() => CapabilityStatus::unavailable(
+                CapabilityState::NotImplemented,
+                format!(
+                    "UDE driver identity is not a valid assigned USB VID/PID: vendor=0x{:08x}, product=0x{:08x}; configure product-assigned 16-bit IDs",
+                    status.vendor_id, status.product_id
+                ),
+            ),
             Ok(status)
                 if status.capabilities & UDE_REQUIRED_CAPABILITIES == UDE_REQUIRED_CAPABILITIES
                     && status.input_report_size == FIDO_REPORT_SIZE
