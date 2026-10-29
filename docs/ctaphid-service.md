@@ -9,15 +9,19 @@ initialization, ping, error, and CTAP2 response reports use one event model.
 A completed CBOR request is emitted as
 `SessionEvent::Ctap2Request { channel, request }`. The caller executes
 it through `AuthenticatorService` and passes the response to
-`respond_ctap2`. This keeps the report loop available while the service waits
-for user approval. The adapter allows one active CTAP2 request at a time and
-returns CTAPHID `CHANNEL_BUSY` for another request until the first response is
-framed.
+`respond_ctap2`. The desktop runtime tracks each allocated channel separately
+and queues service execution in arrival order, while keeping the report loop
+available during user approval. Pending channels receive independent
+keepalives and deadlines; the shared credential store and service remain
+serialized.
 
-A valid CTAPHID CANCEL cancels pending user verification only when it targets
-the active CTAP2 channel. The service executor should return CTAP2
-`KEEPALIVE_CANCEL` and frame it with `respond_ctap2`. Channel expiry also
-cancels the active approval. The transport owner must clear that channel's
+A valid CTAPHID CANCEL removes a queued request before it can execute. For the
+currently executing channel, it cancels pending user verification and discards
+the eventual service response; the next queued request starts after that
+service call returns. Channel expiry follows the same per-channel cleanup.
+Cancelled or expired channels never receive a stale response. The service
+executor should return CTAP2 `KEEPALIVE_CANCEL` when cancellation reaches an
+active CTAP command. The transport owner must clear that channel's
 `AuthenticatorService` continuation state when it receives a cancellation or
 expiry event.
 
