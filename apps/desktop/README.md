@@ -22,6 +22,8 @@ npm run tauri dev
 
 Build the frontend with `npm run build`. Build a desktop bundle on a configured host with `npm run tauri build`.
 
+The packaged WebView Content Security Policy permits Tauri IPC and the app's bundled asset origins. The Vite development server and HMR origins are listed only in `devCsp`; they are not allowed by the production `csp`.
+
 The macOS CoreHID bridge is built as a static Swift library for the active Rust target. After the project receives assigned product identifiers, set `GHOST_FIDO_MACOS_VENDOR_ID` and `GHOST_FIDO_MACOS_PRODUCT_ID` to their decimal values while building. The app checks its signed entitlement before enabling the macOS start control; source entitlement files alone do not enable it.
 
 Credential listing, individual deletion, and authenticator reset use the host key-store provider on Linux, Windows, and macOS. Stop the authenticator before managing credentials. Deletion removes the provider key before removing encrypted metadata; if metadata cleanup fails, retrying deletion treats an already-missing provider key as deleted and can finish removing the metadata. Reset keeps metadata if a provider key cannot be deleted. Provider outages and metadata-storage failures still require a successful retry. These management commands do not establish virtual HID or browser WebAuthn support for the host.
