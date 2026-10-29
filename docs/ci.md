@@ -18,3 +18,11 @@ architectures. They do not prove virtual HID enumeration, browser FIDO discovery
 WebAuthn registration or assertion, signed driver installation, Secure Enclave
 availability, Secret Service runtime access, or packaged application behavior.
 Those platform and runtime checks remain separate release requirements.
+
+The native macOS runners also produce `.app` and `.dmg` bundles for their own
+architectures. The Windows x64 runner produces an NSIS setup executable. These
+unsigned development artifacts are retained by the workflow for seven days;
+they are not signed or notarized, and the Windows UDE driver packages are
+separate artifacts. CI checks package creation and expected output files only;
+it does not install or launch these bundles, validate driver installation, or
+establish platform support.
