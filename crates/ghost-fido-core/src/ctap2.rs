@@ -93,21 +93,45 @@ impl fmt::Display for Ctap2Error {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ctap2Request {
-    pub command: Ctap2Command,
-    pub payload: Vec<u8>,
+    command: Ctap2Command,
+    payload: Vec<u8>,
+    decoded_payload: Option<CborValue>,
 }
 
 impl Ctap2Request {
     pub fn decode(bytes: &[u8]) -> Result<Self, Ctap2Error> {
         let (&command, payload) = bytes.split_first().ok_or(Ctap2Error::EmptyRequest)?;
         let command = command.try_into()?;
-        if !payload.is_empty() {
-            decode(payload).map_err(Ctap2Error::InvalidCbor)?;
-        }
+        Self::new(command, payload.to_vec())
+    }
+
+    pub fn new(command: Ctap2Command, payload: Vec<u8>) -> Result<Self, Ctap2Error> {
+        let decoded_payload = if payload.is_empty() {
+            None
+        } else {
+            Some(decode(&payload).map_err(Ctap2Error::InvalidCbor)?)
+        };
         Ok(Self {
             command,
-            payload: payload.to_vec(),
+            payload,
+            decoded_payload,
         })
+    }
+
+    #[must_use]
+    pub const fn command(&self) -> Ctap2Command {
+        self.command
+    }
+
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    /// Splits a validated request so typed command parsing can consume its CBOR tree.
+    #[must_use]
+    pub fn into_parts(self) -> (Ctap2Command, Vec<u8>, Option<CborValue>) {
+        (self.command, self.payload, self.decoded_payload)
     }
 }
 
@@ -397,6 +421,10 @@ impl MakeCredentialError {
 impl MakeCredentialRequest {
     pub fn decode(payload: &[u8]) -> Result<Self, MakeCredentialError> {
         let value = decode(payload).map_err(MakeCredentialError::InvalidCbor)?;
+        Self::decode_value(value)
+    }
+
+    pub fn decode_value(value: CborValue) -> Result<Self, MakeCredentialError> {
         let CborValue::Map(entries) = value else {
             return Err(MakeCredentialError::UnexpectedType(0));
         };
@@ -688,6 +716,10 @@ impl GetAssertionError {
 impl GetAssertionRequest {
     pub fn decode(payload: &[u8]) -> Result<Self, GetAssertionError> {
         let value = decode(payload).map_err(GetAssertionError::InvalidCbor)?;
+        Self::decode_value(value)
+    }
+
+    pub fn decode_value(value: CborValue) -> Result<Self, GetAssertionError> {
         let CborValue::Map(entries) = value else {
             return Err(GetAssertionError::UnexpectedType(0));
         };

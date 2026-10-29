@@ -107,7 +107,7 @@ pub fn run(
                 ServiceCommand::Request { channel, request } => {
                     let response =
                         service
-                            .handle_on_channel(channel, &request)
+                            .handle_on_channel(channel, request)
                             .unwrap_or(Ctap2Response {
                                 status: Ctap2Status::Other,
                                 payload: Vec::new(),
