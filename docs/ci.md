@@ -6,6 +6,14 @@ frontend on native Ubuntu 22.04 x64 and Ubuntu 24.04 ARM64, Windows, and macOS
 runners. The ARM64 job checks the runner architecture before building and
 packaging the desktop application.
 
+The separate `Dependency security audit` workflow audits `Cargo.lock` against
+RustSec advisories and `apps/desktop/package-lock.json` against npm advisories.
+It runs on pull requests, pushes to `main`, weekly, and by manual dispatch. The
+workflow has read-only repository permissions and checks frontend development
+dependencies as well as runtime dependencies. A clean dependency audit is not a
+substitute for protocol review, platform testing, browser interoperability, or
+runtime security validation.
+
 Each job runs `cargo fmt --all -- --check`,
 `cargo check --workspace --locked`, `npm ci --prefix apps/desktop`, and
 `npm --prefix apps/desktop run build`. The Ubuntu job installs the Linux system
