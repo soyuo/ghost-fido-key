@@ -334,7 +334,7 @@ impl UserVerification for DesktopVerificationProvider {
     }
 }
 
-fn confirm_destructive_action(app: &AppHandle, title: &str, message: &str) -> Result<(), String> {
+fn confirm_native_action(app: &AppHandle, title: &str, message: &str) -> Result<(), String> {
     let confirmed = app
         .dialog()
         .message(message)
@@ -413,8 +413,8 @@ fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
 
 #[tauri::command]
 fn start_authenticator(
+    app: AppHandle,
     state: tauri::State<'_, DesktopState>,
-    software_key_risk_acknowledged: bool,
 ) -> Result<(), String> {
     let mut runtime = state
         .runtime
@@ -433,8 +433,6 @@ fn start_authenticator(
     if !state.credential_store_available {
         return Err(state.credential_store_status.clone());
     }
-    let (key_store, key_creation_policy, software_key_consent) =
-        runtime_key_provider(software_key_risk_acknowledged)?;
     let backend = ghost_platform::host_virtual_hid_backend();
     let availability = backend.availability();
     if availability.state != CapabilityState::Available {
@@ -442,6 +440,18 @@ fn start_authenticator(
             .detail
             .unwrap_or_else(|| "Virtual HID is unavailable.".into()));
     }
+    let software_key_risk_acknowledged = if HostPlatform::current() == HostPlatform::Linux {
+        confirm_native_action(
+            &app,
+            "Use Linux software signing keys?",
+            "Signing keys will be created in software and stored through Linux Secret Service. Protection depends on that service's configuration, and users with access to the account or secret store may be able to extract keys. Accepting allows software-key creation for this authenticator runtime session only.",
+        )?;
+        true
+    } else {
+        false
+    };
+    let (key_store, key_creation_policy, software_key_consent) =
+        runtime_key_provider(software_key_risk_acknowledged)?;
 
     let (stop_tx, stop_rx) = mpsc::sync_channel(1);
     let store = Arc::clone(&state.credential_store);
@@ -539,7 +549,7 @@ fn set_client_pin(
     let current_pin = current_pin.map(|pin| Zeroizing::new(pin.into_bytes()));
     let new_pin = Zeroizing::new(new_pin.into_bytes());
     with_stopped_credential_store(&state, |store| {
-        confirm_destructive_action(
+        confirm_native_action(
             &app,
             "Change authenticator PIN",
             "Set or change the authenticator PIN? The verifier will be stored in this computer's protected credential store.",
@@ -612,7 +622,7 @@ fn delete_credential(
             .as_deref()
             .or(credential.user_name.as_deref())
             .unwrap_or("unknown user");
-        confirm_destructive_action(
+        confirm_native_action(
             &app,
             "Delete credential",
             &format!("Delete the credential for {user} at {relying_party}? This cannot be undone."),
@@ -642,7 +652,7 @@ fn reset_credentials(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<usize, String> {
     with_stopped_credential_store(&state, |store| {
-        confirm_destructive_action(
+        confirm_native_action(
             &app,
             "Reset authenticator",
             "Delete all credentials and signing keys from this computer? This cannot be undone.",
