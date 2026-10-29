@@ -72,22 +72,26 @@ impl<'a> AuthenticatorService<'a> {
         &mut self,
         request: &Ctap2Request,
     ) -> Result<Ctap2Response, AuthenticatorServiceError> {
-        self.handle_on_channel(LEGACY_CHANNEL, request)
+        self.handle_on_channel(LEGACY_CHANNEL, request.clone())
     }
 
     /// Handles one CTAP2 request and scopes any GetNextAssertion state to its CTAPHID channel.
     pub fn handle_on_channel(
         &mut self,
         channel: u32,
-        request: &Ctap2Request,
+        request: Ctap2Request,
     ) -> Result<Ctap2Response, AuthenticatorServiceError> {
-        if request.command != Ctap2Command::GetNextAssertion {
+        let (command, payload, decoded_payload) = request.into_parts();
+        if command != Ctap2Command::GetNextAssertion {
             self.assertion_continuations.remove(&channel);
         }
-        match request.command {
-            Ctap2Command::GetInfo => Ok(self.get_info_handler.handle(&request.payload)),
+        match command {
+            Ctap2Command::GetInfo => Ok(self.get_info_handler.handle(&payload)),
             Ctap2Command::MakeCredential => {
-                let typed = match MakeCredentialRequest::decode(&request.payload) {
+                let typed = match decoded_payload.map_or_else(
+                    || MakeCredentialRequest::decode(&payload),
+                    MakeCredentialRequest::decode_value,
+                ) {
                     Ok(request) => request,
                     Err(error) => return Ok(Ctap2Response::error(error.status())),
                 };
@@ -104,7 +108,10 @@ impl<'a> AuthenticatorService<'a> {
                 .map_err(AuthenticatorServiceError::MakeCredential)
             }
             Ctap2Command::GetAssertion => {
-                let typed = match GetAssertionRequest::decode(&request.payload) {
+                let typed = match decoded_payload.map_or_else(
+                    || GetAssertionRequest::decode(&payload),
+                    GetAssertionRequest::decode_value,
+                ) {
                     Ok(request) => request,
                     Err(error) => return Ok(Ctap2Response::error(error.status())),
                 };
@@ -129,7 +136,7 @@ impl<'a> AuthenticatorService<'a> {
                 Ok(execution.response)
             }
             Ctap2Command::GetNextAssertion => {
-                if !request.payload.is_empty() {
+                if !payload.is_empty() {
                     return Ok(Ctap2Response::error(Ctap2Status::InvalidLength));
                 }
                 let Some(mut continuation) = self.assertion_continuations.remove(&channel) else {
