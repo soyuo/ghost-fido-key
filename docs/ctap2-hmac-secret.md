@@ -4,7 +4,9 @@ The `hmac-secret` extension is advertised only when the protected credential
 store and both registration and assertion paths can process it. The extension
 uses credential-scoped random material stored inside the authenticated,
 encrypted credential database. Neither the signing key provider nor the UI
-receives this material.
+receives this material. The extension is unavailable for credentials created
+before this field was added; ordinary assertion remains available for those
+credentials.
 
 The implementation target is CTAP 2.1 Protocol 1 processing: P-256 key
 agreement, SHA-256 key derivation, authenticated encrypted one- or two-salt

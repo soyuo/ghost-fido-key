@@ -35,7 +35,9 @@ pub use linux_keystore::LinuxKeyStore;
 
 pub use assertion::{
     GetAssertionExecution, GetAssertionExecutionError, execute_get_assertion,
-    execute_get_assertion_with_uv, execute_next_assertion, execute_next_assertion_with_uv,
+    execute_get_assertion_with_uv, execute_get_assertion_with_uv_and_hmac_secret,
+    execute_next_assertion, execute_next_assertion_with_uv,
+    execute_next_assertion_with_uv_and_hmac_secret,
 };
 pub use authenticator::{
     AuthenticatorService, AuthenticatorServiceConfig, AuthenticatorServiceError,
