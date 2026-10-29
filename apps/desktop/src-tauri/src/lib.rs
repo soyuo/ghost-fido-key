@@ -69,7 +69,9 @@ struct PlatformStatus {
     virtual_hid_available: bool,
     device_attached: bool,
     key_storage_status: String,
-    user_verification_status: &'static str,
+    desktop_approval_status: &'static str,
+    client_pin_status: &'static str,
+    native_user_verification_status: &'static str,
     credential_store_available: bool,
     credential_store_status: String,
     status_message: String,
@@ -328,18 +330,6 @@ impl UserVerification for DesktopVerificationProvider {
     }
 }
 
-fn capability_label(state: CapabilityState) -> &'static str {
-    match state {
-        CapabilityState::Available => "사용 가능",
-        CapabilityState::PermissionRequired => "권한 필요",
-        CapabilityState::DriverMissing => "드라이버 없음",
-        CapabilityState::EntitlementUnavailable => "entitlement 없음",
-        CapabilityState::Unsupported => "지원하지 않음",
-        CapabilityState::NotImplemented => "미구현",
-        CapabilityState::Error => "오류",
-    }
-}
-
 #[tauri::command]
 fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
     let product = ProductInfo::current();
@@ -368,6 +358,18 @@ fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
         .as_ref()
         .map(|status| status.key_storage_status.clone())
         .unwrap_or_default();
+    let client_pin_status = if !state.credential_store_available {
+        "Unavailable"
+    } else {
+        match state.credential_store.lock() {
+            Ok(store) => match store.as_ref() {
+                Some(store) if store.pin_state().verifier().is_some() => "Configured",
+                Some(_) => "Not configured",
+                None => "Unavailable",
+            },
+            Err(_) => "Unavailable",
+        }
+    };
 
     PlatformStatus {
         product_name: product.name,
@@ -376,7 +378,9 @@ fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
         virtual_hid_available,
         device_attached,
         key_storage_status,
-        user_verification_status: capability_label(CapabilityState::NotImplemented),
+        desktop_approval_status: "Available (explicit per-request approval)",
+        client_pin_status,
+        native_user_verification_status: "Not implemented",
         credential_store_available: state.credential_store_available,
         credential_store_status: state.credential_store_status.clone(),
         status_message: if runtime_message.is_empty() {

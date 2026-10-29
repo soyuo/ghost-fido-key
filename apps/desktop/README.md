@@ -26,4 +26,6 @@ The macOS CoreHID bridge is built as a static Swift library for the active Rust 
 
 Credential listing, individual deletion, and authenticator reset use the host key-store provider on Linux, Windows, and macOS. Stop the authenticator before managing credentials. Deletion removes the provider key before removing encrypted metadata; reset keeps metadata if a provider key cannot be deleted. These management commands do not establish virtual HID or browser WebAuthn support for the host.
 
+The status view reports desktop approval, CTAP ClientPIN configuration, and native OS user verification separately. Desktop approval means an explicit per-request confirmation dialog is available. ClientPIN reports only whether a PIN verifier is configured; PIN material and retry state are not exposed. Native OS user verification remains marked not implemented because no biometric or OS-authentication provider is connected. A configured PIN or available dialog does not imply that a browser has discovered or interoperated with the virtual authenticator.
+
 The app can also be previewed in a browser with `npm run dev`; the desktop-only status command is unavailable there. The existing command-line diagnostic remains available as the `ghost-fido` workspace package. Browser WebAuthn interoperability and a signed, entitled distribution still require separate macOS validation.
