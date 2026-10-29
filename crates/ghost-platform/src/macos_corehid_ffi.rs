@@ -1,5 +1,7 @@
 //! Narrow C ABI wrapper for the macOS CoreHID Swift package.
 
+#![allow(unsafe_code)]
+
 use std::{
     ffi::c_void,
     ptr::{self, NonNull},
