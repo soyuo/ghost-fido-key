@@ -27,6 +27,10 @@ type ApprovalPrompt = {
   timeoutMillis: number;
 };
 
+type ApprovalRequest = ApprovalPrompt & {
+  deadlineAt: number;
+};
+
 type CredentialSummary = {
   creationOrder: number;
   relyingPartyId: string | null;
@@ -44,7 +48,8 @@ function isActionCancelled(cause: unknown) {
 function App() {
   const [status, setStatus] = useState<PlatformStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [approvalRequests, setApprovalRequests] = useState<ApprovalPrompt[]>([]);
+  const [approvalRequests, setApprovalRequests] = useState<ApprovalRequest[]>([]);
+  const [approvalCountdownNow, setApprovalCountdownNow] = useState(() => performance.now());
   const [approvalError, setApprovalError] = useState<string | null>(null);
   const [respondingRequests, setRespondingRequests] = useState<Set<string>>(() => new Set());
   const [runtimeAction, setRuntimeAction] = useState(false);
@@ -115,9 +120,11 @@ function App() {
     let unlistenApproval: (() => void) | undefined;
     let unlistenCancelled: (() => void) | undefined;
     void listen<ApprovalPrompt>("approval-request", ({ payload }) => {
+      const receivedAt = performance.now();
+      setApprovalCountdownNow(receivedAt);
       setApprovalRequests((current) => [
         ...current.filter((request) => request.requestId !== payload.requestId),
-        payload,
+        { ...payload, deadlineAt: receivedAt + payload.timeoutMillis },
       ]);
     })
       .then((stopListening) => {
@@ -141,6 +148,15 @@ function App() {
       unlistenCancelled?.();
     };
   }, []);
+
+  useEffect(() => {
+    if (approvalRequests.length === 0) return;
+    const interval = window.setInterval(
+      () => setApprovalCountdownNow(performance.now()),
+      1000,
+    );
+    return () => window.clearInterval(interval);
+  }, [approvalRequests.length]);
 
   const respondToApproval = (requestId: string, approved: boolean) => {
     if (respondingRequests.has(requestId)) return;
@@ -417,6 +433,10 @@ function App() {
           <section className="approval-list" aria-label="Pending authenticator approvals">
             {approvalRequests.map((request) => {
               const responding = respondingRequests.has(request.requestId);
+              const secondsRemaining = Math.max(
+                0,
+                Math.ceil((request.deadlineAt - approvalCountdownNow) / 1000),
+              );
               return (
                 <article className="approval-card" key={request.requestId}>
                 <p className="eyebrow">Approval required</p>
@@ -426,7 +446,9 @@ function App() {
                   {request.relyingPartyName && <span> ({request.relyingPartyId})</span>}
                 </p>
                 <p className="approval-timeout">
-                  This request expires in {Math.ceil(request.timeoutMillis / 1000)} seconds.
+                  {secondsRemaining > 0
+                    ? `This request expires in ${secondsRemaining} seconds.`
+                    : "This request expired. Waiting for the authenticator to close it."}
                 </p>
                 <p className="approval-timeout">
                   Approving here opens a native confirmation dialog before signing.
