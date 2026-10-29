@@ -1,5 +1,6 @@
 const result = document.querySelector('#result');
 const authenticateButton = document.querySelector('#authenticate');
+const clearCredentialButton = document.querySelector('#clear-credential');
 
 function toBase64Url(buffer) {
   let binary = '';
@@ -71,29 +72,38 @@ async function runCeremony(button, operation) {
   button.disabled = true;
   authenticateButton.disabled = true;
   result.textContent = 'Waiting for browser and authenticator…';
+  let keepDisabled = false;
   try {
-    await operation();
+    keepDisabled = (await operation()) === false;
   } catch (error) {
     result.textContent = `Ceremony failed: ${error instanceof Error ? error.message : 'Unknown error.'}`;
   } finally {
-    button.disabled = false;
+    button.disabled = keepDisabled;
   }
 }
 
 document.querySelector('#register').addEventListener('click', (event) => {
   runCeremony(event.currentTarget, async () => {
-    const options = await api('/api/register/options');
+    const options = await api('/api/register/options', {
+      residentKey: document.querySelector('#resident-key').value,
+      timeout: Number(document.querySelector('#timeout').value),
+    });
     const credential = await navigator.credentials.create({ publicKey: creationOptions(options) });
     if (!(credential instanceof PublicKeyCredential)) throw new Error('The browser returned no public-key credential.');
     const verified = await api('/api/register/verify', serializeCredential(credential));
     authenticateButton.disabled = false;
+    clearCredentialButton.disabled = false;
     result.textContent = `Registration verified by the RP server.\nCredential ID: ${verified.credentialId}\nInitial counter: ${verified.counter}`;
   });
 });
 
 authenticateButton.addEventListener('click', (event) => {
   runCeremony(event.currentTarget, async () => {
-    const options = await api('/api/authenticate/options');
+    const options = await api('/api/authenticate/options', {
+      credentialMode: document.querySelector('#credential-mode').value,
+      userVerification: document.querySelector('#user-verification').value,
+      timeout: Number(document.querySelector('#timeout').value),
+    });
     const credential = await navigator.credentials.get({ publicKey: requestOptions(options) });
     if (!(credential instanceof PublicKeyCredential)) throw new Error('The browser returned no public-key credential.');
     const verified = await api('/api/authenticate/verify', serializeCredential(credential));
@@ -101,9 +111,20 @@ authenticateButton.addEventListener('click', (event) => {
   });
 });
 
+clearCredentialButton.addEventListener('click', (event) => {
+  runCeremony(event.currentTarget, async () => {
+    await api('/api/credential/clear', {});
+    authenticateButton.disabled = true;
+    clearCredentialButton.disabled = true;
+    result.textContent = 'The RP public-key record was cleared from this process. The authenticator credential was not deleted.';
+    return false;
+  });
+});
+
 api('/api/session').then((session) => {
   document.querySelector('#identity').textContent = `RP ID: ${session.rpID} · Origin: ${session.origin}`;
   authenticateButton.disabled = !session.credentialRegistered;
+  clearCredentialButton.disabled = !session.credentialRegistered;
 }).catch((error) => {
   result.textContent = `Could not initialize the local RP: ${error.message}`;
 });
