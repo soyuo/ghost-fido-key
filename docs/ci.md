@@ -14,6 +14,33 @@ dependencies as well as runtime dependencies. A clean dependency audit is not a
 substitute for protocol review, platform testing, browser interoperability, or
 runtime security validation.
 
+## Known unresolved Rust advisory
+
+As of 2026-10-29, [`cargo audit`](https://rustsec.org/advisories/RUSTSEC-2024-0429)
+reports `RUSTSEC-2024-0429` for `glib 0.18.5` on Linux. The locked Tauri 2.12.5
+graph reaches it through GTK 0.18.2 and WebKitGTK. Tauri 2.12.5 requires
+`gtk ^0.18`; Cargo rejects `gtk 0.19.0` because it does not satisfy that
+constraint. The [gtk3-rs 0.19.0 release](https://github.com/gtk-rs/gtk3-rs/releases/tag/0.19.0)
+uses gtk-rs-core 0.22, as confirmed in the
+[upstream Tauri compatibility discussion](https://github.com/tauri-apps/tauri/issues/12564),
+but it is not compatible with this Tauri 2 graph.
+
+Tauri's upstream [GTK4/WebKitGTK 6 migration](https://github.com/tauri-apps/tauri/pull/14684)
+is an unmerged Tauri 3 breaking change. Until a compatible maintained Tauri
+release is available, keep the advisory visible; do not ignore it, alter crate
+version metadata, or describe it as fixed. A source search found no
+`VariantStrIter` or `array_iter_str` call sites in this repository or the
+locked `tauri`, `tauri-runtime-wry`, `wry`, `tao`, `muda`, `gtk`, `webkit2gtk`,
+and `glib` sources. That limits known use in the current application, but does
+not remove the unsound API from the dependency graph or resolve the advisory.
+The upstream migration is tracked for this project in
+[issue #191](https://github.com/soyuo/ghost-fido-key/issues/191).
+
+`cargo audit` treats unsound advisories as warnings by default, so the current
+workflow reports this finding without failing. After the Linux dependency
+graph moves to a compatible fixed release, add `cargo audit --deny unsound` to
+make the resolved condition a CI gate and verify Linux x64 and ARM64 builds.
+
 Each job runs `cargo fmt --all -- --check`,
 `cargo check --workspace --locked`, `npm ci --prefix apps/desktop`, and
 `npm --prefix apps/desktop run build`. The Ubuntu job installs the Linux system
