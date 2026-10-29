@@ -59,6 +59,10 @@ jobs:
         if: runner.os == 'Windows'
         run: nuget restore platforms/windows/ude/packages.config -PackagesDirectory platforms/windows/ude/packages
 
+      - name: Install Windows Driver Kit packaging tools
+        if: runner.os == 'Windows'
+        run: winget install --id Microsoft.WindowsWDK.10.0.28000 --exact --accept-source-agreements --accept-package-agreements --silent
+
       - name: Build Windows UDE driver for x64
         if: runner.os == 'Windows'
         run: msbuild platforms/windows/ude/ghost-fido-ude.vcxproj /m /p:Configuration=Release /p:Platform=x64
@@ -86,6 +90,20 @@ jobs:
             throw "The ARM64 UDE driver build did not produce $driver"
           }
           Get-Item -LiteralPath $driver | Select-Object FullName, Length
+
+      - name: Package Windows UDE driver for x64 and ARM64
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./platforms/windows/ude/New-DriverPackages.ps1
+
+      - name: Upload unsigned Windows UDE development packages
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-ude-unsigned-development-packages
+          path: target/windows-ude/packages/
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2

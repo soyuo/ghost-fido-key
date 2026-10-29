@@ -1,0 +1,61 @@
+;
+; Development package for the Ghost FIDO UDE client driver.
+; Catalogs produced from this INF are unsigned.
+;
+
+[Version]
+Signature   = "$Windows NT$"
+Class       = USB
+ClassGuid   = {36FC9E60-C465-11CF-8056-444553540000}
+Provider    = %ProviderName%
+CatalogFile.NTamd64 = GhostFidoUde-x64.cat
+CatalogFile.NTarm64 = GhostFidoUde-arm64.cat
+DriverVer   = 10/29/2026,1.0.0.0
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 12
+
+[SourceDisksNames]
+1 = %DiskName%,,,
+
+[SourceDisksFiles]
+GhostFidoUde.sys = 1
+
+[Manufacturer]
+%ProviderName% = Models,NTamd64.10.0,NTarm64.10.0
+
+[Models.NTamd64.10.0]
+%DeviceDescription% = GhostFidoUde_Install,ROOT\GhostFidoUde
+
+[Models.NTarm64.10.0]
+%DeviceDescription% = GhostFidoUde_Install,ROOT\GhostFidoUde
+
+[GhostFidoUde_Install.NT]
+CopyFiles = GhostFidoUde_CopyFiles
+
+[GhostFidoUde_Install.NT.Services]
+AddService = GhostFidoUde,0x00000002,GhostFidoUde_Service
+
+[GhostFidoUde_Install.NT.Wdf]
+KmdfService = GhostFidoUde,GhostFidoUde_Wdf
+
+[GhostFidoUde_CopyFiles]
+GhostFidoUde.sys
+
+[GhostFidoUde_Service]
+DisplayName    = %ServiceDescription%
+ServiceType    = 1
+StartType      = 3
+ErrorControl   = 1
+ServiceBinary  = %12%\GhostFidoUde.sys
+Dependencies   = ucx01000, udecx
+
+[GhostFidoUde_Wdf]
+KmdfLibraryVersion = 1.15
+
+[Strings]
+ProviderName       = "Ghost FIDO Key"
+DeviceDescription  = "Ghost FIDO UDE Controller (Development)"
+ServiceDescription = "Ghost FIDO UDE Controller (Development)"
+DiskName           = "Ghost FIDO UDE Driver Package"
