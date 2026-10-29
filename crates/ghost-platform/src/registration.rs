@@ -2,8 +2,9 @@
 
 use ghost_fido_core::{
     CborValue, CredentialError, CredentialId, CredentialKeyMetadata, CredentialKeyProtection,
-    CredentialRecord, CredentialStore, Ctap2Response, Ctap2Status, HmacSecretMaterial, KeyHandle,
-    MakeCredentialRequest, encode_make_credential_response_with_extensions,
+    CredentialProtectionPolicy, CredentialRecord, CredentialStore, Ctap2Response, Ctap2Status,
+    HmacSecretMaterial, KeyHandle, MakeCredentialRequest,
+    encode_make_credential_response_with_extensions,
 };
 use std::time::Duration;
 use zeroize::Zeroize;
@@ -45,7 +46,7 @@ pub fn register_make_credential(
     aaguid: [u8; 16],
     timeout: Duration,
 ) -> Result<Ctap2Response, MakeCredentialExecutionError> {
-    if request.hmac_secret && !store.has_protected_storage() {
+    if (request.hmac_secret || request.cred_protect.is_some()) && !store.has_protected_storage() {
         return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
     }
     register_make_credential_with_uv(
@@ -73,7 +74,7 @@ pub fn register_make_credential_with_uv(
     timeout: Duration,
     user_verified: bool,
 ) -> Result<Ctap2Response, MakeCredentialExecutionError> {
-    if request.hmac_secret && !store.has_protected_storage() {
+    if (request.hmac_secret || request.cred_protect.is_some()) && !store.has_protected_storage() {
         return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
     }
     if !request
@@ -93,6 +94,10 @@ pub fn register_make_credential_with_uv(
                 Ctap2Status::UnsupportedOption
             },
         ));
+    }
+
+    if request.has_excluded_credential_requiring_uv(store) && !user_verified {
+        return Ok(Ctap2Response::error(Ctap2Status::PinUvAuthTokenRequired));
     }
 
     if let Some(response) = check_credential_exclusion(request, store, verification, timeout)? {
@@ -170,12 +175,17 @@ pub fn register_make_credential_with_uv(
             ));
         }
     };
-    let extensions = request.hmac_secret.then(|| {
-        CborValue::Map(vec![(
-            CborValue::Text("hmac-secret".into()),
-            CborValue::Bool(true),
-        )])
-    });
+    let mut extension_values = Vec::new();
+    if request.hmac_secret {
+        extension_values.push((CborValue::Text("hmac-secret".into()), CborValue::Bool(true)));
+    }
+    if let Some(policy) = request.cred_protect {
+        extension_values.push((
+            CborValue::Text("credProtect".into()),
+            CborValue::Unsigned(u64::from(policy as u8)),
+        ));
+    }
+    let extensions = (!extension_values.is_empty()).then_some(CborValue::Map(extension_values));
     let response = match encode_make_credential_response_with_extensions(
         request.rp_id_hash(),
         aaguid,
@@ -203,6 +213,9 @@ pub fn register_make_credential_with_uv(
         key_handle,
         public_key: Some(created.public_key.clone()),
         hmac_secret,
+        cred_protect: request
+            .cred_protect
+            .unwrap_or(CredentialProtectionPolicy::UserVerificationOptional),
         key_metadata: CredentialKeyMetadata {
             protection: match created.metadata.protection {
                 crate::KeyProtection::HardwareBacked => CredentialKeyProtection::HardwareBacked,

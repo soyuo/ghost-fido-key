@@ -3,8 +3,8 @@
 use std::{cmp::Reverse, time::Duration};
 
 use ghost_fido_core::{
-    CborValue, CredentialError, CredentialId, CredentialStore, Ctap2Response, Ctap2Status,
-    GetAssertionRequest, KeyHandle, client_pin_process_hmac_secret,
+    CborValue, CredentialError, CredentialId, CredentialProtectionPolicy, CredentialStore,
+    Ctap2Response, Ctap2Status, GetAssertionRequest, KeyHandle, client_pin_process_hmac_secret,
     encode_get_assertion_response_with_count_and_uv_and_extensions,
     get_assertion_authenticator_data_with_uv,
 };
@@ -105,6 +105,31 @@ pub fn execute_get_assertion_with_uv_and_hmac_secret(
     if matching.is_empty() {
         return Ok(single_response(Ctap2Response::error(
             Ctap2Status::NoCredentials,
+        )));
+    }
+    let blocked_by_policy = matching.iter().any(|record| {
+        record.cred_protect == CredentialProtectionPolicy::UserVerificationRequired
+            || (record.cred_protect
+                == CredentialProtectionPolicy::UserVerificationOptionalWithCredentialIdList
+                && request.allow_list.is_none())
+    });
+    matching.retain(|record| {
+        user_verified
+            || match record.cred_protect {
+                CredentialProtectionPolicy::UserVerificationOptional => true,
+                CredentialProtectionPolicy::UserVerificationOptionalWithCredentialIdList => {
+                    request.allow_list.is_some()
+                }
+                CredentialProtectionPolicy::UserVerificationRequired => false,
+            }
+    });
+    if matching.is_empty() {
+        return Ok(single_response(Ctap2Response::error(
+            if blocked_by_policy {
+                Ctap2Status::PinUvAuthTokenRequired
+            } else {
+                Ctap2Status::NoCredentials
+            },
         )));
     }
     if request.allow_list.is_none() {
