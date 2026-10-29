@@ -235,7 +235,11 @@ impl ClientPinHandler {
                     Ok(agreement) => agreement,
                     Err(_) => return Ctap2Response::error(Ctap2Status::Other),
                 };
-                let public_key = match decode_cbor(&agreement.cose_public_key()) {
+                let cose_public_key = match agreement.cose_public_key() {
+                    Ok(public_key) => public_key,
+                    Err(_) => return Ctap2Response::error(Ctap2Status::Other),
+                };
+                let public_key = match decode_cbor(&cose_public_key) {
                     Ok(value) => value,
                     Err(_) => return Ctap2Response::error(Ctap2Status::Other),
                 };
@@ -586,9 +590,12 @@ fn response_map(fields: Vec<(u64, CborValue)>) -> Ctap2Response {
             .map(|(key, value)| (CborValue::Unsigned(key), value))
             .collect(),
     );
-    Ctap2Response {
-        status: Ctap2Status::Success,
-        payload: encode_cbor(&value),
+    match encode_cbor(&value) {
+        Ok(payload) => Ctap2Response {
+            status: Ctap2Status::Success,
+            payload,
+        },
+        Err(_) => Ctap2Response::error(Ctap2Status::Other),
     }
 }
 
@@ -981,7 +988,10 @@ impl<'a> AuthenticatorService<'a> {
         }
         let mut auth_message = vec![subcommand];
         if params.is_some() {
-            auth_message.extend_from_slice(&encode_cbor(&parameter_value));
+            match encode_cbor(&parameter_value) {
+                Ok(encoded) => auth_message.extend_from_slice(&encoded),
+                Err(_) => return Ctap2Response::error(Ctap2Status::Other),
+            }
         }
         let auth: &[u8; PIN_UV_AUTH_PARAMETER_SIZE] = match auth.try_into() {
             Ok(auth) => auth,

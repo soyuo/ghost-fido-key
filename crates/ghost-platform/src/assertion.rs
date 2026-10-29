@@ -293,7 +293,10 @@ fn sign_assertion_for_credential(
             .to_vec();
     if let Some(ref extensions) = extensions {
         authenticator_data[32] |= 0x80;
-        authenticator_data.extend_from_slice(&ghost_fido_core::encode_cbor(extensions));
+        authenticator_data.extend_from_slice(
+            &ghost_fido_core::encode_cbor(extensions)
+                .map_err(|_| GetAssertionExecutionError::ResponseEncoding)?,
+        );
     }
     let mut signed_data =
         Vec::with_capacity(authenticator_data.len() + request.client_data_hash.len());

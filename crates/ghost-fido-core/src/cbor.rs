@@ -36,12 +36,15 @@ impl Zeroize for CborValue {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CborError {
     Empty,
     IntegerOverflow,
     Truncated,
     IndefiniteLength,
+    NonCanonicalEncoding,
+    MapKeyOrder,
+    DuplicateMapKey,
     UnsupportedType(u8),
     InvalidUtf8,
     DepthExceeded,
@@ -57,6 +60,11 @@ impl fmt::Display for CborError {
             Self::IntegerOverflow => f.write_str("CBOR negative integer is out of range"),
             Self::Truncated => f.write_str("CBOR input is truncated"),
             Self::IndefiniteLength => f.write_str("indefinite-length CBOR is not allowed"),
+            Self::NonCanonicalEncoding => {
+                f.write_str("CBOR integer or length is not minimally encoded")
+            }
+            Self::MapKeyOrder => f.write_str("CBOR map keys are not in CTAP2 canonical order"),
+            Self::DuplicateMapKey => f.write_str("CBOR map contains a duplicate key"),
             Self::UnsupportedType(t) => write!(f, "unsupported CBOR type {t}"),
             Self::InvalidUtf8 => f.write_str("CBOR text is not valid UTF-8"),
             Self::DepthExceeded => f.write_str("CBOR nesting depth exceeded"),
@@ -159,9 +167,21 @@ fn parse(
                 Ok((std::mem::replace(&mut *values, CborValue::Null), offset))
             } else {
                 let mut values = Zeroizing::new(CborValue::Map(Vec::with_capacity(count)));
+                let mut previous_key: Option<Zeroizing<Vec<u8>>> = None;
                 for _ in 0..count {
+                    let key_start = offset;
                     let (key, key_end) = parse(input, offset, depth + 1, limits)?;
                     let mut key = Zeroizing::new(key);
+                    let encoded_key = Zeroizing::new(input[key_start..key_end].to_vec());
+                    if let Some(previous) = &previous_key {
+                        match compare_map_keys(previous, &encoded_key) {
+                            core::cmp::Ordering::Less => {}
+                            core::cmp::Ordering::Equal => {
+                                return Err(CborError::DuplicateMapKey);
+                            }
+                            core::cmp::Ordering::Greater => return Err(CborError::MapKeyOrder),
+                        }
+                    }
                     let (value, value_end) = parse(input, key_end, depth + 1, limits)?;
                     let mut value = Zeroizing::new(value);
                     offset = value_end;
@@ -172,6 +192,7 @@ fn parse(
                         std::mem::replace(&mut *key, CborValue::Null),
                         std::mem::replace(&mut *value, CborValue::Null),
                     ));
+                    previous_key = Some(encoded_key);
                 }
                 Ok((std::mem::replace(&mut *values, CborValue::Null), offset))
             }
@@ -203,7 +224,26 @@ fn read_argument(input: &[u8], offset: usize, info: u8) -> Result<(u64, usize), 
     for byte in &input[offset..end] {
         value = (value << 8) | u64::from(*byte);
     }
+    let minimum = match width {
+        1 => 24,
+        2 => 256,
+        4 => 65_536,
+        8 => 4_294_967_296,
+        _ => unreachable!(),
+    };
+    if value < minimum {
+        return Err(CborError::NonCanonicalEncoding);
+    }
     Ok((value, end))
+}
+
+fn compare_map_keys(left: &[u8], right: &[u8]) -> core::cmp::Ordering {
+    let left_major = left.first().map_or(0, |byte| byte >> 5);
+    let right_major = right.first().map_or(0, |byte| byte >> 5);
+    left_major
+        .cmp(&right_major)
+        .then_with(|| left.len().cmp(&right.len()))
+        .then_with(|| left.cmp(right))
 }
 fn bounded_len(value: u64, limit: usize, bytes: bool) -> Result<usize, CborError> {
     let length = usize::try_from(value).map_err(|_| CborError::ByteLimitExceeded)?;
@@ -219,20 +259,19 @@ fn bounded_len(value: u64, limit: usize, bytes: bool) -> Result<usize, CborError
 }
 
 #[must_use]
-pub fn encode(value: &CborValue) -> Vec<u8> {
-    let mut output = Vec::new();
-    encode_into(value, &mut output);
-    output
+pub fn encode(value: &CborValue) -> Result<Vec<u8>, CborError> {
+    let mut output = Zeroizing::new(Vec::new());
+    encode_into(value, &mut output)?;
+    Ok(std::mem::take(&mut *output))
 }
 
-fn encode_into(value: &CborValue, output: &mut Vec<u8>) {
+fn encode_into(value: &CborValue, output: &mut Vec<u8>) -> Result<(), CborError> {
     match value {
         CborValue::Unsigned(value) => write_argument(output, 0, *value),
-        CborValue::Negative(value) => write_argument(
-            output,
-            1,
-            u64::try_from(-1 - *value).expect("negative conversion"),
-        ),
+        CborValue::Negative(value) => {
+            let argument = u64::try_from(-1 - *value).map_err(|_| CborError::IntegerOverflow)?;
+            write_argument(output, 1, argument);
+        }
         CborValue::Bytes(value) => {
             write_argument(output, 2, value.len() as u64);
             output.extend_from_slice(value);
@@ -244,19 +283,33 @@ fn encode_into(value: &CborValue, output: &mut Vec<u8>) {
         CborValue::Array(values) => {
             write_argument(output, 4, values.len() as u64);
             for value in values {
-                encode_into(value, output);
+                encode_into(value, output)?;
             }
         }
         CborValue::Map(values) => {
-            write_argument(output, 5, values.len() as u64);
+            let mut entries = Vec::with_capacity(values.len());
             for (key, value) in values {
-                encode_into(key, output);
-                encode_into(value, output);
+                let mut encoded_key = Zeroizing::new(Vec::new());
+                encode_into(key, &mut encoded_key)?;
+                entries.push((encoded_key, value));
+            }
+            entries.sort_by(|(left, _), (right, _)| compare_map_keys(left, right));
+            if entries
+                .windows(2)
+                .any(|pair| compare_map_keys(&pair[0].0, &pair[1].0) == core::cmp::Ordering::Equal)
+            {
+                return Err(CborError::DuplicateMapKey);
+            }
+            write_argument(output, 5, values.len() as u64);
+            for (encoded_key, value) in entries {
+                output.extend_from_slice(&encoded_key);
+                encode_into(value, output)?;
             }
         }
         CborValue::Bool(value) => output.push(if *value { 0xf5 } else { 0xf4 }),
         CborValue::Null => output.push(0xf6),
     }
+    Ok(())
 }
 
 fn write_argument(output: &mut Vec<u8>, major: u8, value: u64) {

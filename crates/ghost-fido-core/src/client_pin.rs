@@ -17,7 +17,7 @@ use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::{
-    cbor::{CborValue, encode},
+    cbor::{CborError, CborValue, encode},
     credentials::CredentialStore,
 };
 
@@ -109,7 +109,7 @@ impl PinKeyAgreement {
     }
 
     #[must_use]
-    pub fn cose_public_key(&self) -> Vec<u8> {
+    pub fn cose_public_key(&self) -> Result<Vec<u8>, CborError> {
         let point = self.public_key.to_sec1_point(false);
         encode(&CborValue::Map(vec![
             (CborValue::Unsigned(1), CborValue::Unsigned(2)),
