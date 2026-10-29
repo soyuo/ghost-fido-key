@@ -63,9 +63,13 @@ mirrors its fixed-width little-endian fields in `windows_ude.rs`.
   caller-supplied timeout expires.
 - The native driver exposes `\\.\GhostFidoUde` with read/write access for
   interactive users and full access for Local System and Administrators. The
-  driver reports all four source-implemented capability bits. The Rust adapter
-  still fails closed and cannot mark the backend `Available` until assigned
-  identity and runtime transport validation are present.
+  driver reports all four source-implemented capability bits. With a valid,
+  assigned vendor/product identity and exact 64-byte report sizes, the Rust
+  adapter reports `Configured` and permits a runtime start attempt. `Configured`
+  does not mean the attach/report path has succeeded or that a browser can
+  discover the device; the desktop continues to label runtime support
+  unverified. Missing or invalid identity, status, or report sizes remain
+  unavailable and prevent startup.
 
 The IOCTL access bits and controller ACL both restrict access. Every operation
 validates versions, exact structure sizes, reserved fields, and report lengths

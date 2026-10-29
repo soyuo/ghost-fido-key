@@ -8,6 +8,7 @@ type PlatformStatus = {
   productVersion: string;
   hostPlatform: string;
   virtualHidAvailable: boolean;
+  virtualHidCanStart: boolean;
   deviceAttached: boolean;
   keyStorageStatus: string;
   desktopApprovalStatus: string;
@@ -289,7 +290,7 @@ function App() {
               <p className="status-label">가상 인증기</p>
               <h2>
                 {status?.deviceAttached
-                  ? "연결됨"
+                  ? status.virtualHidAvailable ? "연결됨" : "런타임 연결됨 · 지원 검증 대기"
                   : status?.authenticatorRunning
                     ? "연결 중"
                   : status?.virtualHidAvailable && status?.hostPlatform === "Linux"
@@ -300,13 +301,13 @@ function App() {
               </h2>
             </div>
             <span className={`status-pill ${status?.virtualHidAvailable ? "pill-ready" : "pill-pending"}`}>
-              {status?.virtualHidAvailable ? "백엔드 준비" : "백엔드 미준비"}
+              {status?.virtualHidAvailable ? "백엔드 준비" : status?.virtualHidCanStart ? "구성됨 · 검증 대기" : "백엔드 미준비"}
             </span>
           </div>
           <p className="status-message">
             {error ?? status?.statusMessage ?? "시스템 상태를 확인하고 있습니다…"}
           </p>
-          {isTauri() && status && ["Linux", "Windows", "macOS"].includes(status.hostPlatform) && !status.authenticatorRunning && status.virtualHidAvailable && status.credentialStoreAvailable && (
+          {isTauri() && status && ["Linux", "Windows", "macOS"].includes(status.hostPlatform) && !status.authenticatorRunning && status.virtualHidCanStart && status.credentialStoreAvailable && (
             <div className="runtime-actions">
               <button type="button" disabled={runtimeAction} onClick={() => void startAuthenticator()}>
                 {runtimeAction ? "시작 중…" : "인증기 시작"}
