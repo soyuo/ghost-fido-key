@@ -71,6 +71,15 @@ report traffic.
 - Build-only KMDF project: `ghost-fido-ude.vcxproj`. It compiles `driver.c`
   for x64 and ARM64 with the pinned WDK 10.0.28000.2526 NuGet packages and
   writes `.sys` outputs under the repository `target/windows-ude` directory.
+- `GhostFidoUde.inf` registers the development controller against the
+  project-owned `ROOT\GhostFidoUde` ID. `New-DriverPackages.ps1` stages that INF
+  with the architecture-specific `.sys` and uses WDK `Inf2Cat` to create
+  `target/windows-ude/packages/x64` and `target/windows-ude/packages/arm64`.
+  Each directory contains its INF, SYS, and architecture-specific CAT. CI
+  uploads these unsigned development packages for seven days. The catalog is
+  unsigned metadata, not a driver signature or proof of installation/runtime
+  compatibility. The package catalog targets Windows 11 24H2 and 25H2; this
+  packaging check is not a declaration of validated OS support.
 - Default builds set `GhostFidoVendorId` and `GhostFidoProductId` to zero, so
   no virtual USB device is created. To enable descriptor/device creation in a
   development build, pass both properties to MSBuild, for example
@@ -80,8 +89,8 @@ report traffic.
   defaults. The current driver does not implement HID class requests or FIDO
   traffic, and these properties do not authorize product identity or confer
   readiness.
-- The project and CI do not produce an INF, catalog, signed package, or release
-  artifact. The compiled driver is not installable or ready for product use.
+- The CI package is unsigned and is not ready for end-user installation or
+  product use. Signing and release distribution remain separate gates.
 - Test installation, elevation, reboot, upgrade, and removal on supported
   Windows versions.
 - Sign the driver package using the distribution policy selected for the
@@ -89,8 +98,9 @@ report traffic.
 - Verify Device Manager enumeration, HID report round-trip, Chrome/Edge FIDO
   discovery, registration, and assertion separately.
 
-CI compiles x64 and ARM64 `.sys` files under the ignored `target/` directory.
-Those build outputs are not installable driver packages. The source implements
+CI compiles x64 and ARM64 `.sys` files and stages unsigned INF/SYS/CAT packages
+under the ignored `target/` directory. Those build outputs are not signed or
+ready for general installation. The source implements
 the descriptor, class-request, and report-transport paths, but real Windows
 runtime round-trip, assigned product VID/PID, signed packaging, installation,
 and browser discovery still require validation. Until those gates pass,
