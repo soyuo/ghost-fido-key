@@ -117,7 +117,7 @@ impl Ctap2Request {
     }
 
     pub fn new(command: Ctap2Command, payload: Vec<u8>) -> Result<Self, Ctap2Error> {
-        let decoded_payload = if payload.is_empty() {
+        let decoded_payload = if payload.is_empty() || command == Ctap2Command::Selection {
             None
         } else {
             Some(decode(&payload).map_err(Ctap2Error::InvalidCbor)?)

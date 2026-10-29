@@ -395,6 +395,7 @@ pub enum VerificationAction {
     RegisterCredential,
     Authenticate,
     CredentialExclusionCheck,
+    SelectAuthenticator,
     ResetAuthenticator,
 }
 
