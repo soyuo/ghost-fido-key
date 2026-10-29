@@ -16,7 +16,7 @@ PIN input is the decrypted 64-byte right-zero-padded value. Remove trailing zero
 
 ## Token and request authorization
 
-PIN/UV auth tokens are random, in-memory secrets. They are scoped to the permissions and relying-party ID granted by the token request, expire on the protocol-defined lifecycle, and are discarded on service shutdown, reset, or replacement. MakeCredential and GetAssertion must verify the command's `pinUvAuthParam` over the 32-byte client data hash before setting the UV flag. An invalid or unpermitted token fails closed.
+PIN/UV auth tokens are random, in-memory secrets. Legacy `getPINToken` grants only MakeCredential and GetAssertion in this implementation. `getPINUvAuthTokenUsingPinWithPermissions` accepts only those two permission bits and may bind the token to one RP ID; unsupported permission bits fail closed. Tokens are channel-scoped, expire after 30 seconds, and are discarded on channel cancellation, service shutdown, reset, or replacement. MakeCredential and GetAssertion must verify the command's `pinUvAuthParam` over the 32-byte client data hash before setting the UV flag. An invalid or unpermitted token fails closed.
 
 The local user approval path remains required for credential registration and assertion. PIN authentication supplies user verification; it does not silently authorize signing or bypass the existing user-presence prompt.
 
