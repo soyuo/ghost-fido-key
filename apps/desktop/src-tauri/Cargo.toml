@@ -22,6 +22,7 @@ ghost-fido-core = { path = "../../../crates/ghost-fido-core" }
 ghost-platform = { path = "../../../crates/ghost-platform" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
+log = "0.4"
 serde = { version = "1", features = ["derive"] }
 uuid = { version = "1.11", features = ["v4"] }
 zeroize = "1"
