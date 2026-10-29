@@ -665,9 +665,10 @@ impl<'a> AuthenticatorService<'a> {
                 }
                 profile
                     .extensions
-                    .retain(|extension| extension != "hmac-secret");
+                    .retain(|extension| extension != "hmac-secret" && extension != "credProtect");
                 if self.store.has_protected_storage() {
                     profile.extensions.push("hmac-secret".into());
+                    profile.extensions.push("credProtect".into());
                 }
                 profile.pin_uv_auth_protocols = vec![u64::from(PIN_UV_AUTH_PROTOCOL)];
                 match GetInfoHandler::new(&profile) {
@@ -1323,6 +1324,10 @@ impl<'a> AuthenticatorService<'a> {
                 ]),
             ),
             (9, CborValue::Unsigned(total)),
+            (
+                10,
+                CborValue::Unsigned(u64::from(record.cred_protect as u8)),
+            ),
         ])
     }
 

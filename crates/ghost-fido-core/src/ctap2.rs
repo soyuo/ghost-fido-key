@@ -2,7 +2,9 @@
 
 use crate::{
     cbor::{CborError, CborValue, decode, encode},
-    credentials::{CredentialRecord, CredentialStore, Es256PublicKey, RpIdHash},
+    credentials::{
+        CredentialProtectionPolicy, CredentialRecord, CredentialStore, Es256PublicKey, RpIdHash,
+    },
 };
 
 use core::fmt;
@@ -480,6 +482,8 @@ pub struct MakeCredentialRequest {
     pub exclude_list: Option<Vec<Vec<u8>>>,
     pub options: MakeCredentialOptions,
     pub hmac_secret: bool,
+    pub cred_protect: Option<CredentialProtectionPolicy>,
+    pub enforce_credential_protection_policy: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -529,7 +533,7 @@ impl MakeCredentialRequest {
         let mut public_key_credential_parameters = None;
         let mut exclude_list = None;
         let mut options = None;
-        let mut hmac_secret = None;
+        let mut extensions = None;
         for (key, value) in entries {
             let CborValue::Unsigned(key) = key else {
                 return Err(MakeCredentialError::UnexpectedType(0));
@@ -575,10 +579,10 @@ impl MakeCredentialRequest {
                     exclude_list = Some(parse_credential_descriptors(descriptors, 5)?);
                 }
                 6 => {
-                    if hmac_secret.is_some() {
+                    if extensions.is_some() {
                         return Err(MakeCredentialError::InvalidParameter(6));
                     }
-                    hmac_secret = Some(parse_hmac_secret_create(value)?);
+                    extensions = Some(parse_make_credential_extensions(value)?);
                 }
                 7 => {
                     if options.is_some() {
@@ -601,7 +605,9 @@ impl MakeCredentialRequest {
             public_key_credential_parameters,
             exclude_list,
             options: options.unwrap_or_default(),
-            hmac_secret: hmac_secret.unwrap_or(false),
+            hmac_secret: extensions.as_ref().is_some_and(|value| value.0),
+            cred_protect: extensions.as_ref().and_then(|value| value.1),
+            enforce_credential_protection_policy: extensions.is_some_and(|value| value.2),
         })
     }
 
@@ -609,6 +615,18 @@ impl MakeCredentialRequest {
     pub fn has_excluded_credential(&self, store: &CredentialStore) -> bool {
         self.exclude_list.as_ref().is_some_and(|exclude_list| {
             store.has_matching_credentials(self.rp_id_hash(), exclude_list)
+        })
+    }
+
+    #[must_use]
+    pub fn has_excluded_credential_requiring_uv(&self, store: &CredentialStore) -> bool {
+        self.exclude_list.as_ref().is_some_and(|exclude_list| {
+            store
+                .find_for_assertion(self.rp_id_hash(), Some(exclude_list))
+                .iter()
+                .any(|record| {
+                    record.cred_protect == CredentialProtectionPolicy::UserVerificationRequired
+                })
         })
     }
 
@@ -796,26 +814,60 @@ fn parse_make_credential_options(
     Ok(options)
 }
 
-fn parse_hmac_secret_create(value: CborValue) -> Result<bool, MakeCredentialError> {
+fn parse_make_credential_extensions(
+    value: CborValue,
+) -> Result<(bool, Option<CredentialProtectionPolicy>, bool), MakeCredentialError> {
     let CborValue::Map(entries) = value else {
         return Err(MakeCredentialError::UnexpectedType(6));
     };
     let mut requested = None;
+    let mut cred_protect = None;
+    let mut enforce_policy = None;
     for (key, value) in entries {
         let CborValue::Text(key) = key else {
             return Err(MakeCredentialError::UnexpectedType(6));
         };
-        if key == "hmac-secret" {
-            if requested.is_some() {
-                return Err(MakeCredentialError::InvalidParameter(6));
+        match key.as_str() {
+            "hmac-secret" => {
+                if requested.is_some() {
+                    return Err(MakeCredentialError::InvalidParameter(6));
+                }
+                let CborValue::Bool(value) = value else {
+                    return Err(MakeCredentialError::UnexpectedType(6));
+                };
+                requested = Some(value);
             }
-            let CborValue::Bool(value) = value else {
-                return Err(MakeCredentialError::UnexpectedType(6));
-            };
-            requested = Some(value);
+            "credProtect" => {
+                if cred_protect.is_some() {
+                    return Err(MakeCredentialError::InvalidParameter(6));
+                }
+                let CborValue::Unsigned(level) = value else {
+                    return Err(MakeCredentialError::UnexpectedType(6));
+                };
+                cred_protect = Some(match level {
+                    1 => CredentialProtectionPolicy::UserVerificationOptional,
+                    2 => CredentialProtectionPolicy::UserVerificationOptionalWithCredentialIdList,
+                    3 => CredentialProtectionPolicy::UserVerificationRequired,
+                    _ => return Err(MakeCredentialError::InvalidParameter(6)),
+                });
+            }
+            "enforceCredentialProtectionPolicy" => {
+                if enforce_policy.is_some() {
+                    return Err(MakeCredentialError::InvalidParameter(6));
+                }
+                let CborValue::Bool(value) = value else {
+                    return Err(MakeCredentialError::UnexpectedType(6));
+                };
+                enforce_policy = Some(value);
+            }
+            _ => {}
         }
     }
-    Ok(requested.unwrap_or(false))
+    Ok((
+        requested.unwrap_or(false),
+        cred_protect,
+        enforce_policy.unwrap_or(false),
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

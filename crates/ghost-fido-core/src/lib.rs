@@ -23,8 +23,9 @@ pub use client_pin::{
 };
 pub use credentials::{
     CredentialError, CredentialId, CredentialKeyMetadata, CredentialKeyProtection,
-    CredentialProtectionError, CredentialProtector, CredentialRecord, CredentialStore,
-    Es256PublicKey, HmacSecretMaterial, KeyHandle, ManagedCredential, PinState, RpIdHash,
+    CredentialProtectionError, CredentialProtectionPolicy, CredentialProtector, CredentialRecord,
+    CredentialStore, Es256PublicKey, HmacSecretMaterial, KeyHandle, ManagedCredential, PinState,
+    RpIdHash,
 };
 pub use ctap2::{
     Ctap2Command, Ctap2Error, Ctap2Request, Ctap2Response, Ctap2Status, GetAssertionError,
