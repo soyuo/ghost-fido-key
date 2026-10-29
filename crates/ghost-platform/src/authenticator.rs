@@ -260,7 +260,7 @@ impl ClientPinHandler {
         &mut self,
         channel: u32,
         fields: &[(CborValue, CborValue)],
-    ) -> Result<[u8; 32], Ctap2Status> {
+    ) -> Result<Zeroizing<[u8; 32]>, Ctap2Status> {
         let peer = field(fields, 3).ok_or(Ctap2Status::MissingParameter)?;
         let agreement = self
             .agreements
@@ -276,7 +276,7 @@ impl ClientPinHandler {
         &mut self,
         channel: u32,
         peer: &CborValue,
-    ) -> Result<[u8; 32], Ctap2Status> {
+    ) -> Result<Zeroizing<[u8; 32]>, Ctap2Status> {
         let agreement = self
             .agreements
             .remove(&channel)
@@ -314,12 +314,11 @@ impl ClientPinHandler {
         let mut encrypted_pin = encrypted.to_vec();
         let pin = client_pin_decrypt_pin(&secret, &mut encrypted_pin);
         secret.zeroize();
-        let Ok(mut pin) = pin else {
+        let Ok(pin) = pin else {
             return Ctap2Response::error(Ctap2Status::PinPolicyViolation);
         };
         let verifier = client_pin_hash(&pin);
-        pin.zeroize();
-        match store.set_pin_verifier(Some(verifier)) {
+        match store.set_pin_verifier(Some(*verifier)) {
             Ok(()) => Ctap2Response::error(Ctap2Status::Success),
             Err(_) => Ctap2Response::error(Ctap2Status::Other),
         }
@@ -386,12 +385,11 @@ impl ClientPinHandler {
         let mut encrypted_pin = new_encrypted.to_vec();
         let decrypted = client_pin_decrypt_pin(&secret, &mut encrypted_pin);
         secret.zeroize();
-        let Ok(mut pin) = decrypted else {
+        let Ok(pin) = decrypted else {
             return Ctap2Response::error(Ctap2Status::PinPolicyViolation);
         };
         let new_verifier = client_pin_hash(&pin);
-        pin.zeroize();
-        match store.set_pin_verifier(Some(new_verifier)) {
+        match store.set_pin_verifier(Some(*new_verifier)) {
             Ok(()) => Ctap2Response::error(Ctap2Status::Success),
             Err(_) => Ctap2Response::error(Ctap2Status::Other),
         }
@@ -733,7 +731,7 @@ impl<'a> AuthenticatorService<'a> {
                         .client_pin
                         .hmac_secret_shared_secret(channel, &input.key_agreement)
                     {
-                        Ok(secret) => Some(Zeroizing::new(secret)),
+                        Ok(secret) => Some(secret),
                         Err(status) => return Ok(Ctap2Response::error(status)),
                     }
                 } else {
