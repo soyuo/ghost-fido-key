@@ -11,11 +11,14 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 
 use crate::cbor::{CborLimits, CborValue, decode_with_limits, encode as encode_cbor};
 
-const STORAGE_SCHEMA_VERSION: i64 = 4;
+const STORAGE_SCHEMA_VERSION: i64 = 5;
+const CREDENTIAL_RECORD_SCHEMA_VERSION: i64 = 4;
 const STORAGE_AAD_V1: &[u8] = b"ghost-fido/credential-store/v1";
 const STORAGE_AAD_V2: &[u8] = b"ghost-fido/credential-store/v2";
 const STORAGE_AAD_V3: &[u8] = b"ghost-fido/credential-store/v3";
 const STORAGE_AAD_V4: &[u8] = b"ghost-fido/credential-store/v4";
+const PIN_STATE_AAD_V1: &[u8] = b"ghost-fido/pin-state/v1";
+const PIN_RETRY_LIMIT: u8 = 8;
 const MAX_PERSISTED_RECORDS: usize = 4096;
 const MAX_PERSISTED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PROTECTED_BYTES: usize = MAX_PERSISTED_BYTES + 4096;
@@ -148,6 +151,7 @@ pub enum CredentialError {
     CreationOrderOverflow,
     StorageFailure,
     ProtectedDataInvalid,
+    InvalidPinState,
     UnsupportedSchemaVersion(i64),
     RecordLimitExceeded,
 }
@@ -178,8 +182,47 @@ pub trait CredentialProtector: Send + Sync {
 #[derive(Default)]
 pub struct CredentialStore {
     records: BTreeMap<CredentialId, CredentialRecord>,
+    pin_state: PinState,
     sqlite: Option<SqliteBackend>,
     next_creation_order: u64,
+}
+
+/// Protected authenticator PIN state. Debug output intentionally omits the verifier.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PinState {
+    verifier: Option<[u8; 16]>,
+    retries: u8,
+}
+
+impl Default for PinState {
+    fn default() -> Self {
+        Self {
+            verifier: None,
+            retries: PIN_RETRY_LIMIT,
+        }
+    }
+}
+
+impl fmt::Debug for PinState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PinState")
+            .field("pin_is_set", &self.verifier.is_some())
+            .field("retries", &self.retries)
+            .finish()
+    }
+}
+
+impl PinState {
+    #[must_use]
+    pub const fn verifier(&self) -> Option<[u8; 16]> {
+        self.verifier
+    }
+
+    #[must_use]
+    pub const fn retries(&self) -> u8 {
+        self.retries
+    }
 }
 
 struct SqliteBackend {
@@ -248,7 +291,7 @@ impl CredentialStore {
                     )
                     .map_err(|_| CredentialError::StorageFailure)?;
                 transaction
-                    .pragma_update(None, "user_version", STORAGE_SCHEMA_VERSION)
+                    .pragma_update(None, "user_version", CREDENTIAL_RECORD_SCHEMA_VERSION)
                     .map_err(|_| CredentialError::StorageFailure)?;
                 transaction
                     .commit()
@@ -278,14 +321,14 @@ impl CredentialStore {
 
                 write_payload(&transaction, &migrated_protected)?;
                 transaction
-                    .pragma_update(None, "user_version", STORAGE_SCHEMA_VERSION)
+                    .pragma_update(None, "user_version", CREDENTIAL_RECORD_SCHEMA_VERSION)
                     .map_err(|_| CredentialError::StorageFailure)?;
                 transaction
                     .commit()
                     .map_err(|_| CredentialError::StorageFailure)?;
                 records
             }
-            4 => {
+            4 | 5 => {
                 let protected = read_protected_payload(&connection)?;
                 let plaintext = protector
                     .unprotect(&protected, STORAGE_AAD_V4)
@@ -294,6 +337,7 @@ impl CredentialStore {
             }
             other => return Err(CredentialError::UnsupportedSchemaVersion(other)),
         };
+        let pin_state = initialize_pin_state(&mut connection, protector.as_ref(), schema_version)?;
 
         let next_creation_order = records
             .values()
@@ -302,6 +346,7 @@ impl CredentialStore {
             .unwrap_or(0);
         Ok(Self {
             records,
+            pin_state,
             sqlite: Some(SqliteBackend {
                 connection,
                 protector,
@@ -461,9 +506,43 @@ impl CredentialStore {
     /// protected database or its metadata-encryption key.
     pub fn clear(&mut self) -> Result<usize, CredentialError> {
         let count = self.records.len();
-        self.persist(&BTreeMap::new())?;
+        self.persist_reset()?;
         self.records.clear();
+        self.pin_state = PinState::default();
         Ok(count)
+    }
+
+    #[must_use]
+    pub fn pin_state(&self) -> &PinState {
+        &self.pin_state
+    }
+
+    /// Persists PIN verifier and retry state through the credential protector.
+    pub fn set_pin_state(&mut self, pin_state: PinState) -> Result<(), CredentialError> {
+        if pin_state.retries > PIN_RETRY_LIMIT
+            || (pin_state.verifier.is_none() && pin_state.retries != PIN_RETRY_LIMIT)
+        {
+            return Err(CredentialError::InvalidPinState);
+        }
+        self.persist_pin_state(&pin_state)?;
+        self.pin_state = pin_state;
+        Ok(())
+    }
+
+    /// Persists a new retry count before the corresponding protocol response is sent.
+    pub fn set_pin_retries(&mut self, retries: u8) -> Result<(), CredentialError> {
+        self.set_pin_state(PinState {
+            verifier: self.pin_state.verifier,
+            retries,
+        })
+    }
+
+    /// Replaces the verifier and restores the protocol retry budget.
+    pub fn set_pin_verifier(&mut self, verifier: Option<[u8; 16]>) -> Result<(), CredentialError> {
+        self.set_pin_state(PinState {
+            verifier,
+            retries: PIN_RETRY_LIMIT,
+        })
     }
 
     #[must_use]
@@ -518,6 +597,53 @@ impl CredentialStore {
             .commit()
             .map_err(|_| CredentialError::StorageFailure)
     }
+
+    fn persist_pin_state(&mut self, pin_state: &PinState) -> Result<(), CredentialError> {
+        let Some(backend) = self.sqlite.as_mut() else {
+            return Ok(());
+        };
+        let plaintext = encode_pin_state(pin_state);
+        let protected = backend
+            .protector
+            .protect(&plaintext, PIN_STATE_AAD_V1)
+            .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+        validate_protected_payload(&protected)?;
+        let transaction = backend
+            .connection
+            .transaction()
+            .map_err(|_| CredentialError::StorageFailure)?;
+        write_pin_payload(&transaction, &protected)?;
+        transaction
+            .commit()
+            .map_err(|_| CredentialError::StorageFailure)
+    }
+
+    fn persist_reset(&mut self) -> Result<(), CredentialError> {
+        let Some(backend) = self.sqlite.as_mut() else {
+            return Ok(());
+        };
+        let records = encode_records(&BTreeMap::new())?;
+        let protected_records = backend
+            .protector
+            .protect(&records, STORAGE_AAD_V4)
+            .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+        validate_protected_payload(&protected_records)?;
+        let pin_state = encode_pin_state(&PinState::default());
+        let protected_pin_state = backend
+            .protector
+            .protect(&pin_state, PIN_STATE_AAD_V1)
+            .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+        validate_protected_payload(&protected_pin_state)?;
+        let transaction = backend
+            .connection
+            .transaction()
+            .map_err(|_| CredentialError::StorageFailure)?;
+        write_payload(&transaction, &protected_records)?;
+        write_pin_payload(&transaction, &protected_pin_state)?;
+        transaction
+            .commit()
+            .map_err(|_| CredentialError::StorageFailure)
+    }
 }
 
 fn write_payload(transaction: &Transaction<'_>, payload: &[u8]) -> Result<(), CredentialError> {
@@ -531,6 +657,115 @@ fn write_payload(transaction: &Transaction<'_>, payload: &[u8]) -> Result<(), Cr
         return Err(CredentialError::ProtectedDataInvalid);
     }
     Ok(())
+}
+
+fn write_pin_payload(transaction: &Transaction<'_>, payload: &[u8]) -> Result<(), CredentialError> {
+    let updated = transaction
+        .execute(
+            "UPDATE pin_state SET payload = ?1 WHERE singleton = 1",
+            params![payload],
+        )
+        .map_err(|_| CredentialError::StorageFailure)?;
+    if updated != 1 {
+        return Err(CredentialError::ProtectedDataInvalid);
+    }
+    Ok(())
+}
+
+fn initialize_pin_state(
+    connection: &mut Connection,
+    protector: &dyn CredentialProtector,
+    schema_version: i64,
+) -> Result<PinState, CredentialError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| CredentialError::StorageFailure)?;
+    transaction
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS pin_state (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                payload BLOB NOT NULL
+            );",
+        )
+        .map_err(|_| CredentialError::StorageFailure)?;
+    let payload = transaction
+        .query_row(
+            "SELECT payload FROM pin_state WHERE singleton = 1",
+            [],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional()
+        .map_err(|_| CredentialError::StorageFailure)?;
+    let state = match payload {
+        Some(protected) => {
+            validate_protected_payload(&protected)?;
+            let plaintext = protector
+                .unprotect(&protected, PIN_STATE_AAD_V1)
+                .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+            decode_pin_state(&plaintext)?
+        }
+        None if schema_version < STORAGE_SCHEMA_VERSION => {
+            let state = PinState::default();
+            let protected = protector
+                .protect(&encode_pin_state(&state), PIN_STATE_AAD_V1)
+                .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+            validate_protected_payload(&protected)?;
+            transaction
+                .execute(
+                    "INSERT INTO pin_state (singleton, payload) VALUES (1, ?1)",
+                    params![protected],
+                )
+                .map_err(|_| CredentialError::StorageFailure)?;
+            state
+        }
+        None => return Err(CredentialError::ProtectedDataInvalid),
+    };
+    transaction
+        .pragma_update(None, "user_version", STORAGE_SCHEMA_VERSION)
+        .map_err(|_| CredentialError::StorageFailure)?;
+    transaction
+        .commit()
+        .map_err(|_| CredentialError::StorageFailure)?;
+    Ok(state)
+}
+
+fn encode_pin_state(state: &PinState) -> Vec<u8> {
+    encode_cbor(&CborValue::Array(vec![
+        state
+            .verifier
+            .map_or(CborValue::Null, |bytes| CborValue::Bytes(bytes.to_vec())),
+        CborValue::Unsigned(u64::from(state.retries)),
+    ]))
+}
+
+fn decode_pin_state(bytes: &[u8]) -> Result<PinState, CredentialError> {
+    let value = decode_with_limits(
+        bytes,
+        CborLimits {
+            max_depth: 2,
+            max_items: 4,
+            max_bytes: 64,
+        },
+    )
+    .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+    let CborValue::Array(fields) = value else {
+        return Err(CredentialError::ProtectedDataInvalid);
+    };
+    let [verifier, CborValue::Unsigned(retries)] = fields.as_slice() else {
+        return Err(CredentialError::ProtectedDataInvalid);
+    };
+    let verifier = match verifier {
+        CborValue::Null => None,
+        CborValue::Bytes(bytes) if bytes.len() == 16 => {
+            Some(bytes.as_slice().try_into().expect("length checked"))
+        }
+        _ => return Err(CredentialError::ProtectedDataInvalid),
+    };
+    let retries = u8::try_from(*retries).map_err(|_| CredentialError::ProtectedDataInvalid)?;
+    if retries > PIN_RETRY_LIMIT || (verifier.is_none() && retries != PIN_RETRY_LIMIT) {
+        return Err(CredentialError::ProtectedDataInvalid);
+    }
+    Ok(PinState { verifier, retries })
 }
 
 fn read_protected_payload(connection: &Connection) -> Result<Vec<u8>, CredentialError> {

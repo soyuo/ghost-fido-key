@@ -15,7 +15,7 @@ pub use cbor::{
 pub use credentials::{
     CredentialError, CredentialId, CredentialKeyMetadata, CredentialKeyProtection,
     CredentialProtectionError, CredentialProtector, CredentialRecord, CredentialStore,
-    Es256PublicKey, KeyHandle, ManagedCredential, RpIdHash,
+    Es256PublicKey, KeyHandle, ManagedCredential, PinState, RpIdHash,
 };
 pub use ctap2::{
     Ctap2Command, Ctap2Error, Ctap2Request, Ctap2Response, Ctap2Status, GetAssertionError,

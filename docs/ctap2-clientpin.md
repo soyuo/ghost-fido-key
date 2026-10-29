@@ -22,7 +22,7 @@ The local user approval path remains required for credential registration and as
 
 ## Storage and reset
 
-Persist only the PIN verifier and retry/block counters through authenticated, OS-protected storage. Include that state in CTAP Reset's atomic reset boundary so credentials cannot be erased while PIN state is left behind, or vice versa. A storage migration must preserve all existing credential records and reject unauthenticated or malformed state.
+Persist only the PIN verifier and retry counter through authenticated, OS-protected storage. Keep it in a separate encrypted SQLite row with its own associated-data label; leave the existing credential-record ciphertext and format intact. Upgrade the store version only in the same transaction that inserts the initial protected PIN state. Include both ciphertext updates in CTAP Reset's atomic transaction so credentials cannot be erased while PIN state is left behind, or vice versa. Reject unauthenticated or malformed state.
 
 ## Capability gate
 
