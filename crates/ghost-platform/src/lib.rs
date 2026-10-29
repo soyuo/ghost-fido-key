@@ -35,7 +35,7 @@ pub use linux_keystore::LinuxKeyStore;
 
 pub use assertion::{
     GetAssertionExecution, GetAssertionExecutionError, execute_get_assertion,
-    execute_next_assertion,
+    execute_get_assertion_with_uv, execute_next_assertion, execute_next_assertion_with_uv,
 };
 pub use authenticator::{
     AuthenticatorService, AuthenticatorServiceConfig, AuthenticatorServiceError,
@@ -43,6 +43,7 @@ pub use authenticator::{
 pub use ctaphid_service::AuthenticatorHidSession;
 pub use registration::{
     MakeCredentialExecutionError, check_credential_exclusion, register_make_credential,
+    register_make_credential_with_uv,
 };
 
 #[cfg(target_os = "windows")]

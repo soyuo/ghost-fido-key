@@ -44,6 +44,31 @@ pub fn register_make_credential(
     aaguid: [u8; 16],
     timeout: Duration,
 ) -> Result<Ctap2Response, MakeCredentialExecutionError> {
+    register_make_credential_with_uv(
+        request,
+        store,
+        key_store,
+        verification,
+        key_policy,
+        software_key_consent,
+        aaguid,
+        timeout,
+        false,
+    )
+}
+
+/// Executes MakeCredential with the UV flag set only after PIN token validation.
+pub fn register_make_credential_with_uv(
+    request: &MakeCredentialRequest,
+    store: &mut CredentialStore,
+    key_store: &dyn KeyStore,
+    verification: &dyn UserVerification,
+    key_policy: KeyCreationPolicy,
+    software_key_consent: Option<SoftwareKeyConsent>,
+    aaguid: [u8; 16],
+    timeout: Duration,
+    user_verified: bool,
+) -> Result<Ctap2Response, MakeCredentialExecutionError> {
     if !request
         .public_key_credential_parameters
         .iter()
@@ -51,10 +76,16 @@ pub fn register_make_credential(
     {
         return Ok(Ctap2Response::error(Ctap2Status::UnsupportedAlgorithm));
     }
-    if request.options.user_verification == Some(true)
+    if (request.options.user_verification == Some(true) && !user_verified)
         || request.options.user_presence == Some(false)
     {
-        return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
+        return Ok(Ctap2Response::error(
+            if request.options.user_verification == Some(true) {
+                Ctap2Status::PinUvAuthTokenRequired
+            } else {
+                Ctap2Status::UnsupportedOption
+            },
+        ));
     }
 
     if let Some(response) = check_credential_exclusion(request, store, verification, timeout)? {
@@ -117,7 +148,7 @@ pub fn register_make_credential(
         aaguid,
         credential_id.as_bytes(),
         &created.public_key,
-        false,
+        user_verified,
     ) {
         Ok(response) => response,
         Err(_) => {
