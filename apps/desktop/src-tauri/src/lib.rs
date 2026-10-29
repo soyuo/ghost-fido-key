@@ -450,6 +450,11 @@ fn confirm_native_action(app: &AppHandle, title: &str, message: &str) -> Result<
 }
 
 #[tauri::command]
+fn read_diagnostic_log() -> Result<String, String> {
+    audit::read_log().ok_or_else(|| "Diagnostic log is unavailable.".to_string())
+}
+
+#[tauri::command]
 fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
     let product = ProductInfo::current();
     let host_platform = match HostPlatform::current() {
@@ -932,6 +937,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            read_diagnostic_log,
             platform_status,
             respond_approval,
             start_authenticator,

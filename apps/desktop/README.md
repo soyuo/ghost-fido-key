@@ -51,3 +51,5 @@ The desktop app writes a best-effort operational event log to `events.log` in th
 - Windows: `%LOCALAPPDATA%\com.ghostfido.desktop\logs`.
 
 The file is limited to 1 MiB; when it reaches that size, the existing contents are cleared before new events are written. If the log directory is unavailable or a write fails, logging is silently disabled and does not affect authenticator or credential operations. Events record only fixed operation names and coarse outcomes, such as runtime lifecycle, local approval, PIN configuration, credential deletion, and reset. They omit RP names and identifiers, user names, credential IDs, PINs and PIN hashes, key material, request IDs, and CTAP/CBOR/HID payloads. This is a local diagnostic aid, not a tamper-proof audit record.
+
+The desktop app's **Redacted events** panel reads only this fixed file, limits the read to 1 MiB, and displays lines only after validating their timestamp, fixed event name, severity, and coarse outcome. The command accepts no path and cannot be used to read arbitrary files. The view is loaded only when opened; no upload or clipboard action is provided.
