@@ -87,6 +87,20 @@ jobs:
           }
           Get-Item -LiteralPath $driver | Select-Object FullName, Length
 
+      - name: Package Windows UDE driver for x64 and ARM64
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./platforms/windows/ude/New-DriverPackages.ps1
+
+      - name: Upload unsigned Windows UDE development packages
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-ude-unsigned-development-packages
+          path: target/windows-ude/packages/
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@v2
 
