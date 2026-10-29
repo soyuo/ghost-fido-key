@@ -40,3 +40,12 @@ jobs:
 
       - name: Audit desktop frontend dependencies
         run: npm audit --prefix apps/desktop --package-lock-only --audit-level=low
+
+      - name: Install local WebAuthn RP dependencies
+        run: npm ci --prefix tools/webauthn-test-rp
+
+      - name: Check local WebAuthn RP JavaScript syntax
+        run: npm run check --prefix tools/webauthn-test-rp
+
+      - name: Audit local WebAuthn RP dependencies
+        run: npm audit --prefix tools/webauthn-test-rp --audit-level=low
