@@ -65,6 +65,8 @@ pub use windows_dpapi::WindowsCredentialProtector;
 
 #[cfg(target_os = "macos")]
 mod macos_corehid;
+#[cfg(target_os = "macos")]
+mod macos_corehid_ffi;
 
 #[cfg(target_os = "macos")]
 pub use macos_corehid::MacOsCoreHidBackend;

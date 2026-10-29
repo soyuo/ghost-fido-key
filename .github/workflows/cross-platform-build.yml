@@ -25,6 +25,7 @@ jobs:
           - ubuntu-22.04
           - windows-2025-vs2026
           - macos-15
+          - macos-15-intel
 
     steps:
       - name: Install Tauri Linux dependencies
@@ -102,11 +103,15 @@ jobs:
       - name: Check Rust workspace
         run: cargo check --workspace --locked
 
-      - name: Check macOS CoreHID Swift bridge for Intel and Apple silicon
+      - name: Link macOS desktop application with CoreHID bridge
+        if: runner.os == 'macOS'
+        run: cargo build --package ghost-fido-desktop --locked
+
+      - name: Build macOS CoreHID Swift bridge for Intel and Apple silicon
         if: runner.os == 'macOS'
         run: |
-          swiftc -typecheck -target x86_64-apple-macosx15.0 platforms/macos/corehid/GhostFidoVirtualDevice.swift
-          swiftc -typecheck -target arm64-apple-macosx15.0 platforms/macos/corehid/GhostFidoVirtualDevice.swift
+          swift build --package-path platforms/macos/corehid --scratch-path "$RUNNER_TEMP/corehid-x86_64" --triple x86_64-apple-macosx15.0 --configuration release --product ghost_fido_corehid
+          swift build --package-path platforms/macos/corehid --scratch-path "$RUNNER_TEMP/corehid-arm64" --triple arm64-apple-macosx15.0 --configuration release --product ghost_fido_corehid
 
       - name: Install frontend dependencies
         run: npm ci --prefix apps/desktop

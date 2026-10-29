@@ -5,9 +5,11 @@ API requires the `com.apple.developer.hid.virtual.device` entitlement and a
 code-signed build whose provisioning profile contains that capability.
 
 `GhostFidoVirtualDevice.swift` implements the CoreHID lifecycle, the FIDO report
-descriptor, and a bounded output-report queue. It requires macOS 15.0 or later
-and explicit product VID/PID values. The Rust provider remains fail-closed; the
-Swift actor is not yet wired into the app's Rust runtime or signed distribution.
+descriptor, and a bounded output-report queue. `GhostFidoCoreHIDBridge.swift`
+exports a narrow C ABI for readiness, activation, report I/O, and deactivation.
+Swift Package Manager builds the bridge as a static library for the active Rust
+target. It requires macOS 15.0 or later, explicitly configured product VID/PID
+values, and a signed process entitlement.
 
 ## Required lifecycle
 
@@ -18,8 +20,8 @@ Swift actor is not yet wired into the app's Rust runtime or signed distribution.
   at most 16 pending output reports and return explicit errors when full.
 - Dispatch authenticator input reports only while the device is active and
   reject reports that are not exactly 64 bytes.
-- Deactivate and release the device on detach and app shutdown. The Rust owner
-  must still provide crash-recovery cleanup when the bridge is integrated.
+- Deactivate and release the device on detach and app shutdown. Rust owns the
+  opaque bridge handle and drops it if the runtime exits unexpectedly.
 
 ## Release gates
 
@@ -30,10 +32,11 @@ Swift actor is not yet wired into the app's Rust runtime or signed distribution.
 - Verify HID enumeration, Chrome/Edge FIDO discovery, registration, assertion,
   detach, and reinstall on each supported macOS version.
 
-The macOS workflow type-checks this source for x86_64 and arm64. Until the Rust
-bridge, granted entitlement, signed runtime, assigned product identity, and
-browser path are validated, `MacOsCoreHidBackend` reports unavailable and the
-application remains fail-closed.
+The macOS workflow builds and links the bridge for x86_64 and arm64. The Rust
+backend reports unavailable unless both assigned product IDs are provided at
+build time and the running app's code signature contains the virtual HID
+entitlement. A successful native build does not prove entitlement approval,
+device enumeration, or browser interoperability.
 
 ## References
 
