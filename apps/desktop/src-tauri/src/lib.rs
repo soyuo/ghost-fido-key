@@ -44,6 +44,7 @@ struct RuntimeHandle {
 #[derive(Default)]
 struct RuntimeStatus {
     virtual_hid_available: bool,
+    virtual_hid_can_start: bool,
     device_attached: bool,
     authenticator_running: bool,
     key_storage_status: String,
@@ -92,6 +93,7 @@ struct PlatformStatus {
     product_version: &'static str,
     host_platform: &'static str,
     virtual_hid_available: bool,
+    virtual_hid_can_start: bool,
     device_attached: bool,
     key_storage_status: String,
     desktop_approval_status: String,
@@ -729,6 +731,9 @@ fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
     let virtual_hid_available = runtime
         .as_ref()
         .is_some_and(|status| status.virtual_hid_available);
+    let virtual_hid_can_start = runtime
+        .as_ref()
+        .is_some_and(|status| status.virtual_hid_can_start);
     let device_attached = runtime
         .as_ref()
         .is_some_and(|status| status.device_attached);
@@ -773,6 +778,7 @@ fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
         product_version: product.version,
         host_platform,
         virtual_hid_available,
+        virtual_hid_can_start,
         device_attached,
         key_storage_status,
         desktop_approval_status: {
@@ -852,7 +858,7 @@ fn start_authenticator(
     }
     let backend = ghost_platform::host_virtual_hid_backend();
     let availability = backend.availability();
-    if availability.state != CapabilityState::Available {
+    if !availability.can_start() {
         audit::record(audit::Event::RuntimeStartRequested, audit::Outcome::Failure);
         return Err(availability
             .detail
@@ -1201,14 +1207,16 @@ pub fn run() {
                 HostPlatform::Linux => "Linux",
                 HostPlatform::Other => "this operating system",
             };
-            let (virtual_hid_available, runtime_message) = (
+            let (virtual_hid_available, virtual_hid_can_start, runtime_message) = (
                 availability.state == CapabilityState::Available,
+                availability.can_start(),
                 availability.detail.unwrap_or_else(|| {
                     format!("Virtual FIDO HID is available on {platform_name}.")
                 }),
             );
             let runtime_status = RuntimeStatus {
                 virtual_hid_available,
+                virtual_hid_can_start,
                 key_storage_status: (match HostPlatform::current() {
                     HostPlatform::Linux => "Signing key consent required",
                     HostPlatform::Windows => "Windows TPM-backed signing key required",

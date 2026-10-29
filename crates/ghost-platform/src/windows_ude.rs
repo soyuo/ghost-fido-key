@@ -401,9 +401,8 @@ impl VirtualHidBackend for WindowsUdeBackend {
                     && status.input_report_size == FIDO_REPORT_SIZE
                     && status.output_report_size == FIDO_REPORT_SIZE =>
             {
-                CapabilityStatus::unavailable(
-                    CapabilityState::NotImplemented,
-                    "the UDE driver reports a compatible FIDO HID profile, but runtime transport validation is still required",
+                CapabilityStatus::configured(
+                    "the UDE driver reports an assigned identity and compatible FIDO HID profile; starting it will exercise runtime transport, but browser interoperability remains unverified",
                 )
             }
             Ok(status) => CapabilityStatus::unavailable(

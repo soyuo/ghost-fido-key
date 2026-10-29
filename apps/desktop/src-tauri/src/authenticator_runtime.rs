@@ -58,19 +58,33 @@ pub fn run(
         .ok()
         .and_then(|mut store| store.take())
     else {
-        set_runtime_failure(&status, "Credential storage is unavailable.");
+        let availability = backend.availability();
+        set_runtime_failure(
+            &status,
+            availability.state == ghost_platform::CapabilityState::Available,
+            availability.can_start(),
+            "Credential storage is unavailable.",
+        );
         return;
     };
 
     if let Err(error) = backend.attach() {
-        set_runtime_failure(&status, &error.detail);
+        let availability = backend.availability();
+        set_runtime_failure(
+            &status,
+            availability.state == ghost_platform::CapabilityState::Available,
+            availability.can_start(),
+            &error.detail,
+        );
         return_store(&credential_store, store);
         return;
     }
 
+    let availability = backend.availability();
     set_runtime_status(
         &status,
-        true,
+        availability.state == ghost_platform::CapabilityState::Available,
+        availability.can_start(),
         true,
         true,
         "Virtual authenticator is running.",
@@ -315,6 +329,7 @@ pub fn run(
     set_runtime_status(
         &status,
         backend.availability().state == ghost_platform::CapabilityState::Available,
+        backend.availability().can_start(),
         false,
         false,
         &message,
@@ -382,20 +397,27 @@ fn return_store(
     }
 }
 
-fn set_runtime_failure(status: &Arc<Mutex<RuntimeStatus>>, message: &str) {
+fn set_runtime_failure(
+    status: &Arc<Mutex<RuntimeStatus>>,
+    available: bool,
+    can_start: bool,
+    message: &str,
+) {
     audit::record(audit::Event::RuntimeFailure, audit::Outcome::Failure);
-    set_runtime_status(status, false, false, false, message);
+    set_runtime_status(status, available, can_start, false, false, message);
 }
 
 fn set_runtime_status(
     status: &Arc<Mutex<RuntimeStatus>>,
     available: bool,
+    can_start: bool,
     attached: bool,
     running: bool,
     message: &str,
 ) {
     if let Ok(mut status) = status.lock() {
         status.virtual_hid_available = available;
+        status.virtual_hid_can_start = can_start;
         status.device_attached = attached;
         status.authenticator_running = running;
         status.status_message = message.to_owned();

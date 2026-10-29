@@ -135,12 +135,36 @@ impl CapabilityStatus {
             detail: Some(detail.into()),
         }
     }
+
+    /// Configuration is sufficient to attempt startup, but runtime support
+    /// has not been validated.
+    #[must_use]
+    pub fn configured(detail: impl Into<String>) -> Self {
+        Self {
+            state: CapabilityState::Configured,
+            detail: Some(detail.into()),
+        }
+    }
+
+    /// Whether prerequisites are sufficient to attempt starting the backend.
+    /// `Configured` permits a runtime attempt but does not prove transport or
+    /// browser interoperability.
+    #[must_use]
+    pub const fn can_start(&self) -> bool {
+        matches!(
+            self.state,
+            CapabilityState::Available | CapabilityState::Configured
+        )
+    }
 }
 
 /// Why a platform capability can or cannot be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CapabilityState {
     Available,
+    /// Configuration is complete enough to attempt startup, but runtime
+    /// transport validation has not established availability.
+    Configured,
     PermissionRequired,
     DriverMissing,
     EntitlementUnavailable,
