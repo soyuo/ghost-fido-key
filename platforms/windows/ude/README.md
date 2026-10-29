@@ -40,10 +40,12 @@ mirrors its fixed-width little-endian fields in `windows_ude.rs`.
 - `IOCTL_GHOST_FIDO_UDE_QUERY_STATUS` uses `FILE_DEVICE_UNKNOWN`, function
   `0x800`, `METHOD_BUFFERED`, and `FILE_READ_ACCESS`.
 - The 16-byte request contains `Size`, protocol major/minor, and a zero reserved
-  field. The current protocol is version 1.1.
-- The 36-byte response starts with `Size`, signature `GFUD`, protocol
-  major/minor, capability flags, input/output report sizes, and two zero
-  reserved fields. FIDO input and output reports must both be 64 bytes.
+  field. The current protocol is version 1.2.
+- The 44-byte response starts with `Size`, signature `GFUD`, protocol
+  major/minor, capability flags, input/output report sizes, two zero reserved
+  fields, then the configured vendor and product IDs as 32-bit values. Rust
+  rejects IDs outside the 16-bit USB range, zero, and `0xFFFF`. FIDO input and
+  output reports must both be 64 bytes.
 - Capability bits declare controller readiness, the FIDO HID profile, attach
   and detach operations, and report I/O. A driver must advertise all four for
   the complete runtime contract.
@@ -88,8 +90,9 @@ report traffic.
   vendor's IDs or claim a third-party identity. CI intentionally uses the zero
   defaults. The source implements the development HID descriptor, class
   requests, and report transport, but the status response advertises only
-  `CONTROLLER_READY`; these properties do not authorize product identity or
-  confer runtime readiness.
+  `CONTROLLER_READY`. The response exposes the configured IDs, but defaults both
+  to zero, and Rust explicitly reports that a valid product-assigned VID/PID is
+  required. Identity data alone does not confer runtime readiness.
 - The CI package is unsigned and is not ready for end-user installation or
   product use. Signing and release distribution remain separate gates.
 - Test installation, elevation, reboot, upgrade, and removal on supported
