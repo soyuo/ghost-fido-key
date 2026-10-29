@@ -4,6 +4,8 @@
 
 The service requires an explicit GetInfo profile, credential store, key store, user-confirmation provider, registration policy, and timeout. Its channel-aware entry point scopes multi-credential continuation state to the originating CTAPHID channel and clears it on any new command. `AuthenticatorHidSession` connects that service to `CtapHidSession`: it routes complete CBOR requests, frames CTAP2 results, and clears assertion state when a channel is cancelled or expires. The OS transport owner still reads and writes the returned fixed-size reports; native HID lifecycle remains separate.
 
+CTAP2 Reset is accepted only with an empty payload during the first 10 seconds after the service starts (the HID runtime starts the service after attaching the device). It requires explicit local approval. On approval, the service deletes each referenced provider key before clearing credential metadata; a key deletion failure leaves metadata available for retry and never returns success. Reset does not yet reset other persistent authenticator state such as large-blob storage or future PIN/enterprise-attestation settings, which are not implemented by this profile.
+
 Selected status wire values follow the FIDO CTAP 2.1 error table:
 
 | Status | Wire value |
