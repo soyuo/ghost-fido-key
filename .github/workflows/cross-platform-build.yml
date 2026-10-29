@@ -59,6 +59,10 @@ jobs:
         if: runner.os == 'Windows'
         run: nuget restore platforms/windows/ude/packages.config -PackagesDirectory platforms/windows/ude/packages
 
+      - name: Install Windows Driver Kit packaging tools
+        if: runner.os == 'Windows'
+        run: winget install --id Microsoft.WindowsWDK.10.0.28000 --exact --accept-source-agreements --accept-package-agreements --silent
+
       - name: Build Windows UDE driver for x64
         if: runner.os == 'Windows'
         run: msbuild platforms/windows/ude/ghost-fido-ude.vcxproj /m /p:Configuration=Release /p:Platform=x64
