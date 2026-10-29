@@ -509,7 +509,7 @@ impl DesktopVerificationProvider {
             .kind(MessageDialogKind::Warning)
             .buttons(MessageDialogButtons::OkCancel)
             .show(move |confirmed| {
-                #[cfg(not(target_os = "windows"))]
+                #[cfg(not(any(target_os = "windows", target_os = "linux")))]
                 let decision = if confirmed {
                     VerificationDecision::Approved
                 } else {

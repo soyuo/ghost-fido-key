@@ -109,6 +109,14 @@ impl LinuxSessionLockMonitor {
                     return;
                 }
                 let changed_properties = parameters.child_value(1);
+                if changed_properties.type_() != gio::glib::VariantDict::static_variant_type() {
+                    log::error!(
+                        "logind sent invalid PropertiesChanged data for session {changed_path}; blocking authentication"
+                    );
+                    property_verification.set_session_monitor_available(false);
+                    return;
+                }
+                let changed_properties = gio::glib::VariantDict::new(Some(&changed_properties));
                 let Some(value) = changed_properties.lookup_value(LOCKED_HINT, None) else {
                     return;
                 };
