@@ -135,6 +135,12 @@ function App() {
 
     void listen<string>("approval-cancelled", ({ payload: requestId }) => {
       setApprovalRequests((current) => current.filter((request) => request.requestId !== requestId));
+      setRespondingRequests((current) => {
+        if (!current.has(requestId)) return current;
+        const next = new Set(current);
+        next.delete(requestId);
+        return next;
+      });
     })
       .then((stopListening) => {
         if (disposed) stopListening();
