@@ -1,12 +1,12 @@
 # Ghost FIDO Key Desktop
 
-Tauri 2 desktop shell with a React and TypeScript single-page frontend. The UI reads status from the Rust backend; the current virtual HID backend deliberately reports unavailable on every platform.
+Tauri 2 desktop shell with a React and TypeScript single-page frontend. The UI reads status from the Rust backend. Linux and Windows have platform-specific virtual HID adapters; macOS uses a Swift CoreHID bridge and remains unavailable until assigned product IDs and the signed virtual HID entitlement are configured.
 
 ## Prerequisites
 
 - All platforms: Rust via rustup and Node.js LTS.
 - Windows: Microsoft C++ Build Tools with **Desktop development with C++**, and Microsoft Edge WebView2 Runtime.
-- macOS: Xcode Command Line Tools for desktop development (`xcode-select --install`).
+- macOS: Xcode Command Line Tools for desktop development (`xcode-select --install`) and Swift 6.0 or newer.
 - Ubuntu/Debian Linux: `libwebkit2gtk-4.1-dev`, `build-essential`, `curl`, `wget`, `file`, `libxdo-dev`, `libssl-dev`, `libayatana-appindicator3-dev`, and `librsvg2-dev`.
 
 For current, distribution-specific packages and version requirements, see the [official Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
@@ -22,4 +22,6 @@ npm run tauri dev
 
 Build the frontend with `npm run build`. Build a desktop bundle on a configured host with `npm run tauri build`.
 
-The app can also be previewed in a browser with `npm run dev`; the desktop-only status command is unavailable there. The existing command-line diagnostic remains available as the `ghost-fido` workspace package. This scaffold does not attach a virtual device or process FIDO requests.
+The macOS CoreHID bridge is built as a static Swift library for the active Rust target. After the project receives assigned product identifiers, set `GHOST_FIDO_MACOS_VENDOR_ID` and `GHOST_FIDO_MACOS_PRODUCT_ID` to their decimal values while building. The app checks its signed entitlement before enabling the macOS start control; source entitlement files alone do not enable it.
+
+The app can also be previewed in a browser with `npm run dev`; the desktop-only status command is unavailable there. The existing command-line diagnostic remains available as the `ghost-fido` workspace package. Browser WebAuthn interoperability and a signed, entitled distribution still require separate macOS validation.

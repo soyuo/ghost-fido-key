@@ -234,6 +234,13 @@ function App() {
               </button>
             </div>
           )}
+          {isTauri() && status?.hostPlatform === "macOS" && !status.authenticatorRunning && status.virtualHidAvailable && status.credentialStoreAvailable && (
+            <div className="runtime-actions">
+              <button type="button" disabled={runtimeAction} onClick={() => void startAuthenticator(false)}>
+                {runtimeAction ? "시작 중…" : "인증기 시작"}
+              </button>
+            </div>
+          )}
           {isTauri() && status?.authenticatorRunning && (
             <div className="runtime-actions">
               <button type="button" disabled={runtimeAction} onClick={stopAuthenticator}>인증기 중지</button>
