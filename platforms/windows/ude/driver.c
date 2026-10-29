@@ -1086,7 +1086,7 @@ GhostFidoEvtIoDeviceControl(_In_ WDFQUEUE Queue, _In_ WDFREQUEST Request,
     statusResponse->Signature = GHOST_FIDO_UDE_STATUS_SIGNATURE;
     statusResponse->ProtocolMajor = GHOST_FIDO_UDE_PROTOCOL_MAJOR;
     statusResponse->ProtocolMinor = GHOST_FIDO_UDE_PROTOCOL_MINOR;
-    statusResponse->Capabilities = GHOST_FIDO_UDE_CAP_CONTROLLER_READY;
+    statusResponse->Capabilities = GHOST_FIDO_UDE_REQUIRED_CAPABILITIES;
     statusResponse->InputReportSize = GHOST_FIDO_REPORT_SIZE;
     statusResponse->OutputReportSize = GHOST_FIDO_REPORT_SIZE;
     statusResponse->VendorId = GHOST_FIDO_VENDOR_ID;

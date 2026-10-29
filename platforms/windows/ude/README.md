@@ -8,8 +8,10 @@ Driver Kit (WDK).
 ## Required native lifecycle
 
 1. `EvtDriverDeviceAdd` initializes the KMDF device and registers the UDE host
-   controller with UdeCx. The controller capability callback currently reports
-   capabilities as unsupported.
+   controller with UdeCx. The UdeCx USB-device capability callback currently
+   reports optional USB controller capabilities as unsupported; this is
+   separate from the driver's implemented FIDO transport capabilities in its
+   user-mode status response.
 2. When nonzero, explicitly assigned VID and PID build properties are present,
    the driver adds a USB 2.0 FIDO HID descriptor set and creates the UDE device.
    The default zero values leave the controller running without a virtual USB
@@ -26,10 +28,11 @@ Driver Kit (WDK).
    completed from a separate DPC; pending interrupt-IN requests are held in a
    cancellable manual queue and purged during detach.
 
-The application must not claim `Available` from device enumeration or an open
-control handle alone. The driver must answer the versioned status IOCTL with
-the expected protocol signature, report sizes, and capability bits. The Rust
-adapter keeps the backend unavailable until the complete driver transport has
+The status response reports the driver capabilities implemented in source:
+the FIDO HID profile, attach/detach, and both report-I/O directions. These bits
+describe the source-level driver contract; they do not prove that the driver is
+installed, attached, or working on a target device. The Rust adapter keeps the
+backend unavailable until the identity is valid and the complete transport has
 passed runtime validation on supported Windows systems.
 
 ## User-mode control protocol
@@ -47,8 +50,9 @@ mirrors its fixed-width little-endian fields in `windows_ude.rs`.
   rejects IDs outside the 16-bit USB range, zero, and `0xFFFF`. FIDO input and
   output reports must both be 64 bytes.
 - Capability bits declare controller readiness, the FIDO HID profile, attach
-  and detach operations, and report I/O. A driver must advertise all four for
-  the complete runtime contract.
+  and detach operations, and report I/O. The current source advertises all
+  four because these code paths are implemented. They describe driver
+  capabilities, not runtime readiness or validated platform support.
 - A client accepts the same major version and ignores trailing fields from a
   newer minor version after checking the declared response size. A different
   major version, truncated or oversized response, wrong signature, nonzero
@@ -59,9 +63,9 @@ mirrors its fixed-width little-endian fields in `windows_ude.rs`.
   caller-supplied timeout expires.
 - The native driver exposes `\\.\GhostFidoUde` with read/write access for
   interactive users and full access for Local System and Administrators. The
-  driver reports only `CONTROLLER_READY`; FIDO profile, attach/detach, and
-  report-I/O capabilities remain unadvertised until runtime validation. The
-  Rust adapter also fails closed and cannot mark the backend `Available`.
+  driver reports all four source-implemented capability bits. The Rust adapter
+  still fails closed and cannot mark the backend `Available` until assigned
+  identity and runtime transport validation are present.
 
 The IOCTL access bits and controller ACL both restrict access. Every operation
 validates versions, exact structure sizes, reserved fields, and report lengths
@@ -88,11 +92,11 @@ report traffic.
   `/p:GhostFidoVendorId=0x1234 /p:GhostFidoProductId=0x0001`. Replace these
   example values only with USB IDs assigned to the product. Do not use another
   vendor's IDs or claim a third-party identity. CI intentionally uses the zero
-  defaults. The source implements the development HID descriptor, class
-  requests, and report transport, but the status response advertises only
-  `CONTROLLER_READY`. The response exposes the configured IDs, but defaults both
+  defaults. The status response advertises all four source-implemented
+  capability bits. The response exposes the configured IDs, but defaults both
   to zero, and Rust explicitly reports that a valid product-assigned VID/PID is
-  required. Identity data alone does not confer runtime readiness.
+  required. Identity data or capability bits alone do not confer runtime
+  readiness.
 - The CI package is unsigned and is not ready for end-user installation or
   product use. Signing and release distribution remain separate gates.
 - Test installation, elevation, reboot, upgrade, and removal on supported
