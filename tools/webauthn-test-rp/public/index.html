@@ -12,8 +12,33 @@
       <h1>Local WebAuthn test RP</h1>
       <p>This development-only relying party keeps one credential in this browser session's memory and verifies registration and assertions on this server.</p>
       <p id="identity">Loading relying-party identity…</p>
+      <fieldset>
+        <legend>Registration options</legend>
+        <label for="resident-key">Resident credential</label>
+        <select id="resident-key">
+          <option value="preferred">Preferred</option>
+          <option value="required">Required</option>
+        </select>
+      </fieldset>
+      <fieldset>
+        <legend>Authentication options</legend>
+        <label for="credential-mode">Credential selection</label>
+        <select id="credential-mode">
+          <option value="allow-list">Allow-list</option>
+          <option value="discoverable">Discoverable</option>
+        </select>
+        <label for="user-verification">User verification</label>
+        <select id="user-verification">
+          <option value="preferred">Preferred</option>
+          <option value="required">Required</option>
+        </select>
+        <label for="timeout">Browser timeout (ms)</label>
+        <input id="timeout" type="number" min="1000" max="120000" step="1000" value="60000" />
+      </fieldset>
       <button id="register" type="button">Register credential</button>
       <button id="authenticate" type="button" disabled>Authenticate</button>
+      <button id="clear-credential" type="button" disabled>Clear RP credential record</button>
+      <p>Clearing this RP record does not delete the credential from the authenticator.</p>
       <h2>Server verification result</h2>
       <pre id="result" role="status" aria-live="polite">No ceremony has run.</pre>
       <p>Only a verified result confirms server-side ceremony verification. It does not prove OS device enumeration, HID/CTAP transport, platform support, or release readiness.</p>

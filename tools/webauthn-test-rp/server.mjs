@@ -83,6 +83,22 @@ function assertLiveCeremony(ceremony) {
   }
 }
 
+function ceremonySettings(body) {
+  const timeout = body.timeout ?? 60_000;
+  if (!Number.isInteger(timeout) || timeout < 1_000 || timeout > 120_000) {
+    throw Object.assign(new Error('Timeout must be between 1000 and 120000 milliseconds.'), { status: 400 });
+  }
+  return timeout;
+}
+
+function enumSetting(value, allowed, name, fallback) {
+  const selected = value ?? fallback;
+  if (!allowed.includes(selected)) {
+    throw Object.assign(new Error(`Unsupported ${name} value.`), { status: 400 });
+  }
+  return selected;
+}
+
 async function verifyCeremony(verify) {
   try {
     return await verify();
@@ -143,6 +159,9 @@ const server = createServer(async (request, response) => {
     }
 
     if (url.pathname === '/api/register/options') {
+      const body = await readJson(request);
+      const residentKey = enumSetting(body.residentKey, ['preferred', 'required'], 'resident-key', 'preferred');
+      const timeout = ceremonySettings(body);
       const options = await generateRegistrationOptions({
         rpName,
         rpID,
@@ -150,7 +169,8 @@ const server = createServer(async (request, response) => {
         userDisplayName: 'Local test user',
         userID: randomBytes(32),
         attestationType: 'none',
-        authenticatorSelection: { residentKey: 'preferred', userVerification: 'preferred' },
+        timeout,
+        authenticatorSelection: { residentKey, userVerification: 'preferred' },
       });
       session.registration = { challenge: options.challenge, createdAt: Date.now() };
       session.authentication = undefined;
@@ -186,17 +206,32 @@ const server = createServer(async (request, response) => {
     }
 
     if (url.pathname === '/api/authenticate/options') {
+      const body = await readJson(request);
+      const credentialMode = enumSetting(body.credentialMode, ['allow-list', 'discoverable'], 'credential mode', 'allow-list');
+      const userVerification = enumSetting(body.userVerification, ['preferred', 'required'], 'user-verification', 'preferred');
+      const timeout = ceremonySettings(body);
       if (!session.credential) {
         sendJson(response, 409, { error: 'Register a credential in this session first.' });
         return;
       }
       const options = await generateAuthenticationOptions({
         rpID,
-        userVerification: 'preferred',
-        allowCredentials: [{ id: session.credential.id, transports: session.credential.transports }],
+        timeout,
+        userVerification,
+        ...(credentialMode === 'allow-list'
+          ? { allowCredentials: [{ id: session.credential.id, transports: session.credential.transports }] }
+          : {}),
       });
-      session.authentication = { challenge: options.challenge, createdAt: Date.now() };
+      session.authentication = { challenge: options.challenge, createdAt: Date.now(), userVerification };
       sendJson(response, 200, options);
+      return;
+    }
+
+    if (url.pathname === '/api/credential/clear') {
+      session.credential = undefined;
+      session.registration = undefined;
+      session.authentication = undefined;
+      sendJson(response, 200, { credentialRegistered: false });
       return;
     }
 
@@ -215,7 +250,7 @@ const server = createServer(async (request, response) => {
         expectedOrigin: origin,
         expectedRPID: rpID,
         credential: session.credential,
-        requireUserVerification: false,
+        requireUserVerification: ceremony.userVerification === 'required',
       }));
       if (!verification.verified) {
         sendJson(response, 400, { error: 'Assertion response was not verified.' });

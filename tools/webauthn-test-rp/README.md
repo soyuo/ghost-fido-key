@@ -11,7 +11,9 @@ npm ci --prefix tools/webauthn-test-rp
 npm start --prefix tools/webauthn-test-rp
 ```
 
-Open `http://localhost:8787` in the same browser profile, select **Register credential**, then select **Authenticate**. The RP server verifies the registration challenge, origin, RP ID and response, then verifies the assertion signature and updates the signature counter. User verification is not required for the ceremony; the signed WebAuthn user-verified flag is displayed separately. That flag is not proof of a biometric or OS-native verification prompt. A verified result is server-side evidence for that run. Browser cancellation and timeout are shown as failures and do not become a verified result.
+Open `http://localhost:8787` in the same browser profile. Choose **Preferred** or **Required** for the resident credential, then register. For authentication, select **Allow-list** or **Discoverable**, choose preferred or required user verification, and set the browser timeout from 1,000 through 120,000 milliseconds. The RP server verifies the registration challenge, origin, RP ID and response, then verifies the assertion signature and updates the signature counter. User verification is optional unless set to required; the signed WebAuthn user-verified flag is displayed separately. That flag is not proof of a biometric or OS-native verification prompt.
+
+Use the browser's cancel control and the app's native approval dialog to record cancellation and denial. Record whether the browser honored the requested timeout; browsers can apply their own limits. **Clear RP credential record** removes only the public-key reference held by this process and does not delete the authenticator credential. Test authenticator reset separately through the desktop app, then register and authenticate again. A verified result is server-side evidence for that run; cancellation, timeout and denial do not become a verified result.
 
 Use a fresh browser session and record the exact OS build, CPU architecture, browser name/version, app/driver version, and timestamp for each support-matrix row. Record each layer separately:
 
