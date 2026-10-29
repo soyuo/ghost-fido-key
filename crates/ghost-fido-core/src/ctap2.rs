@@ -65,6 +65,14 @@ pub enum Ctap2Status {
     UserActionPending = 0x23,
     RequestTooLarge = 0x39,
     NotAllowed = 0x30,
+    PinInvalid = 0x31,
+    PinBlocked = 0x32,
+    PinAuthInvalid = 0x33,
+    PinAuthBlocked = 0x34,
+    PinNotSet = 0x35,
+    PinUvAuthTokenRequired = 0x36,
+    PinPolicyViolation = 0x37,
+    UnauthorizedPermission = 0x40,
 }
 
 impl Ctap2Status {
