@@ -10,7 +10,7 @@ use std::{
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use zeroize::{Zeroize, Zeroizing};
 
-use crate::cbor::{CborLimits, CborValue, decode_with_limits, encode as encode_cbor};
+use crate::cbor::{CborError, CborLimits, CborValue, decode_with_limits, encode as encode_cbor};
 
 const STORAGE_SCHEMA_VERSION: i64 = 8;
 const CREDENTIAL_RECORD_SCHEMA_VERSION: i64 = 7;
@@ -228,6 +228,7 @@ pub enum CredentialError {
     InvalidPinState,
     UnsupportedSchemaVersion(i64),
     RecordLimitExceeded,
+    CborEncoding(CborError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -781,7 +782,7 @@ impl CredentialStore {
         let Some(backend) = self.sqlite.as_mut() else {
             return Ok(());
         };
-        let plaintext = encode_pin_state(pin_state);
+        let plaintext = encode_pin_state(pin_state)?;
         let protected = backend
             .protector
             .protect(&plaintext, PIN_STATE_AAD_V1)
@@ -807,7 +808,7 @@ impl CredentialStore {
             .protect(&records, STORAGE_AAD_V4)
             .map_err(|_| CredentialError::ProtectedDataInvalid)?;
         validate_protected_payload(&protected_records)?;
-        let pin_state = encode_pin_state(&PinState::default());
+        let pin_state = encode_pin_state(&PinState::default())?;
         let protected_pin_state = backend
             .protector
             .protect(&pin_state, PIN_STATE_AAD_V1)
@@ -887,8 +888,9 @@ fn initialize_pin_state(
         }
         None if schema_version < STORAGE_SCHEMA_VERSION => {
             let state = PinState::default();
+            let pin_state = encode_pin_state(&state)?;
             let protected = protector
-                .protect(&encode_pin_state(&state), PIN_STATE_AAD_V1)
+                .protect(&pin_state, PIN_STATE_AAD_V1)
                 .map_err(|_| CredentialError::ProtectedDataInvalid)?;
             validate_protected_payload(&protected)?;
             transaction
@@ -910,7 +912,7 @@ fn initialize_pin_state(
     Ok(state)
 }
 
-fn encode_pin_state(state: &PinState) -> Zeroizing<Vec<u8>> {
+fn encode_pin_state(state: &PinState) -> Result<Zeroizing<Vec<u8>>, CredentialError> {
     let value = Zeroizing::new(CborValue::Array(vec![
         state
             .verifier
@@ -918,7 +920,9 @@ fn encode_pin_state(state: &PinState) -> Zeroizing<Vec<u8>> {
             .map_or(CborValue::Null, |bytes| CborValue::Bytes(bytes.to_vec())),
         CborValue::Unsigned(u64::from(state.retries)),
     ]));
-    Zeroizing::new(encode_cbor(&value))
+    encode_cbor(&value)
+        .map(Zeroizing::new)
+        .map_err(CredentialError::CborEncoding)
 }
 
 fn decode_pin_state(bytes: &[u8]) -> Result<PinState, CredentialError> {
@@ -1048,7 +1052,7 @@ fn encode_records(
             ])
         })
         .collect::<Vec<_>>();
-    let encoded = encode_cbor(&CborValue::Array(values));
+    let encoded = encode_cbor(&CborValue::Array(values)).map_err(CredentialError::CborEncoding)?;
     if encoded.len() > MAX_PERSISTED_BYTES {
         return Err(CredentialError::RecordLimitExceeded);
     }

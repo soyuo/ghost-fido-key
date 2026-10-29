@@ -155,7 +155,7 @@ pub fn encode_response(status: Ctap2Status, payload: &[u8]) -> Vec<u8> {
 }
 
 #[must_use]
-pub fn encode_es256_cose_public_key(public_key: &Es256PublicKey) -> Vec<u8> {
+pub fn encode_es256_cose_public_key(public_key: &Es256PublicKey) -> Result<Vec<u8>, CborError> {
     encode(&CborValue::Map(vec![
         (CborValue::Unsigned(1), CborValue::Unsigned(2)),
         (CborValue::Unsigned(3), CborValue::Negative(-7)),
@@ -175,6 +175,13 @@ pub fn encode_es256_cose_public_key(public_key: &Es256PublicKey) -> Vec<u8> {
 pub enum MakeCredentialResponseError {
     EmptyCredentialId,
     CredentialIdTooLong(usize),
+    CborEncoding(CborError),
+}
+
+impl From<CborError> for MakeCredentialResponseError {
+    fn from(error: CborError) -> Self {
+        Self::CborEncoding(error)
+    }
 }
 
 /// Encodes a CTAP2 `fmt: none` MakeCredential response.
@@ -223,9 +230,9 @@ pub fn encode_make_credential_response_with_extensions(
     authenticator_data.extend_from_slice(&aaguid);
     authenticator_data.extend_from_slice(&(credential_id.len() as u16).to_be_bytes());
     authenticator_data.extend_from_slice(credential_id);
-    authenticator_data.extend_from_slice(&encode_es256_cose_public_key(public_key));
+    authenticator_data.extend_from_slice(&encode_es256_cose_public_key(public_key)?);
     if let Some(extensions) = extensions {
-        authenticator_data.extend_from_slice(&encode(&extensions));
+        authenticator_data.extend_from_slice(&encode(&extensions)?);
     }
 
     let attestation_object = encode(&CborValue::Map(vec![
@@ -241,7 +248,7 @@ pub fn encode_make_credential_response_with_extensions(
             CborValue::Text("attStmt".into()),
             CborValue::Map(Vec::new()),
         ),
-    ]));
+    ]))?;
     Ok(Ctap2Response {
         status: Ctap2Status::Success,
         payload: attestation_object,
@@ -256,6 +263,13 @@ pub enum GetAssertionResponseError {
     SignatureTooLong(usize),
     InvalidUserHandle,
     InvalidNumberOfCredentials,
+    CborEncoding(CborError),
+}
+
+impl From<CborError> for GetAssertionResponseError {
+    fn from(error: CborError) -> Self {
+        Self::CborEncoding(error)
+    }
 }
 
 #[must_use]
@@ -372,7 +386,7 @@ pub fn encode_get_assertion_response_with_count_and_uv_and_extensions(
         get_assertion_authenticator_data_with_uv(rp_id_hash, sign_count, user_verified).to_vec();
     if let Some(extensions) = extensions {
         authenticator_data[32] |= 0x80;
-        authenticator_data.extend_from_slice(&encode(&extensions));
+        authenticator_data.extend_from_slice(&encode(&extensions)?);
     }
 
     let credential = CborValue::Map(vec![
@@ -405,7 +419,7 @@ pub fn encode_get_assertion_response_with_count_and_uv_and_extensions(
 
     Ok(Ctap2Response {
         status: Ctap2Status::Success,
-        payload: encode(&CborValue::Map(response)),
+        payload: encode(&CborValue::Map(response))?,
     })
 }
 
@@ -1137,6 +1151,13 @@ pub struct GetInfoProfile {
 pub enum GetInfoError {
     MissingVersion,
     InvalidMessageSize,
+    CborEncoding(CborError),
+}
+
+impl From<CborError> for GetInfoError {
+    fn from(error: CborError) -> Self {
+        Self::CborEncoding(error)
+    }
 }
 
 /// Encodes GetInfo responses from an explicitly configured authenticator profile.
@@ -1212,5 +1233,5 @@ pub fn encode_get_info(profile: &GetInfoProfile) -> Result<Vec<u8>, GetInfoError
                     .collect(),
             ),
         ),
-    ])))
+    ]))?)
 }
