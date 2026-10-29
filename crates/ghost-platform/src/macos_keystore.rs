@@ -43,7 +43,7 @@ impl MacOsKeyStore {
         Ok(label)
     }
 
-    fn open_key(reference: &KeyReference) -> Result<SecKey, PlatformError> {
+    fn find_key(reference: &KeyReference) -> Result<Option<SecKey>, PlatformError> {
         let label = Self::key_label(reference)?;
         let mut options = ItemSearchOptions::new();
         options
@@ -53,13 +53,19 @@ impl MacOsKeyStore {
             .load_refs(true)
             .limit(2);
         let mut matches = options.search().map_err(Self::fail)?.into_iter();
-        let Some(SearchResult::Ref(Reference::Key(key))) = matches.next() else {
-            return Err(Self::fail("macOS private key was not found"));
+        let key = match matches.next() {
+            None => return Ok(None),
+            Some(SearchResult::Ref(Reference::Key(key))) => key,
+            Some(_) => return Err(Self::fail("macOS key search returned a non-key item")),
         };
         if matches.next().is_some() {
             return Err(Self::fail("macOS key label is not unique"));
         }
-        Ok(key)
+        Ok(Some(key))
+    }
+
+    fn open_key(reference: &KeyReference) -> Result<SecKey, PlatformError> {
+        Self::find_key(reference)?.ok_or_else(|| Self::fail("macOS private key was not found"))
     }
 
     fn public_key(key: &SecKey) -> Result<Es256PublicKey, PlatformError> {
@@ -153,7 +159,10 @@ impl KeyStore for MacOsKeyStore {
     }
 
     fn delete_key(&self, reference: &KeyReference) -> Result<(), PlatformError> {
-        Self::open_key(reference)?.delete().map_err(Self::fail)
+        match Self::find_key(reference)? {
+            Some(key) => key.delete().map_err(Self::fail),
+            None => Ok(()),
+        }
     }
 }
 
