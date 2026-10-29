@@ -8,6 +8,7 @@ use std::{
 };
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use zeroize::{Zeroize, Zeroizing};
 
 use crate::cbor::{CborLimits, CborValue, decode_with_limits, encode as encode_cbor};
 
@@ -286,10 +287,18 @@ impl fmt::Debug for PinState {
     }
 }
 
+impl Drop for PinState {
+    fn drop(&mut self) {
+        if let Some(verifier) = self.verifier.as_mut() {
+            verifier.zeroize();
+        }
+    }
+}
+
 impl PinState {
     #[must_use]
-    pub const fn verifier(&self) -> Option<[u8; 16]> {
-        self.verifier
+    pub const fn verifier(&self) -> Option<&[u8; 16]> {
+        self.verifier.as_ref()
     }
 
     #[must_use]
@@ -869,9 +878,11 @@ fn initialize_pin_state(
     let state = match payload {
         Some(protected) => {
             validate_protected_payload(&protected)?;
-            let plaintext = protector
-                .unprotect(&protected, PIN_STATE_AAD_V1)
-                .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+            let plaintext = Zeroizing::new(
+                protector
+                    .unprotect(&protected, PIN_STATE_AAD_V1)
+                    .map_err(|_| CredentialError::ProtectedDataInvalid)?,
+            );
             decode_pin_state(&plaintext)?
         }
         None if schema_version < STORAGE_SCHEMA_VERSION => {
@@ -899,26 +910,30 @@ fn initialize_pin_state(
     Ok(state)
 }
 
-fn encode_pin_state(state: &PinState) -> Vec<u8> {
-    encode_cbor(&CborValue::Array(vec![
+fn encode_pin_state(state: &PinState) -> Zeroizing<Vec<u8>> {
+    let value = Zeroizing::new(CborValue::Array(vec![
         state
             .verifier
+            .as_ref()
             .map_or(CborValue::Null, |bytes| CborValue::Bytes(bytes.to_vec())),
         CborValue::Unsigned(u64::from(state.retries)),
-    ]))
+    ]));
+    Zeroizing::new(encode_cbor(&value))
 }
 
 fn decode_pin_state(bytes: &[u8]) -> Result<PinState, CredentialError> {
-    let value = decode_with_limits(
-        bytes,
-        CborLimits {
-            max_depth: 2,
-            max_items: 4,
-            max_bytes: 64,
-        },
-    )
-    .map_err(|_| CredentialError::ProtectedDataInvalid)?;
-    let CborValue::Array(fields) = value else {
+    let value = Zeroizing::new(
+        decode_with_limits(
+            bytes,
+            CborLimits {
+                max_depth: 2,
+                max_items: 4,
+                max_bytes: 64,
+            },
+        )
+        .map_err(|_| CredentialError::ProtectedDataInvalid)?,
+    );
+    let CborValue::Array(fields) = &*value else {
         return Err(CredentialError::ProtectedDataInvalid);
     };
     let [verifier, CborValue::Unsigned(retries)] = fields.as_slice() else {
