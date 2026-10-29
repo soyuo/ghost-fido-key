@@ -11,12 +11,14 @@ use ghost_fido_core::{
 };
 
 use crate::{
-    GetAssertionExecutionError, KeyCreationPolicy, KeyStore, MakeCredentialExecutionError,
-    SoftwareKeyConsent, UserVerification, execute_get_assertion, execute_next_assertion,
-    register_make_credential,
+    GetAssertionExecutionError, KeyCreationPolicy, KeyReference, KeyStore,
+    MakeCredentialExecutionError, PlatformErrorKind, SoftwareKeyConsent, UserVerification,
+    VerificationAction, VerificationDecision, VerificationRequest, execute_get_assertion,
+    execute_next_assertion, register_make_credential,
 };
 
 const ASSERTION_CONTINUATION_TIMEOUT: Duration = Duration::from_secs(30);
+const RESET_POWER_UP_WINDOW: Duration = Duration::from_secs(10);
 const LEGACY_CHANNEL: u32 = u32::MAX;
 
 struct AssertionContinuation {
@@ -48,6 +50,7 @@ pub struct AuthenticatorService<'a> {
     verification: &'a dyn UserVerification,
     config: AuthenticatorServiceConfig,
     assertion_continuations: BTreeMap<u32, AssertionContinuation>,
+    started_at: Instant,
 }
 
 impl<'a> AuthenticatorService<'a> {
@@ -65,6 +68,7 @@ impl<'a> AuthenticatorService<'a> {
             verification,
             config,
             assertion_continuations: BTreeMap::new(),
+            started_at: Instant::now(),
         })
     }
 
@@ -162,6 +166,58 @@ impl<'a> AuthenticatorService<'a> {
                     self.assertion_continuations.insert(channel, continuation);
                 }
                 Ok(result)
+            }
+            Ctap2Command::Reset => {
+                if !payload.is_empty() {
+                    return Ok(Ctap2Response::error(Ctap2Status::InvalidLength));
+                }
+                if self.started_at.elapsed() > RESET_POWER_UP_WINDOW {
+                    return Ok(Ctap2Response::error(Ctap2Status::NotAllowed));
+                }
+                let confirmation = VerificationRequest {
+                    relying_party_id: "authenticator".into(),
+                    relying_party_name: Some("Reset all authenticator credentials".into()),
+                    action: VerificationAction::ResetAuthenticator,
+                };
+                let decision = match self
+                    .verification
+                    .request_confirmation(&confirmation, self.config.request_timeout)
+                {
+                    Ok(decision) => decision,
+                    Err(error) if error.kind == PlatformErrorKind::Timeout => {
+                        return Ok(Ctap2Response::error(Ctap2Status::UserActionTimeout));
+                    }
+                    Err(_) => return Ok(Ctap2Response::error(Ctap2Status::Other)),
+                };
+                if decision != VerificationDecision::Approved {
+                    return Ok(Ctap2Response::error(Ctap2Status::OperationDenied));
+                }
+                let references = match self
+                    .store
+                    .provider_key_handles()
+                    .into_iter()
+                    .map(|handle| {
+                        let reference = std::str::from_utf8(handle.as_bytes()).map_err(|_| ())?;
+                        if reference.is_empty() {
+                            return Err(());
+                        }
+                        Ok(KeyReference::new(reference))
+                    })
+                    .collect::<Result<Vec<_>, ()>>()
+                {
+                    Ok(references) => references,
+                    Err(()) => return Ok(Ctap2Response::error(Ctap2Status::Other)),
+                };
+                for reference in &references {
+                    if self.key_store.delete_key(reference).is_err() {
+                        return Ok(Ctap2Response::error(Ctap2Status::Other));
+                    }
+                }
+                if self.store.clear().is_err() {
+                    return Ok(Ctap2Response::error(Ctap2Status::Other));
+                }
+                self.assertion_continuations.clear();
+                Ok(Ctap2Response::error(Ctap2Status::Success))
             }
             _ => Ok(Ctap2Response::error(Ctap2Status::InvalidCommand)),
         }

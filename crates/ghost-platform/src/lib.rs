@@ -385,6 +385,7 @@ pub enum VerificationAction {
     RegisterCredential,
     Authenticate,
     CredentialExclusionCheck,
+    ResetAuthenticator,
 }
 
 /// Minimum RP context presented to the local user for an approval request.
