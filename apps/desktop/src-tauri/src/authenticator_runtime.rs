@@ -1,6 +1,8 @@
 use std::{
+    collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex,
+        mpsc::Sender,
         mpsc::{Receiver, TryRecvError, channel},
     },
     thread,
@@ -34,6 +36,11 @@ enum ServiceCommand {
 struct ServiceResponse {
     channel: u32,
     response: Ctap2Response,
+}
+
+struct PendingRequest {
+    cancelled: bool,
+    last_keepalive: Instant,
 }
 
 pub fn run(
@@ -133,7 +140,9 @@ pub fn run(
         CTAPHID_CHANNELS,
         CTAPHID_CHANNEL_TIMEOUT,
     );
-    let mut active_request: Option<(u32, bool, Instant)> = None;
+    let mut active_service_channel = None;
+    let mut pending_requests: HashMap<u32, PendingRequest> = HashMap::new();
+    let mut queued_channels = VecDeque::new();
     let mut runtime_error = None;
 
     loop {
@@ -144,17 +153,30 @@ pub fn run(
 
         match response_rx.try_recv() {
             Ok(response) => {
-                if active_request.is_some_and(|(channel, _, _)| channel == response.channel) {
-                    match session.respond_ctap2(response.channel, &response.response) {
-                        Ok(reports) => {
-                            if let Err(error) = send_reports(backend.as_mut(), &reports) {
-                                runtime_error = Some(error.detail);
-                                break;
+                if active_service_channel == Some(response.channel) {
+                    let request = pending_requests.remove(&response.channel);
+                    active_service_channel = None;
+                    if request.is_some_and(|request| !request.cancelled) {
+                        match session.respond_ctap2(response.channel, &response.response) {
+                            Ok(reports) => {
+                                if let Err(error) = send_reports(backend.as_mut(), &reports) {
+                                    runtime_error = Some(error.detail);
+                                    break;
+                                }
                             }
+                            Err(error) => runtime_error = Some(error.to_string()),
                         }
-                        Err(error) => runtime_error = Some(error.to_string()),
                     }
-                    active_request = None;
+                    if let Err(error) = dispatch_next_request(
+                        &service_tx,
+                        &mut queued_channels,
+                        &pending_requests,
+                        &mut active_service_channel,
+                        &mut session,
+                    ) {
+                        runtime_error = Some(error);
+                        break;
+                    }
                 }
             }
             Err(TryRecvError::Disconnected) => {
@@ -167,7 +189,12 @@ pub fn run(
         match backend.receive_output_report(IO_POLL_INTERVAL) {
             Ok(report) => match session.receive_report(&report, Instant::now()) {
                 Ok((expired, event)) => {
-                    handle_expired_channels(expired, &service_tx, &mut active_request);
+                    handle_expired_channels(
+                        expired,
+                        &service_tx,
+                        &mut pending_requests,
+                        active_service_channel,
+                    );
                     match event {
                         SessionEvent::Response(report) => {
                             if let Err(error) =
@@ -184,24 +211,39 @@ pub fn run(
                             }
                         }
                         SessionEvent::Ctap2Request { channel, request } => {
-                            if service_tx
-                                .send(ServiceCommand::Request { channel, request })
-                                .is_err()
-                            {
-                                runtime_error =
-                                    Some("Authenticator service is unavailable.".into());
+                            if pending_requests.len() >= CTAPHID_CHANNELS {
+                                runtime_error = Some("CTAPHID request queue is full.".into());
                                 break;
                             }
-                            active_request = Some((channel, false, Instant::now()));
+                            pending_requests.insert(
+                                channel,
+                                PendingRequest {
+                                    cancelled: false,
+                                    last_keepalive: Instant::now(),
+                                },
+                            );
+                            queued_channels.push_back((channel, request));
+                            if active_service_channel.is_none() {
+                                if let Err(error) = dispatch_next_request(
+                                    &service_tx,
+                                    &mut queued_channels,
+                                    &pending_requests,
+                                    &mut active_service_channel,
+                                    &mut session,
+                                ) {
+                                    runtime_error = Some(error);
+                                    break;
+                                }
+                            }
                         }
                         SessionEvent::Cancelled(channel) => {
-                            if active_request
-                                .is_some_and(|(active_channel, _, _)| active_channel == channel)
-                            {
+                            if let Some(request) = pending_requests.get_mut(&channel) {
+                                request.cancelled = true;
+                            }
+                            if active_service_channel == Some(channel) {
                                 let _ = service_tx.send(ServiceCommand::Cancel { channel });
-                                if let Some((_, cancelled, _)) = &mut active_request {
-                                    *cancelled = true;
-                                }
+                            } else {
+                                pending_requests.remove(&channel);
                             }
                         }
                         SessionEvent::Pending | SessionEvent::Message(_) => {}
@@ -211,7 +253,12 @@ pub fn run(
             },
             Err(error) if error.kind == PlatformErrorKind::Timeout => {
                 let now = Instant::now();
-                handle_expired_channels(session.expire(now), &service_tx, &mut active_request);
+                handle_expired_channels(
+                    session.expire(now),
+                    &service_tx,
+                    &mut pending_requests,
+                    active_service_channel,
+                );
             }
             Err(error) => {
                 runtime_error = Some(error.detail);
@@ -219,10 +266,10 @@ pub fn run(
             }
         }
 
-        if let Some((channel, cancelled, last_keepalive)) = active_request {
-            if !cancelled && last_keepalive.elapsed() >= KEEPALIVE_INTERVAL {
+        for (channel, request) in &mut pending_requests {
+            if !request.cancelled && request.last_keepalive.elapsed() >= KEEPALIVE_INTERVAL {
                 match encode_initialization(
-                    channel,
+                    *channel,
                     CtapHidCommand::Keepalive,
                     &[KEEPALIVE_PROCESSING],
                 ) {
@@ -231,9 +278,7 @@ pub fn run(
                             runtime_error = Some(error.detail);
                             break;
                         }
-                        if let Some((_, _, sent_at)) = &mut active_request {
-                            *sent_at = Instant::now();
-                        }
+                        request.last_keepalive = Instant::now();
                     }
                     Err(error) => {
                         runtime_error = Some(error.to_string());
@@ -277,14 +322,43 @@ fn send_reports(
 fn handle_expired_channels(
     expired: Vec<u32>,
     service: &std::sync::mpsc::Sender<ServiceCommand>,
-    active_request: &mut Option<(u32, bool, Instant)>,
+    pending_requests: &mut HashMap<u32, PendingRequest>,
+    active_service_channel: Option<u32>,
 ) {
     for channel in expired {
-        let _ = service.send(ServiceCommand::Cancel { channel });
-        if active_request.is_some_and(|(active_channel, _, _)| active_channel == channel) {
-            *active_request = None;
+        if active_service_channel == Some(channel) {
+            if let Some(request) = pending_requests.get_mut(&channel) {
+                request.cancelled = true;
+            }
+            let _ = service.send(ServiceCommand::Cancel { channel });
+        } else {
+            pending_requests.remove(&channel);
         }
     }
+}
+
+fn dispatch_next_request(
+    service: &Sender<ServiceCommand>,
+    queued_channels: &mut VecDeque<(u32, Ctap2Request)>,
+    pending_requests: &HashMap<u32, PendingRequest>,
+    active_service_channel: &mut Option<u32>,
+    session: &mut AuthenticatorHidSession<'_>,
+) -> Result<(), String> {
+    if active_service_channel.is_some() {
+        return Ok(());
+    }
+    while let Some((channel, request)) = queued_channels.pop_front() {
+        if !pending_requests.contains_key(&channel) {
+            continue;
+        }
+        service
+            .send(ServiceCommand::Request { channel, request })
+            .map_err(|_| "Authenticator service is unavailable.".to_owned())?;
+        *active_service_channel = Some(channel);
+        session.mark_processing(channel);
+        break;
+    }
+    Ok(())
 }
 
 fn return_store(
