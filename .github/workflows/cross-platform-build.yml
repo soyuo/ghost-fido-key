@@ -252,7 +252,7 @@ jobs:
       - name: Verify Windows ARM64 app and installer architecture
         shell: pwsh
         run: |
-          $app = Get-Item -LiteralPath 'target/aarch64-pc-windows-msvc/release/ghost-fido-desktop.exe'
+          $app = Get-Item -LiteralPath 'target/release/ghost-fido-desktop.exe'
           $stream = [System.IO.File]::OpenRead($app.FullName)
           try {
             $reader = [System.IO.BinaryReader]::new($stream)
@@ -268,7 +268,7 @@ jobs:
           } finally {
             $stream.Dispose()
           }
-          $installer = Get-ChildItem -LiteralPath 'target/aarch64-pc-windows-msvc/release/bundle/nsis' -Filter '*.exe' -File -Recurse | Select-Object -First 1
+          $installer = Get-ChildItem -LiteralPath 'target/release/bundle/nsis' -Filter '*.exe' -File -Recurse | Select-Object -First 1
           if ($null -eq $installer -or $installer.Length -eq 0) {
             throw 'Tauri did not produce a non-empty Windows ARM64 NSIS installer'
           }
@@ -279,6 +279,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-arm64-unsigned-development-installer
-          path: target/aarch64-pc-windows-msvc/release/bundle/nsis/**/*.exe
+          path: target/release/bundle/nsis/**/*.exe
           if-no-files-found: error
           retention-days: 7
