@@ -16,5 +16,7 @@ from being moved between platform providers or schema versions.
 The key is not stored in SQLite or beside the database. The database can only
 be reopened when the matching item remains accessible in the same user's
 default Keychain. Keychain access identity and application signing may affect
-access after packaging, so the desktop application must initialize the
-persistent store with this provider and surface Keychain failures clearly.
+access after packaging. The desktop app initializes its persistent store with
+this provider at startup and leaves protected storage unavailable if Keychain
+access fails; it does not fall back to plaintext or volatile storage. Signed
+distribution and packaged Keychain behavior still require platform validation.

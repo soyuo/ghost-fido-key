@@ -16,5 +16,7 @@ and authentication failures all fail closed.
 
 The key is recoverable only through the same user's keyring. Copying the SQLite
 database without the corresponding Secret Service collection is not a backup
-or migration strategy. `CredentialStore::open` is not yet initialized by the
-desktop app; macOS metadata protection also remains to be implemented.
+or migration strategy. The desktop app creates its application data directory
+and opens the protected credential store during startup. If the data directory
+or Secret Service provider is unavailable, protected storage remains
+unavailable; the app does not switch to plaintext or volatile storage.
