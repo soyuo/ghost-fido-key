@@ -7,7 +7,7 @@ use ghost_fido_core::{
     encode_make_credential_response_with_extensions,
 };
 use std::time::Duration;
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 use crate::{
     KeyCreationPolicy, KeyStore, PlatformError, PlatformErrorKind, SigningAlgorithm,
@@ -126,26 +126,22 @@ pub fn register_make_credential_with_uv(
     let mut credential_id_bytes = [0; 16];
     getrandom::fill(&mut credential_id_bytes)
         .map_err(|_| MakeCredentialExecutionError::Randomness)?;
-    let mut hmac_secret_with_uv = [0; 32];
-    let mut hmac_secret_without_uv = [0; 32];
+    let mut hmac_secret_with_uv = Zeroizing::new([0; 32]);
+    let mut hmac_secret_without_uv = Zeroizing::new([0; 32]);
     let hmac_secret = if request.hmac_secret {
-        if getrandom::fill(&mut hmac_secret_with_uv).is_err() {
-            hmac_secret_with_uv.zeroize();
+        if getrandom::fill(&mut hmac_secret_with_uv[..]).is_err() {
             return Err(MakeCredentialExecutionError::Randomness);
         }
-        if getrandom::fill(&mut hmac_secret_without_uv).is_err() {
-            hmac_secret_with_uv.zeroize();
+        if getrandom::fill(&mut hmac_secret_without_uv[..]).is_err() {
             return Err(MakeCredentialExecutionError::Randomness);
         }
         Some(HmacSecretMaterial::new(
-            hmac_secret_with_uv,
-            hmac_secret_without_uv,
+            *hmac_secret_with_uv,
+            *hmac_secret_without_uv,
         ))
     } else {
         None
     };
-    hmac_secret_with_uv.zeroize();
-    hmac_secret_without_uv.zeroize();
 
     let created =
         key_store.create_signing_key(SigningAlgorithm::Es256, key_policy, software_key_consent)?;
