@@ -16,9 +16,9 @@ PIN input is the decrypted 64-byte right-zero-padded value. Remove trailing zero
 
 ## Token and request authorization
 
-PIN/UV auth tokens are random, in-memory secrets. Legacy `getPINToken` grants only MakeCredential and GetAssertion in this implementation. `getPINUvAuthTokenUsingPinWithPermissions` accepts only those two permission bits and may bind the token to one RP ID; unsupported permission bits fail closed. Tokens are channel-scoped, expire after 30 seconds, and are discarded on channel cancellation, service shutdown, reset, or replacement. MakeCredential and GetAssertion must verify the command's `pinUvAuthParam` over the 32-byte client data hash before setting the UV flag. An invalid or unpermitted token fails closed.
+PIN/UV auth tokens are random, in-memory secrets. Legacy `getPINToken` grants only MakeCredential and GetAssertion. `getPINUvAuthTokenUsingPinWithPermissions` accepts only MakeCredential (`0x01`), GetAssertion (`0x02`), and Credential Management (`0x04`) and may bind the token to one RP ID; unsupported permission bits fail closed. Tokens are channel-scoped, expire after 30 seconds, and are discarded on channel cancellation, service shutdown, reset, or replacement. MakeCredential and GetAssertion must verify the command's `pinUvAuthParam` over the 32-byte client data hash before setting the UV flag. An invalid or unpermitted token fails closed.
 
-The local user approval path remains required for credential registration and assertion. PIN authentication supplies user verification; it does not silently authorize signing or bypass the existing user-presence prompt.
+The local user approval path remains required for credential registration and assertion. PIN authentication supplies user verification; it does not silently authorize signing or bypass the existing user-presence prompt. Credential Management uses the separate `cm` permission (`0x04`) and is granted only by the permission-based token subcommand; legacy `getPINToken` never grants it.
 
 ## Storage and reset
 
@@ -26,4 +26,4 @@ Persist only the PIN verifier and retry counter through authenticated, OS-protec
 
 ## Capability gate
 
-GetInfo advertises `clientPin=true` and protocol `1` only after the protected PIN state provider, retry semantics, key agreement, encrypted PIN commands, token permission checks, and MakeCredential/GetAssertion UV integration are all active. Protocol 2, PIN change policy, credential management permissions, and other unimplemented features remain unadvertised.
+GetInfo advertises `clientPin=true` and protocol `1` only after the protected PIN state provider, retry semantics, key agreement, encrypted PIN commands, token permission checks, and MakeCredential/GetAssertion UV integration are all active. Protocol 2 and other unimplemented features remain unadvertised. Credential Management's permission is available to the dedicated CTAP Credential Management implementation only.
