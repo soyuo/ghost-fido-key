@@ -37,6 +37,10 @@ type CredentialSummary = {
   discoverable: boolean;
 };
 
+function isActionCancelled(cause: unknown) {
+  return cause === "Action cancelled by the user.";
+}
+
 function App() {
   const [status, setStatus] = useState<PlatformStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -171,15 +175,15 @@ function App() {
     const currentPin = status?.clientPinStatus === "Configured"
       ? currentPinRef.current?.value ?? ""
       : null;
-    if (!window.confirm("인증기 PIN을 설정하거나 변경할까요? 앱은 PIN을 기록하지 않지만 이 컴퓨터의 보호된 credential 저장소에 검증값을 저장합니다.")) return;
-
     setPinAction(true);
     try {
-      await invoke("set_client_pin", { currentPin, newPin, confirmed: true });
+      await invoke("set_client_pin", { currentPin, newPin });
       setPinMessage("인증기 PIN을 업데이트했습니다.");
       await refreshStatus();
     } catch (cause) {
-      setPinError(typeof cause === "string" ? cause : "인증기 PIN을 업데이트하지 못했습니다.");
+      if (!isActionCancelled(cause)) {
+        setPinError(typeof cause === "string" ? cause : "인증기 PIN을 업데이트하지 못했습니다.");
+      }
     } finally {
       if (currentPinRef.current) currentPinRef.current.value = "";
       if (newPinRef.current) newPinRef.current.value = "";
@@ -189,30 +193,25 @@ function App() {
   };
 
   const deleteCredential = async (credential: CredentialSummary) => {
-    const site = credential.relyingPartyId ?? "사이트를 확인할 수 없는 기존 자격 증명";
-    const user = credential.userDisplayName ?? credential.userName;
-    if (!window.confirm(`${site}${user ? `\n${user}` : ""} 자격 증명을 삭제할까요? 이 작업은 되돌릴 수 없습니다.`)) return;
-
     setCredentialError(null);
     try {
-      await invoke("delete_credential", { creationOrder: credential.creationOrder, confirmed: true });
+      await invoke("delete_credential", { creationOrder: credential.creationOrder });
       await loadCredentials();
     } catch (cause) {
+      if (isActionCancelled(cause)) return;
       await loadCredentials();
       setCredentialError(typeof cause === "string" ? cause : "자격 증명을 삭제하지 못했습니다.");
     }
   };
 
   const resetCredentials = async () => {
-    if (!window.confirm("이 컴퓨터에 저장된 모든 credential과 signing key를 삭제합니다. 이 작업은 되돌릴 수 없습니다.")) return;
-    if (window.prompt("확인을 위해 RESET을 입력하세요.") !== "RESET") return;
-
     setResetAction(true);
     setCredentialError(null);
     try {
-      await invoke<number>("reset_credentials", { confirmed: true });
+      await invoke<number>("reset_credentials");
       await loadCredentials();
     } catch (cause) {
+      if (isActionCancelled(cause)) return;
       await loadCredentials();
       setCredentialError(typeof cause === "string" ? cause : "인증기 자격 증명을 초기화하지 못했습니다.");
     } finally {
