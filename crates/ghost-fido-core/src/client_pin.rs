@@ -64,13 +64,12 @@ pub fn configure_pin(
             return Err(PinManagementError::CurrentPinRequired);
         };
         let retries = store.pin_state().retries();
-        let mut actual_verifier = pin_hash(current_pin);
+        let actual_verifier = pin_hash(current_pin);
         let correct = actual_verifier
             .as_slice()
             .ct_eq(expected_verifier.as_slice())
             .unwrap_u8()
             == 1;
-        actual_verifier.zeroize();
         if !correct {
             let next_retries = retries.saturating_sub(1);
             store
@@ -86,11 +85,11 @@ pub fn configure_pin(
         return Err(PinManagementError::PinNotSet);
     }
 
-    let mut verifier = pin_hash(new_pin);
+    let verifier = pin_hash(new_pin);
+    // Persist a copy only in the credential store's protected payload; `verifier` is wiped on drop.
     let result = store
-        .set_pin_verifier(Some(verifier))
+        .set_pin_verifier(Some(*verifier))
         .map_err(|_| PinManagementError::Persistence);
-    verifier.zeroize();
     result
 }
 
@@ -130,10 +129,12 @@ impl PinKeyAgreement {
     pub fn derive_shared_secret(
         &self,
         peer_cose_key: &CborValue,
-    ) -> Result<[u8; 32], PinCryptoError> {
+    ) -> Result<Zeroizing<[u8; 32]>, PinCryptoError> {
         let peer = parse_peer_key(peer_cose_key)?;
         let raw = self.secret.diffie_hellman(&peer);
-        Ok(Sha256::digest(raw.raw_secret_bytes()).into())
+        Ok(Zeroizing::new(
+            Sha256::digest(raw.raw_secret_bytes()).into(),
+        ))
     }
 }
 
@@ -216,10 +217,11 @@ pub fn process_hmac_secret(
 }
 
 #[must_use]
-pub fn pin_hash(pin: &[u8]) -> [u8; PIN_HASH_SIZE] {
-    Sha256::digest(pin)[..PIN_HASH_SIZE]
-        .try_into()
-        .expect("fixed PIN hash length")
+pub fn pin_hash(pin: &[u8]) -> Zeroizing<[u8; PIN_HASH_SIZE]> {
+    let digest = Zeroizing::new(<[u8; 32]>::from(Sha256::digest(pin)));
+    let mut verifier = [0_u8; PIN_HASH_SIZE];
+    verifier.copy_from_slice(&digest[..PIN_HASH_SIZE]);
+    Zeroizing::new(verifier)
 }
 
 pub fn validate_pin(pin: &[u8]) -> Result<(), PinCryptoError> {
@@ -236,7 +238,7 @@ pub fn validate_pin(pin: &[u8]) -> Result<(), PinCryptoError> {
 pub fn decrypt_pin(
     shared_secret: &[u8; 32],
     encrypted: &mut [u8],
-) -> Result<Vec<u8>, PinCryptoError> {
+) -> Result<Zeroizing<Vec<u8>>, PinCryptoError> {
     if encrypted.len() != PIN_ENCRYPTED_SIZE {
         return Err(PinCryptoError::InvalidCiphertext);
     }
@@ -249,10 +251,9 @@ pub fn decrypt_pin(
         encrypted.zeroize();
         return Err(PinCryptoError::InvalidPin);
     }
-    let mut pin = encrypted[..end].to_vec();
+    let pin = Zeroizing::new(encrypted[..end].to_vec());
     encrypted.zeroize();
     if validate_pin(&pin).is_err() {
-        pin.zeroize();
         return Err(PinCryptoError::InvalidPin);
     }
     Ok(pin)
