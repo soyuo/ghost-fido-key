@@ -658,6 +658,8 @@ fn set_client_pin(
     current_pin: Option<String>,
     new_pin: String,
 ) -> Result<(), String> {
+    let current_pin = current_pin.map(Zeroizing::new);
+    let new_pin = Zeroizing::new(new_pin);
     if new_pin.len() > PIN_MAX_UTF8_BYTES
         || current_pin
             .as_ref()
@@ -668,8 +670,6 @@ fn set_client_pin(
         ));
     }
 
-    let current_pin = current_pin.map(|pin| Zeroizing::new(pin.into_bytes()));
-    let new_pin = Zeroizing::new(new_pin.into_bytes());
     with_stopped_credential_store(&state, |store| {
         confirm_native_action(
             &app,
@@ -678,8 +678,8 @@ fn set_client_pin(
         )?;
         configure_client_pin(
             store,
-            current_pin.as_ref().map(|pin| pin.as_slice()),
-            new_pin.as_slice(),
+            current_pin.as_ref().map(|pin| pin.as_bytes()),
+            new_pin.as_bytes(),
         )
         .map_err(|error| match error {
             PinManagementError::ProtectedStorageRequired => {
