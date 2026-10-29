@@ -23,6 +23,7 @@ jobs:
       matrix:
         os:
           - ubuntu-22.04
+          - ubuntu-24.04-arm
           - windows-2025-vs2026
           - macos-15
           - macos-15-intel
@@ -45,6 +46,12 @@ jobs:
             wget
 
       - uses: actions/checkout@v4
+
+      - name: Verify native Linux ARM64 runner
+        if: matrix.os == 'ubuntu-24.04-arm'
+        run: |
+          test "$(uname -m)" = "aarch64"
+          test "$(dpkg --print-architecture)" = "arm64"
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
