@@ -1473,6 +1473,7 @@ version = "0.1.0"
 dependencies = [
  "ghost-fido-core",
  "ghost-platform",
+ "gio",
  "log",
  "serde",
  "tauri",
