@@ -358,7 +358,7 @@ impl ClientPinHandler {
             secret.zeroize();
             return Ctap2Response::error(Ctap2Status::PinAuthInvalid);
         }
-        let mut encrypted_hash = hash_encrypted.to_vec();
+        let mut encrypted_hash = Zeroizing::new(hash_encrypted.to_vec());
         if client_pin_decrypt(&secret, &mut encrypted_hash).is_err() {
             secret.zeroize();
             return Ctap2Response::error(Ctap2Status::PinAuthInvalid);
@@ -369,7 +369,6 @@ impl ClientPinHandler {
             .unwrap_u8()
             != 1
         {
-            encrypted_hash.zeroize();
             secret.zeroize();
             let retries = store.pin_state().retries().saturating_sub(1);
             if store.set_pin_retries(retries).is_err() {
@@ -381,7 +380,6 @@ impl ClientPinHandler {
                 Ctap2Status::PinInvalid
             });
         }
-        encrypted_hash.zeroize();
         let mut encrypted_pin = new_encrypted.to_vec();
         let decrypted = client_pin_decrypt_pin(&secret, &mut encrypted_pin);
         secret.zeroize();
@@ -457,7 +455,7 @@ impl ClientPinHandler {
             secret.zeroize();
             return Ctap2Response::error(Ctap2Status::PinAuthInvalid);
         }
-        let mut decrypted_hash = encrypted.to_vec();
+        let mut decrypted_hash = Zeroizing::new(encrypted.to_vec());
         if client_pin_decrypt(&secret, &mut decrypted_hash).is_err() {
             secret.zeroize();
             return Ctap2Response::error(Ctap2Status::PinAuthInvalid);
@@ -468,7 +466,6 @@ impl ClientPinHandler {
             .unwrap_u8()
             != 1
         {
-            decrypted_hash.zeroize();
             secret.zeroize();
             let retries = store.pin_state().retries().saturating_sub(1);
             if store.set_pin_retries(retries).is_err() {
@@ -480,33 +477,35 @@ impl ClientPinHandler {
                 Ctap2Status::PinInvalid
             });
         }
-        decrypted_hash.zeroize();
         if store.set_pin_retries(8).is_err() {
             secret.zeroize();
             return Ctap2Response::error(Ctap2Status::Other);
         }
-        let mut token = [0_u8; 32];
-        if getrandom::fill(&mut token).is_err() {
+        let mut token = Zeroizing::new([0_u8; 32]);
+        if getrandom::fill(&mut token[..]).is_err() {
             secret.zeroize();
             return Ctap2Response::error(Ctap2Status::Other);
         }
-        let mut encrypted_token = token.to_vec();
+        let mut encrypted_token = Zeroizing::new(token.to_vec());
         if client_pin_encrypt(&secret, &mut encrypted_token).is_err() {
             secret.zeroize();
-            token.zeroize();
             return Ctap2Response::error(Ctap2Status::Other);
         }
         secret.zeroize();
+        // Keep a token copy only in the channel owner, which zeroizes it on drop.
         self.tokens.insert(
             channel,
             PinTokenEntry {
-                value: token,
+                value: *token,
                 expires_at: Instant::now() + PIN_PROTOCOL_TIMEOUT,
                 permissions,
                 relying_party_id,
             },
         );
-        response_map(vec![(2, CborValue::Bytes(encrypted_token))])
+        response_map(vec![(
+            2,
+            CborValue::Bytes(core::mem::take(&mut *encrypted_token)),
+        )])
     }
 }
 
