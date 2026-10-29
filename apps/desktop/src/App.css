@@ -53,10 +53,6 @@ h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.025em; }
 .runtime-actions { display: flex; justify-content: flex-end; margin: 16px 0; }
 .runtime-actions button { padding: 9px 16px; border: 1px solid #6cbb91; border-radius: 8px; color: #102017; background: #9fe2c0; font-weight: 700; cursor: pointer; }
 .runtime-actions button:disabled, .approval-actions button:disabled { opacity: 0.6; cursor: wait; }
-.software-key-warning { margin-top: 16px; padding: 20px; border: 1px solid #8b6540; border-radius: 13px; background: rgba(44, 33, 22, 0.96); }
-.software-key-warning .eyebrow { margin-bottom: 8px; }
-.software-key-warning h2 { margin-bottom: 12px; }
-.software-key-warning p:not(.eyebrow) { color: #c6b797; font-size: 13px; line-height: 1.6; }
 .pin-settings { display: grid; gap: 12px; margin-top: 16px; padding: 18px; border: 1px solid #303b48; border-radius: 12px; background: rgba(19, 26, 37, 0.72); }
 .pin-settings h2 { margin: 0; font-size: 15px; }
 .pin-settings label { display: grid; gap: 6px; color: #aeb9c8; font-size: 12px; }

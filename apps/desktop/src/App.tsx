@@ -46,7 +46,6 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [approvalRequests, setApprovalRequests] = useState<ApprovalPrompt[]>([]);
   const [approvalError, setApprovalError] = useState<string | null>(null);
-  const [showSoftwareKeyWarning, setShowSoftwareKeyWarning] = useState(false);
   const [runtimeAction, setRuntimeAction] = useState(false);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [showCredentials, setShowCredentials] = useState(false);
@@ -134,14 +133,14 @@ function App() {
       .catch(() => setApprovalError("That approval request has expired or is no longer active."));
   };
 
-  const startAuthenticator = async (softwareKeyRiskAcknowledged: boolean) => {
+  const startAuthenticator = async () => {
     setRuntimeAction(true);
     setRuntimeError(null);
     try {
-      await invoke("start_authenticator", { softwareKeyRiskAcknowledged });
-      setShowSoftwareKeyWarning(false);
+      await invoke("start_authenticator");
       await refreshStatus();
     } catch (cause) {
+      if (isActionCancelled(cause)) return;
       setRuntimeError(typeof cause === "string" ? cause : "인증기를 시작하지 못했습니다. 가상 HID 권한과 키 저장소 상태를 확인하세요.");
     } finally {
       setRuntimeAction(false);
@@ -258,23 +257,9 @@ function App() {
           <p className="status-message">
             {error ?? status?.statusMessage ?? "시스템 상태를 확인하고 있습니다…"}
           </p>
-          {isTauri() && status?.hostPlatform === "Linux" && !status.authenticatorRunning && status.virtualHidAvailable && status.credentialStoreAvailable && !showSoftwareKeyWarning && (
+          {isTauri() && status && ["Linux", "Windows", "macOS"].includes(status.hostPlatform) && !status.authenticatorRunning && status.virtualHidAvailable && status.credentialStoreAvailable && (
             <div className="runtime-actions">
-              <button type="button" disabled={runtimeAction} onClick={() => setShowSoftwareKeyWarning(true)}>
-                인증기 시작
-              </button>
-            </div>
-          )}
-          {isTauri() && status?.hostPlatform === "Windows" && !status.authenticatorRunning && status.virtualHidAvailable && status.credentialStoreAvailable && (
-            <div className="runtime-actions">
-              <button type="button" disabled={runtimeAction} onClick={() => void startAuthenticator(false)}>
-                {runtimeAction ? "시작 중…" : "인증기 시작"}
-              </button>
-            </div>
-          )}
-          {isTauri() && status?.hostPlatform === "macOS" && !status.authenticatorRunning && status.virtualHidAvailable && status.credentialStoreAvailable && (
-            <div className="runtime-actions">
-              <button type="button" disabled={runtimeAction} onClick={() => void startAuthenticator(false)}>
+              <button type="button" disabled={runtimeAction} onClick={() => void startAuthenticator()}>
                 {runtimeAction ? "시작 중…" : "인증기 시작"}
               </button>
             </div>
@@ -283,18 +268,6 @@ function App() {
             <div className="runtime-actions">
               <button type="button" disabled={runtimeAction} onClick={stopAuthenticator}>인증기 중지</button>
             </div>
-          )}
-          {showSoftwareKeyWarning && (
-            <section className="software-key-warning" aria-labelledby="software-key-title">
-              <p className="eyebrow">보안 확인</p>
-              <h2 id="software-key-title">소프트웨어 보안 키 사용</h2>
-              <p>개인 키는 하드웨어 보안 모듈이 아닌 소프트웨어로 생성되며 Linux Secret Service에 저장됩니다. 보호 수준은 Secret Service 설정에 따르고, 해당 계정이나 저장소에 접근할 수 있는 사용자가 키를 추출할 수 있습니다.</p>
-              <p>동의하면 이번 앱 실행 세션에서만 소프트웨어 키 생성을 허용합니다.</p>
-              <div className="approval-actions">
-                <button type="button" disabled={runtimeAction} onClick={() => setShowSoftwareKeyWarning(false)}>취소</button>
-                <button type="button" disabled={runtimeAction} onClick={() => void startAuthenticator(true)}>{runtimeAction ? "시작 중…" : "위험을 이해했고 시작"}</button>
-              </div>
-            </section>
           )}
           {runtimeError && <p className="status-message" role="alert">{runtimeError}</p>}
           {isTauri() && status?.credentialStoreAvailable && (
