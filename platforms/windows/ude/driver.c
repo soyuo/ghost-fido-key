@@ -762,14 +762,16 @@ GhostFidoHandleWriteInputReport(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request,
                                     &transferBufferLength);
     if (!NT_SUCCESS(status)) {
         GhostFidoDeferUrbCompletion(Device, pendingRequest, status, 0);
-        (VOID)GhostFidoPushReport(Device, TRUE, reportRequest->Report);
-        return STATUS_SUCCESS;
+        return GhostFidoPushReport(Device, TRUE, reportRequest->Report)
+                   ? STATUS_SUCCESS
+                   : STATUS_INSUFFICIENT_RESOURCES;
     }
     if (transferBufferLength != GHOST_FIDO_UDE_REPORT_SIZE) {
         GhostFidoDeferUrbCompletion(Device, pendingRequest,
                                     STATUS_INVALID_BUFFER_SIZE, 0);
-        (VOID)GhostFidoPushReport(Device, TRUE, reportRequest->Report);
-        return STATUS_SUCCESS;
+        return GhostFidoPushReport(Device, TRUE, reportRequest->Report)
+                   ? STATUS_SUCCESS
+                   : STATUS_INSUFFICIENT_RESOURCES;
     }
 
     RtlCopyMemory(transferBuffer, reportRequest->Report,
