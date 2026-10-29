@@ -6,8 +6,8 @@ use std::{
 };
 
 use ghost_fido_core::{
-    CredentialId, CredentialStore, Ctap2Command, Ctap2Handler, Ctap2Request, Ctap2Response,
-    Ctap2Status, GetAssertionRequest, GetInfoError, GetInfoProfile, MakeCredentialRequest,
+    CredentialId, CredentialStore, Ctap2Command, Ctap2Request, Ctap2Response, Ctap2Status,
+    GetAssertionRequest, GetInfoError, GetInfoHandler, GetInfoProfile, MakeCredentialRequest,
 };
 
 use crate::{
@@ -42,7 +42,7 @@ pub enum AuthenticatorServiceError {
 
 /// Routes decoded CTAP2 requests through the configured credential and platform providers.
 pub struct AuthenticatorService<'a> {
-    get_info_handler: Ctap2Handler,
+    get_info_handler: GetInfoHandler,
     store: &'a mut CredentialStore,
     key_store: &'a dyn KeyStore,
     verification: &'a dyn UserVerification,
@@ -57,7 +57,7 @@ impl<'a> AuthenticatorService<'a> {
         verification: &'a dyn UserVerification,
         config: AuthenticatorServiceConfig,
     ) -> Result<Self, GetInfoError> {
-        let get_info_handler = Ctap2Handler::new(&config.get_info)?;
+        let get_info_handler = GetInfoHandler::new(&config.get_info)?;
         Ok(Self {
             get_info_handler,
             store,
@@ -85,7 +85,7 @@ impl<'a> AuthenticatorService<'a> {
             self.assertion_continuations.remove(&channel);
         }
         match request.command {
-            Ctap2Command::GetInfo => Ok(self.get_info_handler.handle(request)),
+            Ctap2Command::GetInfo => Ok(self.get_info_handler.handle(&request.payload)),
             Ctap2Command::MakeCredential => {
                 let typed = match MakeCredentialRequest::decode(&request.payload) {
                     Ok(request) => request,

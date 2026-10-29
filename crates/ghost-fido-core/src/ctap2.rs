@@ -863,13 +863,13 @@ pub enum GetInfoError {
     InvalidMessageSize,
 }
 
-/// Dispatches requests using an explicitly configured authenticator profile.
+/// Encodes GetInfo responses from an explicitly configured authenticator profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Ctap2Handler {
+pub struct GetInfoHandler {
     get_info_payload: Vec<u8>,
 }
 
-impl Ctap2Handler {
+impl GetInfoHandler {
     pub fn new(profile: &GetInfoProfile) -> Result<Self, GetInfoError> {
         Ok(Self {
             get_info_payload: encode_get_info(profile)?,
@@ -877,15 +877,15 @@ impl Ctap2Handler {
     }
 
     #[must_use]
-    pub fn handle(&self, request: &Ctap2Request) -> Ctap2Response {
-        let (status, payload) = match request.command {
-            Ctap2Command::GetInfo if request.payload.is_empty() => {
-                (Ctap2Status::Success, self.get_info_payload.clone())
+    pub fn handle(&self, request_payload: &[u8]) -> Ctap2Response {
+        if request_payload.is_empty() {
+            Ctap2Response {
+                status: Ctap2Status::Success,
+                payload: self.get_info_payload.clone(),
             }
-            Ctap2Command::GetInfo => (Ctap2Status::InvalidLength, Vec::new()),
-            _ => (Ctap2Status::InvalidCommand, Vec::new()),
-        };
-        Ctap2Response { status, payload }
+        } else {
+            Ctap2Response::error(Ctap2Status::InvalidLength)
+        }
     }
 }
 
