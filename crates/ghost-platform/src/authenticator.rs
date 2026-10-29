@@ -89,7 +89,7 @@ impl<'a> AuthenticatorService<'a> {
             Ctap2Command::MakeCredential => {
                 let typed = match MakeCredentialRequest::decode(&request.payload) {
                     Ok(request) => request,
-                    Err(error) => return Ok(protocol_error(error.status())),
+                    Err(error) => return Ok(Ctap2Response::error(error.status())),
                 };
                 register_make_credential(
                     &typed,
@@ -106,7 +106,7 @@ impl<'a> AuthenticatorService<'a> {
             Ctap2Command::GetAssertion => {
                 let typed = match GetAssertionRequest::decode(&request.payload) {
                     Ok(request) => request,
-                    Err(error) => return Ok(protocol_error(error.status())),
+                    Err(error) => return Ok(Ctap2Response::error(error.status())),
                 };
                 let execution = execute_get_assertion(
                     &typed,
@@ -130,16 +130,16 @@ impl<'a> AuthenticatorService<'a> {
             }
             Ctap2Command::GetNextAssertion => {
                 if !request.payload.is_empty() {
-                    return Ok(protocol_error(Ctap2Status::InvalidLength));
+                    return Ok(Ctap2Response::error(Ctap2Status::InvalidLength));
                 }
                 let Some(mut continuation) = self.assertion_continuations.remove(&channel) else {
-                    return Ok(protocol_error(Ctap2Status::NotAllowed));
+                    return Ok(Ctap2Response::error(Ctap2Status::NotAllowed));
                 };
                 if Instant::now() >= continuation.expires_at {
-                    return Ok(protocol_error(Ctap2Status::NotAllowed));
+                    return Ok(Ctap2Response::error(Ctap2Status::NotAllowed));
                 }
                 let Some(credential_id) = continuation.credentials.pop_front() else {
-                    return Ok(protocol_error(Ctap2Status::NotAllowed));
+                    return Ok(Ctap2Response::error(Ctap2Status::NotAllowed));
                 };
                 let result = execute_next_assertion(
                     &continuation.request,
@@ -149,14 +149,14 @@ impl<'a> AuthenticatorService<'a> {
                 )
                 .map_err(AuthenticatorServiceError::GetAssertion)?;
                 if result.status != Ctap2Status::Success {
-                    return Ok(protocol_error(Ctap2Status::NotAllowed));
+                    return Ok(Ctap2Response::error(Ctap2Status::NotAllowed));
                 }
                 if !continuation.credentials.is_empty() {
                     self.assertion_continuations.insert(channel, continuation);
                 }
                 Ok(result)
             }
-            _ => Ok(protocol_error(Ctap2Status::InvalidCommand)),
+            _ => Ok(Ctap2Response::error(Ctap2Status::InvalidCommand)),
         }
     }
 
@@ -167,12 +167,5 @@ impl<'a> AuthenticatorService<'a> {
     /// Clears per-channel state after the transport reports cancellation or expiry.
     pub fn cancel_channel(&mut self, channel: u32) {
         self.clear_channel(channel);
-    }
-}
-
-fn protocol_error(status: Ctap2Status) -> Ctap2Response {
-    Ctap2Response {
-        status,
-        payload: Vec::new(),
     }
 }

@@ -303,6 +303,17 @@ pub struct Ctap2Response {
     pub payload: Vec<u8>,
 }
 
+impl Ctap2Response {
+    /// Creates a CTAP2 response with the given status and no response payload.
+    #[must_use]
+    pub fn error(status: Ctap2Status) -> Self {
+        Self {
+            status,
+            payload: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GetAssertionRequest {
     pub rp_id: String,
