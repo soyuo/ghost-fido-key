@@ -57,6 +57,14 @@ struct DesktopVerificationProvider {
     session_locked: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(target_os = "windows")]
     session_monitor_available: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(target_os = "linux")]
+    session_locked: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(target_os = "linux")]
+    session_monitor_available: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(target_os = "linux")]
+    session_lock_transition_pending: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(target_os = "linux")]
+    session_context: Arc<Mutex<Option<linux_session_lock::LinuxSessionContext>>>,
 }
 
 struct PendingApproval {
@@ -86,7 +94,7 @@ struct PlatformStatus {
     virtual_hid_available: bool,
     device_attached: bool,
     key_storage_status: String,
-    desktop_approval_status: &'static str,
+    desktop_approval_status: String,
     client_pin_status: &'static str,
     native_user_verification_status: &'static str,
     credential_store_available: bool,
@@ -256,6 +264,100 @@ fn initialize_credential_store(app: &AppHandle) -> (Option<CredentialStore>, Str
 }
 
 impl DesktopVerificationProvider {
+    #[cfg(target_os = "linux")]
+    fn session_protection_available(&self) -> bool {
+        use std::sync::atomic::Ordering;
+
+        if !self.session_monitor_available.load(Ordering::Acquire) {
+            return false;
+        }
+
+        let session_context = self
+            .session_context
+            .lock()
+            .ok()
+            .and_then(|context| context.as_ref().cloned());
+        match session_context.map(|context| context.locked_hint()) {
+            Some(Ok(locked)) => {
+                self.apply_session_lock_hint(locked);
+                self.session_monitor_available.load(Ordering::Acquire)
+                    && !locked
+                    && !self.session_locked.load(Ordering::Acquire)
+            }
+            Some(Err(error)) => {
+                log::error!("Linux session lock state could not be refreshed: {error}");
+                self.set_session_monitor_available(false);
+                false
+            }
+            None => {
+                self.set_session_monitor_available(false);
+                false
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_session_monitor_available(&self, available: bool) {
+        use std::sync::atomic::Ordering;
+
+        self.session_monitor_available
+            .store(available, Ordering::Release);
+        if !available {
+            self.set_session_locked(true);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_session_locked(&self, locked: bool) {
+        use std::sync::atomic::Ordering;
+
+        self.session_locked.store(locked, Ordering::Release);
+        if locked {
+            self.cancel_pending();
+        }
+        let _ = self.app.emit("session-lock-state", locked);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn set_session_lock_requested(&self) {
+        use std::sync::atomic::Ordering;
+
+        self.session_lock_transition_pending
+            .store(true, Ordering::Release);
+        self.set_session_locked(true);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn apply_session_lock_hint(&self, locked: bool) {
+        use std::sync::atomic::Ordering;
+
+        if locked {
+            self.session_lock_transition_pending
+                .store(false, Ordering::Release);
+            self.set_session_locked(true);
+        } else if self.session_lock_transition_pending.load(Ordering::Acquire) {
+            // A Lock signal can arrive before the desktop environment reports
+            // LockedHint=true. Do not let that stale false value reopen approvals.
+            self.set_session_locked(true);
+        } else {
+            self.set_session_locked(false);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn session_lock_status(&self) -> String {
+        use std::sync::atomic::Ordering;
+
+        let _ = self.session_protection_available();
+        if !self.session_monitor_available.load(Ordering::Acquire) {
+            "Unavailable (systemd-logind session lock monitor is not ready)".into()
+        } else if self.session_locked.load(Ordering::Acquire) {
+            "Blocked (systemd-logind reports the session is locked)".into()
+        } else {
+            "Available (systemd-logind reports the session is unlocked)".into()
+        }
+    }
+
     #[cfg(target_os = "windows")]
     fn session_protection_available(&self) -> bool {
         use std::sync::atomic::Ordering;
@@ -303,16 +405,16 @@ impl DesktopVerificationProvider {
     }
 
     #[cfg(target_os = "windows")]
-    fn session_lock_status(&self) -> &'static str {
+    fn session_lock_status(&self) -> String {
         use std::sync::atomic::Ordering;
 
         let _ = self.session_protection_available();
         if !self.session_monitor_available.load(Ordering::Acquire) {
-            "Unavailable (Windows session lock monitor is not ready)"
+            "Unavailable (Windows session lock monitor is not ready)".into()
         } else if self.session_locked.load(Ordering::Acquire) {
-            "Blocked (Windows session is locked)"
+            "Blocked (Windows session is locked)".into()
         } else {
-            "Available (Windows session lock monitor active)"
+            "Available (Windows session lock monitor active)".into()
         }
     }
 
@@ -360,6 +462,13 @@ impl DesktopVerificationProvider {
                     .into(),
             );
         }
+        #[cfg(target_os = "linux")]
+        if !self.session_protection_available() {
+            self.cancel_one(request_id);
+            return Err(
+                "Approval is unavailable while the Linux session is locked or unmonitored.".into(),
+            );
+        }
 
         let (relying_party_id, relying_party_name, action) = {
             let mut pending = self
@@ -391,6 +500,8 @@ impl DesktopVerificationProvider {
         let app = self.app.clone();
         #[cfg(target_os = "windows")]
         let verification = Arc::clone(self);
+        #[cfg(target_os = "linux")]
+        let verification = Arc::clone(self);
         self.app
             .dialog()
             .message(message)
@@ -398,13 +509,23 @@ impl DesktopVerificationProvider {
             .kind(MessageDialogKind::Warning)
             .buttons(MessageDialogButtons::OkCancel)
             .show(move |confirmed| {
-                #[cfg(not(target_os = "windows"))]
+                #[cfg(not(any(target_os = "windows", target_os = "linux")))]
                 let decision = if confirmed {
                     VerificationDecision::Approved
                 } else {
                     VerificationDecision::Rejected
                 };
                 #[cfg(target_os = "windows")]
+                let decision = if verification.session_protection_available() {
+                    if confirmed {
+                        VerificationDecision::Approved
+                    } else {
+                        VerificationDecision::Rejected
+                    }
+                } else {
+                    VerificationDecision::Cancelled
+                };
+                #[cfg(target_os = "linux")]
                 let decision = if verification.session_protection_available() {
                     if confirmed {
                         VerificationDecision::Approved
@@ -461,6 +582,14 @@ impl UserVerification for DesktopVerificationProvider {
                 "Windows session lock monitoring is unavailable or the session is locked",
             ));
         }
+        #[cfg(target_os = "linux")]
+        if !self.session_protection_available() {
+            return Err(PlatformError::new(
+                PlatformErrorKind::UserVerificationUnavailable,
+                HostPlatform::current(),
+                "Linux session lock monitoring is unavailable or the session is locked",
+            ));
+        }
 
         let request_id = Uuid::new_v4().to_string();
         let prompt = ApprovalPrompt {
@@ -504,6 +633,15 @@ impl UserVerification for DesktopVerificationProvider {
                 PlatformErrorKind::UserVerificationUnavailable,
                 HostPlatform::current(),
                 "Windows session locked before approval could be delivered",
+            ));
+        }
+        #[cfg(target_os = "linux")]
+        if !self.session_protection_available() {
+            self.cancel_one(&request_id);
+            return Err(PlatformError::new(
+                PlatformErrorKind::UserVerificationUnavailable,
+                HostPlatform::current(),
+                "Linux session locked before approval could be delivered",
             ));
         }
 
@@ -642,9 +780,17 @@ fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
             {
                 state.verification.session_lock_status()
             }
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(target_os = "linux")]
             {
-                "Available (desktop and native per-request confirmation)"
+                state.verification.session_lock_status()
+            }
+            #[cfg(target_os = "macos")]
+            {
+                "Available (desktop and native per-request confirmation)".into()
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+            {
+                "Unavailable".into()
             }
         },
         client_pin_status,
@@ -677,6 +823,12 @@ fn start_authenticator(
     if !state.verification.session_protection_available() {
         return Err(
             "Authenticator start is blocked because Windows session lock monitoring is unavailable or the session is locked.".into(),
+        );
+    }
+    #[cfg(target_os = "linux")]
+    if !state.verification.session_protection_available() {
+        return Err(
+            "Authenticator start is blocked because systemd-logind session lock monitoring is unavailable or the session is locked.".into(),
         );
     }
 
@@ -1024,6 +1176,8 @@ fn respond_approval(
 pub fn run() {
     #[cfg(target_os = "windows")]
     let mut session_lock_hook = None;
+    #[cfg(target_os = "linux")]
+    let mut linux_session_lock_monitor = None;
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -1076,6 +1230,16 @@ pub fn run() {
                     session_locked: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     #[cfg(target_os = "windows")]
                     session_monitor_available: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    #[cfg(target_os = "linux")]
+                    session_locked: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                    #[cfg(target_os = "linux")]
+                    session_monitor_available: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    #[cfg(target_os = "linux")]
+                    session_lock_transition_pending: Arc::new(std::sync::atomic::AtomicBool::new(
+                        false,
+                    )),
+                    #[cfg(target_os = "linux")]
+                    session_context: Arc::new(Mutex::new(None)),
                 }),
                 virtual_hid: Arc::new(Mutex::new(runtime_status)),
                 runtime: Mutex::new(None),
@@ -1114,10 +1278,41 @@ pub fn run() {
                 }
             }
 
+            #[cfg(target_os = "linux")]
+            if matches!(event, tauri::RunEvent::Ready) && linux_session_lock_monitor.is_none() {
+                if let Some(state) = app.try_state::<DesktopState>() {
+                    match linux_session_lock::LinuxSessionLockMonitor::install(Arc::clone(
+                        &state.verification,
+                    )) {
+                        Ok((monitor, context)) => {
+                            if let Ok(mut slot) = state.verification.session_context.lock() {
+                                *slot = Some(context);
+                                linux_session_lock_monitor = Some(monitor);
+                                state.verification.set_session_monitor_available(true);
+                            } else {
+                                state.verification.set_session_monitor_available(false);
+                                monitor.uninstall();
+                                log::error!(
+                                    "Linux session lock state is unavailable: lock poisoned"
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            state.verification.set_session_monitor_available(false);
+                            log::error!("Linux session lock monitoring is unavailable: {error}");
+                        }
+                    }
+                }
+            }
+
             if matches!(event, tauri::RunEvent::Exit) {
                 #[cfg(target_os = "windows")]
                 if let Some(hook) = session_lock_hook.take() {
                     hook.uninstall();
+                }
+                #[cfg(target_os = "linux")]
+                if let Some(monitor) = linux_session_lock_monitor.take() {
+                    monitor.uninstall();
                 }
                 if let Some(state) = app.try_state::<DesktopState>() {
                     state.verification.cancel_pending();
@@ -1129,5 +1324,7 @@ pub fn run() {
 
 mod audit;
 mod authenticator_runtime;
+#[cfg(target_os = "linux")]
+mod linux_session_lock;
 #[cfg(target_os = "windows")]
 mod windows_session_lock;
