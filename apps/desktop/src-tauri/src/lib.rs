@@ -443,6 +443,18 @@ fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
         .as_ref()
         .map(|status| status.status_message.clone())
         .unwrap_or_else(|| "Virtual HID runtime state is unavailable.".into());
+    let runtime_owns_store = state.runtime.lock().ok().is_some_and(|runtime| {
+        runtime
+            .as_ref()
+            .is_some_and(|runtime| !runtime.worker.is_finished())
+    });
+    let credential_store_available = state.credential_store_available
+        && (runtime_owns_store
+            || state
+                .credential_store
+                .lock()
+                .ok()
+                .is_some_and(|store| store.is_some()));
     let key_storage_status = runtime
         .as_ref()
         .map(|status| status.key_storage_status.clone())
@@ -470,8 +482,14 @@ fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
         desktop_approval_status: "Available (desktop and native per-request confirmation)",
         client_pin_status,
         native_user_verification_status: "Not implemented",
-        credential_store_available: state.credential_store_available,
-        credential_store_status: state.credential_store_status.clone(),
+        credential_store_available,
+        credential_store_status: if credential_store_available {
+            state.credential_store_status.clone()
+        } else if state.credential_store_available {
+            "Credential storage is unavailable after the authenticator service stopped.".into()
+        } else {
+            state.credential_store_status.clone()
+        },
         status_message: if runtime_message.is_empty() {
             format!("Virtual FIDO HID is available on {host_platform}.")
         } else {
@@ -500,8 +518,8 @@ fn start_authenticator(
             .join()
             .map_err(|_| "The previous authenticator session failed.")?;
     }
-    if !state.credential_store_available {
-        return Err(state.credential_store_status.clone());
+    if !credential_store_is_available(&state) {
+        return Err(credential_store_status(&state));
     }
     let backend = ghost_platform::host_virtual_hid_backend();
     let availability = backend.availability();
@@ -605,8 +623,25 @@ fn with_stopped_credential_store<T>(
         .map_err(|_| "Credential storage is unavailable.")?;
     let store = store_slot
         .as_mut()
-        .ok_or_else(|| state.credential_store_status.clone())?;
+        .ok_or_else(|| credential_store_status(state))?;
     operation(store)
+}
+
+fn credential_store_is_available(state: &DesktopState) -> bool {
+    state.credential_store_available
+        && state
+            .credential_store
+            .lock()
+            .ok()
+            .is_some_and(|store| store.is_some())
+}
+
+fn credential_store_status(state: &DesktopState) -> String {
+    if state.credential_store_available {
+        "Credential storage is unavailable after the authenticator service stopped.".into()
+    } else {
+        state.credential_store_status.clone()
+    }
 }
 
 #[tauri::command]

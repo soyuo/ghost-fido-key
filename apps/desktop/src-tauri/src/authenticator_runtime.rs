@@ -293,12 +293,16 @@ pub fn run(
     verification.cancel_pending();
     let _ = service_tx.send(ServiceCommand::Stop);
     let detach_error = backend.detach().err().map(|error| error.detail);
-    let returned_store = service_thread.join().ok();
-    if let Some(store) = returned_store {
-        return_store(&credential_store, store);
-    }
+    let service_error = match service_thread.join() {
+        Ok(store) => {
+            return_store(&credential_store, store);
+            None
+        }
+        Err(_) => Some("Authenticator service failed unexpectedly.".to_owned()),
+    };
 
     let message = runtime_error
+        .or(service_error)
         .or(detach_error)
         .unwrap_or_else(|| "Virtual authenticator stopped.".into());
     set_runtime_status(
