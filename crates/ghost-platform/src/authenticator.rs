@@ -816,6 +816,30 @@ impl<'a> AuthenticatorService<'a> {
             Ctap2Command::CredentialManagement => {
                 Ok(self.handle_credential_management(channel, decoded_payload))
             }
+            Ctap2Command::Selection => {
+                if !payload.is_empty() {
+                    return Ok(Ctap2Response::error(Ctap2Status::InvalidLength));
+                }
+                let confirmation = VerificationRequest {
+                    relying_party_id: "authenticator".into(),
+                    relying_party_name: Some("Authenticator selection".into()),
+                    action: VerificationAction::SelectAuthenticator,
+                };
+                match self
+                    .verification
+                    .request_confirmation(&confirmation, self.config.request_timeout)
+                {
+                    Ok(VerificationDecision::Approved) => Ok(Ctap2Response {
+                        status: Ctap2Status::Success,
+                        payload: Vec::new(),
+                    }),
+                    Ok(_) => Ok(Ctap2Response::error(Ctap2Status::OperationDenied)),
+                    Err(error) if error.kind == PlatformErrorKind::Timeout => {
+                        Ok(Ctap2Response::error(Ctap2Status::UserActionTimeout))
+                    }
+                    Err(_) => Ok(Ctap2Response::error(Ctap2Status::Other)),
+                }
+            }
             Ctap2Command::Reset => {
                 if !payload.is_empty() {
                     return Ok(Ctap2Response::error(Ctap2Status::InvalidLength));

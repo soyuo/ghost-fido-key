@@ -366,6 +366,7 @@ impl UserVerification for DesktopVerificationProvider {
                 VerificationAction::RegisterCredential => "Register credential",
                 VerificationAction::Authenticate => "Authenticate",
                 VerificationAction::CredentialExclusionCheck => "Check existing credential",
+                VerificationAction::SelectAuthenticator => "Select authenticator",
                 VerificationAction::ResetAuthenticator => "Reset authenticator",
             },
             timeout_millis: u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
