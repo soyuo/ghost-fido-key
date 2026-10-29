@@ -40,20 +40,38 @@ provides a loopback relying party for the registration and assertion stages.
 It does not provide an authenticator or replace the OS, browser-discovery, HID,
 or CTAP evidence required for a support result.
 
-| OS / architecture | Browser | OS / browser versions | Registration | Assertion | Server signature verification | Result |
-| --- | --- | --- | --- | --- | --- | --- |
-| Ubuntu LTS x64 | Chrome | Not recorded | Not run | Not run | Not recorded | Not verified |
-| Ubuntu LTS x64 | Edge | Not recorded | Not run | Not run | Not recorded | Not verified |
-| Ubuntu LTS ARM64 | Chrome | Not recorded | Not run | Not run | Not recorded | Not verified |
-| Ubuntu LTS ARM64 | Edge | Not recorded | Not run | Not run | Not recorded | Not verified |
-| Windows x64 | Chrome | Not recorded | Not run | Not run | Not recorded | Not verified |
-| Windows x64 | Edge | Not recorded | Not run | Not run | Not recorded | Not verified |
-| Windows ARM64 | Chrome | Not recorded | Not run | Not run | Not recorded | Not verified |
-| Windows ARM64 | Edge | Not recorded | Not run | Not run | Not recorded | Not verified |
-| macOS Intel | Chrome | Not recorded | Not run | Not run | Not recorded | Not verified |
-| macOS Intel | Edge | Not recorded | Not run | Not run | Not recorded | Not verified |
-| macOS Apple silicon | Chrome | Not recorded | Not run | Not run | Not recorded | Not verified |
-| macOS Apple silicon | Edge | Not recorded | Not run | Not run | Not recorded | Not verified |
+| OS / architecture | Browser | OS build / browser version | Device enumeration | FIDO discovery | CTAPHID exchange | CTAP2 execution | Registration | Assertion | RP signature verification | Evidence link | Result |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Ubuntu LTS x64 | Chrome | Not recorded | Not run | Not run | Not run | Not run | Not run | Not run | Not recorded | None | Not verified |
+| Ubuntu LTS x64 | Edge | Not recorded | Not run | Not run | Not run | Not run | Not run | Not run | Not recorded | None | Not verified |
+| Ubuntu LTS ARM64 | Chrome | Not recorded | Not run | Not run | Not run | Not run | Not run | Not run | Not recorded | None | Not verified |
+| Ubuntu LTS ARM64 | Edge | Not recorded | Not run | Not run | Not run | Not run | Not run | Not run | Not recorded | None | Not verified |
+| Windows x64 | Chrome | Not recorded | Not run | Not run | Not run | Not run | Not run | Not run | Not recorded | None | Not verified |
+| Windows x64 | Edge | Not recorded | Not run | Not run | Not run | Not run | Not run | Not run | Not recorded | None | Not verified |
+| Windows ARM64 | Chrome | Not recorded | Not run | Not run | Not run | Not run | Not run | Not run | Not recorded | None | Not verified |
+| Windows ARM64 | Edge | Not recorded | Not run | Not run | Not run | Not run | Not run | Not run | Not recorded | None | Not verified |
+| macOS Intel | Chrome | Not recorded | Not run | Not run | Not run | Not run | Not run | Not run | Not recorded | None | Not verified |
+| macOS Intel | Edge | Not recorded | Not run | Not run | Not run | Not run | Not run | Not run | Not recorded | None | Not verified |
+| macOS Apple silicon | Chrome | Not recorded | Not run | Not run | Not run | Not run | Not run | Not run | Not recorded | None | Not verified |
+| macOS Apple silicon | Edge | Not recorded | Not run | Not run | Not run | Not run | Not run | Not run | Not recorded | None | Not verified |
+
+### Manual ceremony scenarios
+
+For each OS/browser row above, copy this record and retain the outcome and a
+reproducible evidence link. A ceremony result does not substitute for lower
+layers such as device enumeration or CTAPHID.
+
+| Scenario | Required result to record | Outcome | Evidence link / notes |
+| --- | --- | --- | --- |
+| User approval | Approved request reaches the RP; app denial is rejected. | Not run | None |
+| PIN / user verification | Record configured UV request, PIN result, and signed WebAuthn UV flag. | Not run | None |
+| Discoverable credential | Registration requests resident key; assertion omits allow-list. | Not run | None |
+| Allow-list credential | Assertion includes the registered credential ID. | Not run | None |
+| Browser cancellation | Cancel the browser prompt and record app, browser, and RP outcomes. | Not run | None |
+| Authenticator denial | Deny in the native approval flow and record the RP outcome. | Not run | None |
+| Timeout | Record requested timeout and the browser-observed timeout behavior. | Not run | None |
+| Reauthentication | Complete another assertion with the same RP credential. | Not run | None |
+| After authenticator reset | Reset through the desktop app, then record registration and assertion behavior. | Not run | None |
 
 ## Release gates
 
