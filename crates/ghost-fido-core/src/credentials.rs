@@ -11,8 +11,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 
 use crate::cbor::{CborLimits, CborValue, decode_with_limits, encode as encode_cbor};
 
-const STORAGE_SCHEMA_VERSION: i64 = 7;
-const CREDENTIAL_RECORD_SCHEMA_VERSION: i64 = 6;
+const STORAGE_SCHEMA_VERSION: i64 = 8;
+const CREDENTIAL_RECORD_SCHEMA_VERSION: i64 = 7;
 const STORAGE_AAD_V1: &[u8] = b"ghost-fido/credential-store/v1";
 const STORAGE_AAD_V2: &[u8] = b"ghost-fido/credential-store/v2";
 const STORAGE_AAD_V3: &[u8] = b"ghost-fido/credential-store/v3";
@@ -26,6 +26,28 @@ const MAX_USER_LABEL_BYTES: usize = 256;
 const MAX_RP_ID_BYTES: usize = 253;
 
 pub type RpIdHash = [u8; 32];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum CredentialProtectionPolicy {
+    #[default]
+    UserVerificationOptional = 1,
+    UserVerificationOptionalWithCredentialIdList = 2,
+    UserVerificationRequired = 3,
+}
+
+impl TryFrom<u64> for CredentialProtectionPolicy {
+    type Error = CredentialError;
+
+    fn try_from(value: u64) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::UserVerificationOptional),
+            2 => Ok(Self::UserVerificationOptionalWithCredentialIdList),
+            3 => Ok(Self::UserVerificationRequired),
+            _ => Err(CredentialError::ProtectedDataInvalid),
+        }
+    }
+}
 
 /// Non-secret P-256 public key coordinates for an ES256 credential.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,6 +129,8 @@ pub struct CredentialRecord {
     pub public_key: Option<Es256PublicKey>,
     /// Credential-scoped HMAC secrets. Persisted only in the protected record blob.
     pub hmac_secret: Option<HmacSecretMaterial>,
+    /// CTAP `credProtect` level. Older records default to level 1.
+    pub cred_protect: CredentialProtectionPolicy,
     pub key_metadata: CredentialKeyMetadata,
     pub discoverable: bool,
     /// Store-assigned monotonic ordering used for discoverable credential selection.
@@ -178,6 +202,7 @@ impl fmt::Debug for CredentialRecord {
                 "hmac_secret",
                 &self.hmac_secret.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("cred_protect", &self.cred_protect)
             .field("key_metadata", &self.key_metadata)
             .field("discoverable", &self.discoverable)
             .field("creation_order", &self.creation_order)
@@ -376,7 +401,7 @@ impl CredentialStore {
                     .map_err(|_| CredentialError::StorageFailure)?;
                 records
             }
-            4 | 5 | 6 | 7 => {
+            4 | 5 | 6 | 7 | 8 => {
                 let protected = read_protected_payload(&connection)?;
                 let plaintext = protector
                     .unprotect(&protected, STORAGE_AAD_V4)
@@ -384,6 +409,7 @@ impl CredentialStore {
                 decode_records(
                     &plaintext,
                     match schema_version {
+                        8 => 7,
                         7 => 6,
                         6 => 5,
                         5 => 4,
@@ -1003,6 +1029,7 @@ fn encode_records(
                             CborValue::Bytes(secret.without_uv.to_vec()),
                         ])
                     }),
+                CborValue::Unsigned(u64::from(record.cred_protect as u8)),
             ])
         })
         .collect::<Vec<_>>();
@@ -1043,14 +1070,29 @@ fn decode_records(
         let CborValue::Array(fields) = value else {
             return Err(CredentialError::ProtectedDataInvalid);
         };
-        let record = if version >= 5 && (fields.len() == 13 || fields.len() == 14) {
+        let recognized_record_shape = match version {
+            5 => fields.len() == 13,
+            6 => fields.len() == 13 || fields.len() == 14,
+            7.. => (13..=15).contains(&fields.len()),
+            _ => false,
+        };
+        let record = if version >= 5 && recognized_record_shape {
+            let fields = fields.as_slice();
+            let (cred_protect_value, fields) = if fields.len() == 15 && version >= 7 {
+                let (value, fields) = fields
+                    .split_last()
+                    .ok_or(CredentialError::ProtectedDataInvalid)?;
+                (Some(value), fields)
+            } else {
+                (None, fields)
+            };
             let (hmac_secret_value, fields) = if fields.len() == 14 {
                 let (value, fields) = fields
                     .split_last()
                     .ok_or(CredentialError::ProtectedDataInvalid)?;
                 (Some(value), fields)
             } else {
-                (None, fields.as_slice())
+                (None, fields)
             };
             let Some((public_key_value, base_fields)) = fields.split_last() else {
                 return Err(CredentialError::ProtectedDataInvalid);
@@ -1062,6 +1104,11 @@ fn decode_records(
                 .map(decode_hmac_secret)
                 .transpose()?
                 .flatten();
+            record.cred_protect = match cred_protect_value {
+                Some(CborValue::Unsigned(level)) => CredentialProtectionPolicy::try_from(*level)?,
+                Some(_) => return Err(CredentialError::ProtectedDataInvalid),
+                None => CredentialProtectionPolicy::default(),
+            };
             record
         } else {
             decode_record_fields(&fields, with_user_labels, with_creation_order, version >= 4)?
@@ -1249,6 +1296,7 @@ fn decode_record_fields(
             .map_err(|_| CredentialError::ProtectedDataInvalid)?,
         public_key: None,
         hmac_secret: None,
+        cred_protect: CredentialProtectionPolicy::default(),
         key_metadata: CredentialKeyMetadata {
             protection: key_protection,
             exportable: *exportable,
