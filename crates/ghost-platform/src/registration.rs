@@ -49,12 +49,12 @@ pub fn register_make_credential(
         .iter()
         .any(|parameter| parameter.algorithm == -7)
     {
-        return Ok(protocol_error(Ctap2Status::UnsupportedAlgorithm));
+        return Ok(Ctap2Response::error(Ctap2Status::UnsupportedAlgorithm));
     }
     if request.options.user_verification == Some(true)
         || request.options.user_presence == Some(false)
     {
-        return Ok(protocol_error(Ctap2Status::UnsupportedOption));
+        return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
     }
 
     if let Some(response) = check_credential_exclusion(request, store, verification, timeout)? {
@@ -69,13 +69,13 @@ pub fn register_make_credential(
     match verification.request_confirmation(&verification_request, timeout) {
         Ok(VerificationDecision::Approved) => {}
         Ok(VerificationDecision::Rejected) => {
-            return Ok(protocol_error(Ctap2Status::OperationDenied));
+            return Ok(Ctap2Response::error(Ctap2Status::OperationDenied));
         }
         Ok(VerificationDecision::Cancelled) => {
-            return Ok(protocol_error(Ctap2Status::KeepaliveCancel));
+            return Ok(Ctap2Response::error(Ctap2Status::KeepaliveCancel));
         }
         Err(error) if error.kind == PlatformErrorKind::Timeout => {
-            return Ok(protocol_error(Ctap2Status::UserActionTimeout));
+            return Ok(Ctap2Response::error(Ctap2Status::UserActionTimeout));
         }
         Err(error) => return Err(error.into()),
     }
@@ -169,13 +169,6 @@ fn cleanup_failed_creation(
     }
 }
 
-fn protocol_error(status: Ctap2Status) -> Ctap2Response {
-    Ctap2Response {
-        status,
-        payload: Vec::new(),
-    }
-}
-
 /// Checks a MakeCredential exclude list without disclosing a match before a
 /// local presence interaction completes.
 ///
@@ -201,7 +194,7 @@ pub fn check_credential_exclusion(
     match verification.request_confirmation(&verification_request, timeout) {
         Ok(VerificationDecision::Approved | VerificationDecision::Rejected) => {}
         Ok(VerificationDecision::Cancelled) => {
-            return Ok(Some(protocol_error(Ctap2Status::KeepaliveCancel)));
+            return Ok(Some(Ctap2Response::error(Ctap2Status::KeepaliveCancel)));
         }
         Err(error) if error.kind == PlatformErrorKind::Timeout => {}
         Err(error) => return Err(error),

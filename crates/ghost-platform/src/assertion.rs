@@ -52,14 +52,16 @@ pub fn execute_get_assertion(
     if request.options.user_verification == Some(true)
         || request.options.user_presence == Some(false)
     {
-        return Ok(single_response(protocol_error(
+        return Ok(single_response(Ctap2Response::error(
             Ctap2Status::UnsupportedOption,
         )));
     }
 
     let mut matching = request.find_credentials(store);
     if matching.is_empty() {
-        return Ok(single_response(protocol_error(Ctap2Status::NoCredentials)));
+        return Ok(single_response(Ctap2Response::error(
+            Ctap2Status::NoCredentials,
+        )));
     }
     if request.allow_list.is_none() {
         matching.sort_by_key(|record| Reverse(record.creation_order));
@@ -86,17 +88,17 @@ pub fn execute_get_assertion(
     match verification.request_confirmation(&confirmation, timeout) {
         Ok(VerificationDecision::Approved) => {}
         Ok(VerificationDecision::Rejected) => {
-            return Ok(single_response(protocol_error(
+            return Ok(single_response(Ctap2Response::error(
                 Ctap2Status::OperationDenied,
             )));
         }
         Ok(VerificationDecision::Cancelled) => {
-            return Ok(single_response(protocol_error(
+            return Ok(single_response(Ctap2Response::error(
                 Ctap2Status::KeepaliveCancel,
             )));
         }
         Err(error) if error.kind == PlatformErrorKind::Timeout => {
-            return Ok(single_response(protocol_error(
+            return Ok(single_response(Ctap2Response::error(
                 Ctap2Status::UserActionTimeout,
             )));
         }
@@ -141,7 +143,7 @@ fn sign_assertion_for_credential(
         .into_iter()
         .next()
     else {
-        return Ok(protocol_error(Ctap2Status::NotAllowed));
+        return Ok(Ctap2Response::error(Ctap2Status::NotAllowed));
     };
     let key_handle = record.key_handle.clone();
     let user_handle = record.user_handle.clone();
@@ -224,11 +226,4 @@ fn encode_der_integer(scalar: &[u8]) -> Option<Vec<u8>> {
     }
     integer.extend_from_slice(value);
     Some(integer)
-}
-
-fn protocol_error(status: Ctap2Status) -> Ctap2Response {
-    Ctap2Response {
-        status,
-        payload: Vec::new(),
-    }
 }
