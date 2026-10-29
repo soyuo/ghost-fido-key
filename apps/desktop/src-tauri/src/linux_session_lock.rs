@@ -66,10 +66,11 @@ impl LinuxSessionLockMonitor {
                 None::<&gio::Cancellable>,
             )
             .map_err(|error| format!("Unable to find the current logind session: {error}"))?;
-        let session_path: String = session_reply
+        let session_path: gio::glib::variant::ObjectPath = session_reply
             .child_value(0)
             .get()
             .ok_or_else(|| "logind returned an invalid session path.".to_owned())?;
+        let session_path = String::from(session_path);
         let context = LinuxSessionContext {
             connection: connection.clone(),
             session_path: session_path.clone(),
