@@ -521,7 +521,9 @@ fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
             state.credential_store_status.clone()
         },
         status_message: if runtime_message.is_empty() {
-            format!("Virtual FIDO HID is available on {host_platform}.")
+            format!(
+                "Virtual HID backend is ready on {host_platform}; browser WebAuthn compatibility is unverified."
+            )
         } else {
             runtime_message
         },
