@@ -73,6 +73,11 @@ layers such as device enumeration or CTAPHID.
 | Reauthentication | Complete another assertion with the same RP credential. | Not run | None |
 | After authenticator reset | Reset through the desktop app, then record registration and assertion behavior. | Not run | None |
 
+The login-session lock procedure in
+[`docs/security-acceptance.md`](security-acceptance.md) is also required for
+stage 12. It has separate per-OS/architecture results and remains unverified
+until run on the target machines.
+
 ## Release gates
 
 A platform/browser row can be changed to supported only after evidence is linked

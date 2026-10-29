@@ -9,11 +9,19 @@ through the `respond_approval` command.
 Each pending ID maps to one response channel. The provider removes the ID when
 it receives a decision or when its deadline expires, so unknown, replayed, and
 late decisions are rejected. Denial returns `VerificationDecision::Rejected`;
-expiry returns the platform timeout error. A matching CTAPHID CANCEL sends
-`VerificationDecision::Cancelled`, emits `approval-cancelled`, and clears the
-UI prompt. Cancellation maps to CTAP2 `KEEPALIVE_CANCEL`. Failure to deliver an
+expiry returns the platform timeout error and emits `approval-cancelled` so the
+UI removes the expired prompt. A matching CTAPHID CANCEL sends
+`VerificationDecision::Cancelled`, emits the same event, and clears the UI
+prompt. Cancellation maps to CTAP2 `KEEPALIVE_CANCEL`. Failure to deliver an
 event or receive a response fails closed. The event does not include credential
 IDs, user handles, key references, or private key material.
+
+If the desktop session locks while approval is pending, the request remains
+unapproved and expires at its normal deadline (30 seconds in the desktop
+runtime). Unlocking does not restore the expired request. The app does not
+currently subscribe to an OS-specific lock notification; verify this timeout
+behavior on target systems using the T-022 procedure in
+[`security-acceptance.md`](security-acceptance.md).
 
 This is the desktop approval boundary only. The Tauri app still has no live HID
 request source, so it does not receive browser authentication requests.
