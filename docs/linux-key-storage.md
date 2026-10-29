@@ -15,6 +15,18 @@ These keys are reported as software-backed and exportable: the application can
 retrieve the scalar to perform signing. This is a lower protection level than a
 TPM-backed non-exportable key. The credential database and Secret Service item
 must both remain available to recover a credential. Removing or replacing the
-Secret Service collection can make its credentials unusable. The desktop UI
-does not yet offer the software-key consent setting, so the provider cannot be
-selected by the current desktop flow.
+Secret Service collection can make its credentials unusable.
+
+## Desktop consent
+
+On Linux, starting the authenticator opens a native warning about software-key
+storage. The Rust start command creates a consent token scoped to that runtime
+session only after the user accepts the warning. Canceling or closing the dialog
+keeps the runtime stopped, so no software key can be created through that
+attempt. Consent is requested again on a later start; it is not a persistent
+setting. Windows and macOS use platform-protected key policies and do not offer
+this software-key fallback flow.
+
+This consent flow only authorizes software-backed signing keys. It does not
+establish browser interoperability, OS-protected key storage, or support for a
+particular Linux distribution or desktop session.
