@@ -4,8 +4,8 @@ use std::{cmp::Reverse, time::Duration};
 
 use ghost_fido_core::{
     CredentialError, CredentialId, CredentialStore, Ctap2Response, Ctap2Status,
-    GetAssertionRequest, KeyHandle, encode_get_assertion_response_with_count,
-    get_assertion_authenticator_data,
+    GetAssertionRequest, KeyHandle, encode_get_assertion_response_with_count_and_uv,
+    get_assertion_authenticator_data_with_uv,
 };
 use sha2::{Digest, Sha256};
 
@@ -49,11 +49,26 @@ pub fn execute_get_assertion(
     verification: &dyn UserVerification,
     timeout: Duration,
 ) -> Result<GetAssertionExecution, GetAssertionExecutionError> {
-    if request.options.user_verification == Some(true)
+    execute_get_assertion_with_uv(request, store, key_store, verification, timeout, false)
+}
+
+pub fn execute_get_assertion_with_uv(
+    request: &GetAssertionRequest,
+    store: &mut CredentialStore,
+    key_store: &dyn KeyStore,
+    verification: &dyn UserVerification,
+    timeout: Duration,
+    user_verified: bool,
+) -> Result<GetAssertionExecution, GetAssertionExecutionError> {
+    if (request.options.user_verification == Some(true) && !user_verified)
         || request.options.user_presence == Some(false)
     {
         return Ok(single_response(Ctap2Response::error(
-            Ctap2Status::UnsupportedOption,
+            if request.options.user_verification == Some(true) {
+                Ctap2Status::PinUvAuthTokenRequired
+            } else {
+                Ctap2Status::UnsupportedOption
+            },
         )));
     }
 
@@ -113,6 +128,7 @@ pub fn execute_get_assertion(
         store,
         key_store,
         number_of_credentials,
+        user_verified,
     )?;
     Ok(GetAssertionExecution {
         response,
@@ -127,7 +143,24 @@ pub fn execute_next_assertion(
     store: &mut CredentialStore,
     key_store: &dyn KeyStore,
 ) -> Result<Ctap2Response, GetAssertionExecutionError> {
-    sign_assertion_for_credential(request, credential_id, store, key_store, None)
+    execute_next_assertion_with_uv(request, credential_id, store, key_store, false)
+}
+
+pub fn execute_next_assertion_with_uv(
+    request: &GetAssertionRequest,
+    credential_id: &CredentialId,
+    store: &mut CredentialStore,
+    key_store: &dyn KeyStore,
+    user_verified: bool,
+) -> Result<Ctap2Response, GetAssertionExecutionError> {
+    sign_assertion_for_credential(
+        request,
+        credential_id,
+        store,
+        key_store,
+        None,
+        user_verified,
+    )
 }
 
 fn sign_assertion_for_credential(
@@ -136,6 +169,7 @@ fn sign_assertion_for_credential(
     store: &mut CredentialStore,
     key_store: &dyn KeyStore,
     number_of_credentials: Option<u64>,
+    user_verified: bool,
 ) -> Result<Ctap2Response, GetAssertionExecutionError> {
     let id = [credential_id.as_bytes().to_vec()];
     let Some(record) = store
@@ -154,7 +188,8 @@ fn sign_assertion_for_credential(
         .ok_or(CredentialError::CounterOverflow)?;
     let rp_id_hash = request.rp_id_hash();
     let reference = key_reference(&key_handle)?;
-    let authenticator_data = get_assertion_authenticator_data(rp_id_hash, next_sign_count);
+    let authenticator_data =
+        get_assertion_authenticator_data_with_uv(rp_id_hash, next_sign_count, user_verified);
     let mut signed_data =
         Vec::with_capacity(authenticator_data.len() + request.client_data_hash.len());
     signed_data.extend_from_slice(&authenticator_data);
@@ -164,13 +199,14 @@ fn sign_assertion_for_credential(
     let signature = encode_p1363_es256_der(&raw_signature)
         .ok_or(GetAssertionExecutionError::InvalidSignature)?;
 
-    let response = encode_get_assertion_response_with_count(
+    let response = encode_get_assertion_response_with_count_and_uv(
         rp_id_hash,
         credential_id.as_bytes(),
         include_user.then_some(user_handle.as_slice()),
         &signature,
         next_sign_count,
         number_of_credentials,
+        user_verified,
     )
     .map_err(|_| GetAssertionExecutionError::ResponseEncoding)?;
     let committed_sign_count = store.increment_sign_count(credential_id)?;

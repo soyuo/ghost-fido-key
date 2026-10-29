@@ -4,6 +4,7 @@
 //! are platform-independent. Keep operating-system APIs out of this crate.
 
 pub mod cbor;
+pub mod client_pin;
 pub mod credentials;
 pub mod ctap2;
 pub mod ctaphid;
@@ -12,10 +13,18 @@ pub use cbor::{
     CborError, CborLimits, CborValue, decode as decode_cbor, decode_with_limits,
     encode as encode_cbor,
 };
+pub use client_pin::{
+    PIN_ENCRYPTED_SIZE, PIN_HASH_SIZE, PIN_MAX_UTF8_BYTES, PIN_MIN_CODEPOINTS,
+    PIN_UV_AUTH_PARAMETER_SIZE, PIN_UV_AUTH_PROTOCOL, PinCryptoError, PinKeyAgreement,
+    authenticate as client_pin_authenticate, decrypt as client_pin_decrypt,
+    decrypt_pin as client_pin_decrypt_pin, encrypt as client_pin_encrypt,
+    pin_hash as client_pin_hash, validate_pin as client_pin_validate,
+    verify_authentication as client_pin_verify_authentication,
+};
 pub use credentials::{
     CredentialError, CredentialId, CredentialKeyMetadata, CredentialKeyProtection,
     CredentialProtectionError, CredentialProtector, CredentialRecord, CredentialStore,
-    Es256PublicKey, KeyHandle, ManagedCredential, RpIdHash,
+    Es256PublicKey, KeyHandle, ManagedCredential, PinState, RpIdHash,
 };
 pub use ctap2::{
     Ctap2Command, Ctap2Error, Ctap2Request, Ctap2Response, Ctap2Status, GetAssertionError,
@@ -23,8 +32,10 @@ pub use ctap2::{
     GetInfoHandler, GetInfoProfile, MAX_CREDENTIAL_ID_SIZE, MakeCredentialError,
     MakeCredentialOptions, MakeCredentialRequest, MakeCredentialResponseError, MakeCredentialRp,
     MakeCredentialUser, PublicKeyCredentialParameter, encode_es256_cose_public_key,
-    encode_get_assertion_response, encode_get_assertion_response_with_count, encode_get_info,
+    encode_get_assertion_response, encode_get_assertion_response_with_count,
+    encode_get_assertion_response_with_count_and_uv, encode_get_info,
     encode_make_credential_response, encode_response, get_assertion_authenticator_data,
+    get_assertion_authenticator_data_with_uv,
 };
 pub use ctaphid::{
     BROADCAST_CHANNEL, ChannelError, CtapHidAssembler, CtapHidChannelAllocator, CtapHidCommand,

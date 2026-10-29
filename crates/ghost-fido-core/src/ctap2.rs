@@ -65,6 +65,14 @@ pub enum Ctap2Status {
     UserActionPending = 0x23,
     RequestTooLarge = 0x39,
     NotAllowed = 0x30,
+    PinInvalid = 0x31,
+    PinBlocked = 0x32,
+    PinAuthInvalid = 0x33,
+    PinAuthBlocked = 0x34,
+    PinNotSet = 0x35,
+    PinUvAuthTokenRequired = 0x36,
+    PinPolicyViolation = 0x37,
+    UnauthorizedPermission = 0x40,
 }
 
 impl Ctap2Status {
@@ -225,9 +233,18 @@ pub enum GetAssertionResponseError {
 
 #[must_use]
 pub fn get_assertion_authenticator_data(rp_id_hash: RpIdHash, sign_count: u32) -> [u8; 37] {
+    get_assertion_authenticator_data_with_uv(rp_id_hash, sign_count, false)
+}
+
+#[must_use]
+pub fn get_assertion_authenticator_data_with_uv(
+    rp_id_hash: RpIdHash,
+    sign_count: u32,
+    user_verified: bool,
+) -> [u8; 37] {
     let mut data = [0; 37];
     data[..32].copy_from_slice(&rp_id_hash);
-    data[32] = 0x01; // UP; UV and extensions are not asserted.
+    data[32] = 0x01 | if user_verified { 0x04 } else { 0 }; // UP and validated PIN UV.
     data[33..].copy_from_slice(&sign_count.to_be_bytes());
     data
 }
@@ -261,6 +278,26 @@ pub fn encode_get_assertion_response_with_count(
     sign_count: u32,
     number_of_credentials: Option<u64>,
 ) -> Result<Ctap2Response, GetAssertionResponseError> {
+    encode_get_assertion_response_with_count_and_uv(
+        rp_id_hash,
+        credential_id,
+        user_handle,
+        signature,
+        sign_count,
+        number_of_credentials,
+        false,
+    )
+}
+
+pub fn encode_get_assertion_response_with_count_and_uv(
+    rp_id_hash: RpIdHash,
+    credential_id: &[u8],
+    user_handle: Option<&[u8]>,
+    signature: &[u8],
+    sign_count: u32,
+    number_of_credentials: Option<u64>,
+    user_verified: bool,
+) -> Result<Ctap2Response, GetAssertionResponseError> {
     if credential_id.is_empty() {
         return Err(GetAssertionResponseError::EmptyCredentialId);
     }
@@ -282,7 +319,8 @@ pub fn encode_get_assertion_response_with_count(
         return Err(GetAssertionResponseError::InvalidNumberOfCredentials);
     }
 
-    let authenticator_data = get_assertion_authenticator_data(rp_id_hash, sign_count);
+    let authenticator_data =
+        get_assertion_authenticator_data_with_uv(rp_id_hash, sign_count, user_verified);
 
     let credential = CborValue::Map(vec![
         (

@@ -924,6 +924,7 @@ dependencies = [
  "ff",
  "generic-array",
  "group",
+ "hkdf",
  "pkcs8",
  "rand_core",
  "sec1",
@@ -1376,8 +1377,15 @@ dependencies = [
 name = "ghost-fido-core"
 version = "0.1.0"
 dependencies = [
+ "aes",
+ "cbc",
+ "hmac",
+ "p256",
+ "rand_core",
  "rusqlite",
  "sha2",
+ "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -1405,6 +1413,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "sha2",
+ "subtle",
  "uhid-virt",
  "uuid",
  "windows",
