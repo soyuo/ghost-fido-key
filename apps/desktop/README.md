@@ -24,4 +24,6 @@ Build the frontend with `npm run build`. Build a desktop bundle on a configured 
 
 The macOS CoreHID bridge is built as a static Swift library for the active Rust target. After the project receives assigned product identifiers, set `GHOST_FIDO_MACOS_VENDOR_ID` and `GHOST_FIDO_MACOS_PRODUCT_ID` to their decimal values while building. The app checks its signed entitlement before enabling the macOS start control; source entitlement files alone do not enable it.
 
+Credential listing, individual deletion, and authenticator reset use the host key-store provider on Linux, Windows, and macOS. Stop the authenticator before managing credentials. Deletion removes the provider key before removing encrypted metadata; reset keeps metadata if a provider key cannot be deleted. These management commands do not establish virtual HID or browser WebAuthn support for the host.
+
 The app can also be previewed in a browser with `npm run dev`; the desktop-only status command is unavailable there. The existing command-line diagnostic remains available as the `ghost-fido` workspace package. Browser WebAuthn interoperability and a signed, entitled distribution still require separate macOS validation.

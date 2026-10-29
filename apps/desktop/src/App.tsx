@@ -74,7 +74,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (showCredentials && !status?.authenticatorRunning && status?.hostPlatform === "Linux") {
+    if (showCredentials && !status?.authenticatorRunning && status?.credentialStoreAvailable) {
       void loadCredentials();
     }
   }, [showCredentials, status?.authenticatorRunning, status?.hostPlatform]);
@@ -259,7 +259,7 @@ function App() {
             </section>
           )}
           {runtimeError && <p className="status-message" role="alert">{runtimeError}</p>}
-          {isTauri() && status?.hostPlatform === "Linux" && status.credentialStoreAvailable && (
+          {isTauri() && status?.credentialStoreAvailable && (
             <div className="runtime-actions">
               <button
                 type="button"
@@ -302,7 +302,7 @@ function App() {
           </p>
         </div>
 
-        {showCredentials && status?.hostPlatform === "Linux" && (
+        {showCredentials && status?.credentialStoreAvailable && (
           <section className="credential-list" aria-label="등록된 자격 증명">
             <div className="credential-list-heading">
               <div>
