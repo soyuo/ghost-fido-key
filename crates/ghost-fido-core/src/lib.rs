@@ -4,6 +4,7 @@
 //! are platform-independent. Keep operating-system APIs out of this crate.
 
 pub mod cbor;
+pub mod client_pin;
 pub mod credentials;
 pub mod ctap2;
 pub mod ctaphid;
@@ -11,6 +12,14 @@ pub mod ctaphid;
 pub use cbor::{
     CborError, CborLimits, CborValue, decode as decode_cbor, decode_with_limits,
     encode as encode_cbor,
+};
+pub use client_pin::{
+    PIN_ENCRYPTED_SIZE, PIN_HASH_SIZE, PIN_MAX_UTF8_BYTES, PIN_MIN_CODEPOINTS,
+    PIN_UV_AUTH_PARAMETER_SIZE, PIN_UV_AUTH_PROTOCOL, PinCryptoError, PinKeyAgreement,
+    authenticate as client_pin_authenticate, decrypt as client_pin_decrypt,
+    decrypt_pin as client_pin_decrypt_pin, encrypt as client_pin_encrypt,
+    pin_hash as client_pin_hash, validate_pin as client_pin_validate,
+    verify_authentication as client_pin_verify_authentication,
 };
 pub use credentials::{
     CredentialError, CredentialId, CredentialKeyMetadata, CredentialKeyProtection,

@@ -6,8 +6,15 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+aes = "0.8.4"
+cbc = "0.1.2"
+hmac = "0.12.1"
+p256 = { version = "=0.13.2", default-features = false, features = ["ecdh", "std"] }
+rand_core = { version = "0.6.4", features = ["getrandom"] }
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 sha2 = "0.10.9"
+subtle = "2.6.1"
+zeroize = "1"
 
 [lints]
 workspace = true
