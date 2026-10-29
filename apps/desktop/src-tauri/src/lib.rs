@@ -51,7 +51,15 @@ struct RuntimeStatus {
 
 struct DesktopVerificationProvider {
     app: AppHandle,
-    pending: Mutex<HashMap<String, SyncSender<VerificationDecision>>>,
+    pending: Mutex<HashMap<String, PendingApproval>>,
+}
+
+struct PendingApproval {
+    sender: SyncSender<VerificationDecision>,
+    relying_party_id: String,
+    relying_party_name: Option<String>,
+    action: &'static str,
+    responding: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -244,18 +252,71 @@ fn initialize_credential_store(app: &AppHandle) -> (Option<CredentialStore>, Str
 
 impl DesktopVerificationProvider {
     fn resolve(&self, request_id: &str, approved: bool) -> Result<(), String> {
-        let sender = self
+        if !approved {
+            let mut approvals = self
+                .pending
+                .lock()
+                .map_err(|_| "Approval state is unavailable.".to_owned())?;
+            if approvals
+                .get(request_id)
+                .is_some_and(|approval| approval.responding)
+            {
+                return Err("Approval request is already being confirmed.".into());
+            }
+            let pending = approvals
+                .remove(request_id)
+                .ok_or_else(|| "Approval request is unknown or expired.".to_owned())?;
+            return pending
+                .sender
+                .send(VerificationDecision::Rejected)
+                .map_err(|_| "Approval request is no longer active.".to_owned());
+        }
+
+        let (relying_party_id, relying_party_name, action) = {
+            let mut pending = self
+                .pending
+                .lock()
+                .map_err(|_| "Approval state is unavailable.".to_owned())?;
+            let approval = pending
+                .get_mut(request_id)
+                .ok_or_else(|| "Approval request is unknown or expired.".to_owned())?;
+            if approval.responding {
+                return Err("Approval request is already being confirmed.".into());
+            }
+            approval.responding = true;
+            (
+                approval.relying_party_id.clone(),
+                approval.relying_party_name.clone(),
+                approval.action,
+            )
+        };
+        let name = relying_party_name
+            .as_deref()
+            .map(|name| format!("{name} ({relying_party_id})"))
+            .unwrap_or(relying_party_id);
+        let message = format!(
+            "{name} is requesting: {action}. Continue only if you initiated this action. Approving here authorizes this request to use the authenticator."
+        );
+        let decision = if confirm_native_action(
+            &self.app,
+            "Confirm authenticator request",
+            &message,
+        )
+        .is_ok()
+        {
+            VerificationDecision::Approved
+        } else {
+            VerificationDecision::Rejected
+        };
+        let pending = self
             .pending
             .lock()
             .map_err(|_| "Approval state is unavailable.".to_owned())?
             .remove(request_id)
             .ok_or_else(|| "Approval request is unknown or expired.".to_owned())?;
-        sender
-            .send(if approved {
-                VerificationDecision::Approved
-            } else {
-                VerificationDecision::Rejected
-            })
+        pending
+            .sender
+            .send(decision)
             .map_err(|_| "Approval request is no longer active.".to_owned())
     }
 }
@@ -289,7 +350,16 @@ impl UserVerification for DesktopVerificationProvider {
                     "approval state is unavailable",
                 )
             })?
-            .insert(request_id.clone(), sender);
+            .insert(
+                request_id.clone(),
+                PendingApproval {
+                    sender,
+                    relying_party_id: request.relying_party_id.clone(),
+                    relying_party_name: request.relying_party_name.clone(),
+                    action: prompt.action,
+                    responding: false,
+                },
+            );
 
         if self.app.emit("approval-request", prompt).is_err() {
             if let Ok(mut pending) = self.pending.lock() {
@@ -327,8 +397,8 @@ impl UserVerification for DesktopVerificationProvider {
             Ok(mut pending) => std::mem::take(&mut *pending),
             Err(_) => return,
         };
-        for (request_id, sender) in pending {
-            let _ = sender.send(VerificationDecision::Cancelled);
+        for (request_id, approval) in pending {
+            let _ = approval.sender.send(VerificationDecision::Cancelled);
             let _ = self.app.emit("approval-cancelled", request_id);
         }
     }
@@ -397,7 +467,7 @@ fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
         virtual_hid_available,
         device_attached,
         key_storage_status,
-        desktop_approval_status: "Available (explicit per-request approval)",
+        desktop_approval_status: "Available (desktop and native per-request confirmation)",
         client_pin_status,
         native_user_verification_status: "Not implemented",
         credential_store_available: state.credential_store_available,

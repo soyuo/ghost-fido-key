@@ -46,6 +46,7 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [approvalRequests, setApprovalRequests] = useState<ApprovalPrompt[]>([]);
   const [approvalError, setApprovalError] = useState<string | null>(null);
+  const [respondingRequests, setRespondingRequests] = useState<Set<string>>(() => new Set());
   const [runtimeAction, setRuntimeAction] = useState(false);
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [showCredentials, setShowCredentials] = useState(false);
@@ -125,12 +126,21 @@ function App() {
   }, []);
 
   const respondToApproval = (requestId: string, approved: boolean) => {
+    if (respondingRequests.has(requestId)) return;
     setApprovalError(null);
+    setRespondingRequests((current) => new Set(current).add(requestId));
     void invoke("respond_approval", { requestId, approved })
       .then(() => {
         setApprovalRequests((current) => current.filter((request) => request.requestId !== requestId));
       })
-      .catch(() => setApprovalError("That approval request has expired or is no longer active."));
+      .catch(() => setApprovalError("That approval request has expired or is no longer active."))
+      .finally(() => {
+        setRespondingRequests((current) => {
+          const next = new Set(current);
+          next.delete(requestId);
+          return next;
+        });
+      });
   };
 
   const startAuthenticator = async () => {
@@ -296,7 +306,7 @@ function App() {
               <dd>{status?.keyStorageStatus ?? "확인 중"}</dd>
             </div>
             <div>
-              <dt>앱 승인</dt>
+              <dt>요청 승인 방식</dt>
               <dd>{status?.desktopApprovalStatus ?? "확인 중"}</dd>
             </div>
             <div>
@@ -388,8 +398,10 @@ function App() {
 
         {approvalRequests.length > 0 && (
           <section className="approval-list" aria-label="Pending authenticator approvals">
-            {approvalRequests.map((request) => (
-              <article className="approval-card" key={request.requestId}>
+            {approvalRequests.map((request) => {
+              const responding = respondingRequests.has(request.requestId);
+              return (
+                <article className="approval-card" key={request.requestId}>
                 <p className="eyebrow">Approval required</p>
                 <h2>{request.action}</h2>
                 <p className="approval-rp">
@@ -399,16 +411,20 @@ function App() {
                 <p className="approval-timeout">
                   This request expires in {Math.ceil(request.timeoutMillis / 1000)} seconds.
                 </p>
+                <p className="approval-timeout">
+                  Approving here opens a native confirmation dialog before signing.
+                </p>
                 <div className="approval-actions">
-                  <button type="button" onClick={() => respondToApproval(request.requestId, false)}>
+                  <button type="button" disabled={responding} onClick={() => respondToApproval(request.requestId, false)}>
                     Deny
                   </button>
-                  <button type="button" onClick={() => respondToApproval(request.requestId, true)}>
-                    Approve
+                  <button type="button" disabled={responding} onClick={() => respondToApproval(request.requestId, true)}>
+                    {responding ? "Confirming…" : "Approve"}
                   </button>
                 </div>
-              </article>
-            ))}
+                </article>
+              );
+            })}
             {approvalError && <p className="status-message" role="alert">{approvalError}</p>}
           </section>
         )}
