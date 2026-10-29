@@ -35,6 +35,12 @@ impl WindowsKeyStore {
         "Microsoft Platform Crypto Provider"
     }
 
+    fn is_missing_key_error(error: &windows::core::Error) -> bool {
+        // NCryptOpenKey documents NTE_BAD_KEYSET as "The specified key was not found."
+        // Do not treat other provider errors as successful deletion.
+        error.code().0 as u32 == 0x8009_0016
+    }
+
     fn fail(error: impl std::fmt::Display) -> PlatformError {
         PlatformError::new(
             PlatformErrorKind::KeyStoreUnavailable,
@@ -284,7 +290,7 @@ impl KeyStore for WindowsKeyStore {
         let name = Self::key_name(key)?;
         let mut handle = NCRYPT_KEY_HANDLE(0);
         // SAFETY: provider and NUL-terminated key name are valid; handle is writable.
-        unsafe {
+        let open_result = unsafe {
             NCryptOpenKey(
                 provider,
                 &mut handle,
@@ -292,8 +298,16 @@ impl KeyStore for WindowsKeyStore {
                 CERT_KEY_SPEC(0),
                 NCRYPT_FLAGS(0),
             )
+        };
+        if let Err(error) = open_result {
+            // SAFETY: provider was opened successfully and no key handle was returned.
+            let _ = unsafe { NCryptFreeObject(provider.into()) };
+            return if Self::is_missing_key_error(&error) {
+                Ok(())
+            } else {
+                Err(Self::fail(error))
+            };
         }
-        .map_err(Self::fail)?;
         // SAFETY: handle is an opened key and ownership transfers to delete.
         unsafe { NCryptDeleteKey(handle, 0) }.map_err(Self::fail)?;
         // SAFETY: provider was opened successfully.
