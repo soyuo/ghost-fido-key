@@ -18,9 +18,9 @@ pub use credentials::{
     Es256PublicKey, KeyHandle, ManagedCredential, RpIdHash,
 };
 pub use ctap2::{
-    Ctap2Command, Ctap2Error, Ctap2Handler, Ctap2Request, Ctap2Response, Ctap2Status,
-    GetAssertionError, GetAssertionOptions, GetAssertionRequest, GetAssertionResponseError,
-    GetInfoError, GetInfoProfile, MAX_CREDENTIAL_ID_SIZE, MakeCredentialError,
+    Ctap2Command, Ctap2Error, Ctap2Request, Ctap2Response, Ctap2Status, GetAssertionError,
+    GetAssertionOptions, GetAssertionRequest, GetAssertionResponseError, GetInfoError,
+    GetInfoHandler, GetInfoProfile, MAX_CREDENTIAL_ID_SIZE, MakeCredentialError,
     MakeCredentialOptions, MakeCredentialRequest, MakeCredentialResponseError, MakeCredentialRp,
     MakeCredentialUser, PublicKeyCredentialParameter, encode_es256_cose_public_key,
     encode_get_assertion_response, encode_get_assertion_response_with_count, encode_get_info,
