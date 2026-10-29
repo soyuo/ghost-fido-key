@@ -147,9 +147,12 @@ pub fn decrypt_pin(
         encrypted.zeroize();
         return Err(PinCryptoError::InvalidPin);
     }
-    let pin = encrypted[..end].to_vec();
+    let mut pin = encrypted[..end].to_vec();
     encrypted.zeroize();
-    validate_pin(&pin)?;
+    if validate_pin(&pin).is_err() {
+        pin.zeroize();
+        return Err(PinCryptoError::InvalidPin);
+    }
     Ok(pin)
 }
 
