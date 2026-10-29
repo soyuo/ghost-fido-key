@@ -1,4 +1,7 @@
 use ghost_fido_core::{CredentialProtector, CredentialStore, ProductInfo};
+use ghost_platform::KeyReference;
+#[cfg(target_os = "linux")]
+use ghost_platform::LinuxKeyStore;
 #[cfg(target_os = "macos")]
 use ghost_platform::MacOsKeyStore;
 #[cfg(target_os = "windows")]
@@ -8,8 +11,6 @@ use ghost_platform::{
     VerificationAction, VerificationDecision, VerificationRequest,
 };
 use ghost_platform::{KeyCreationPolicy, KeyStore, SoftwareKeyConsent};
-#[cfg(target_os = "linux")]
-use ghost_platform::{KeyReference, LinuxKeyStore};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::{
@@ -125,6 +126,26 @@ fn runtime_key_provider(
         KeyCreationPolicy::SoftwareKeyAfterExplicitConsent,
         Some(consent),
     ))
+}
+
+#[cfg(target_os = "linux")]
+fn management_key_store() -> Result<Box<dyn KeyStore>, String> {
+    Ok(Box::new(LinuxKeyStore::new()))
+}
+
+#[cfg(target_os = "windows")]
+fn management_key_store() -> Result<Box<dyn KeyStore>, String> {
+    Ok(Box::new(WindowsKeyStore::new()))
+}
+
+#[cfg(target_os = "macos")]
+fn management_key_store() -> Result<Box<dyn KeyStore>, String> {
+    Ok(Box::new(MacOsKeyStore::new()))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+fn management_key_store() -> Result<Box<dyn KeyStore>, String> {
+    Err("Credential key management is unsupported on this operating system.".into())
 }
 
 #[cfg(target_os = "windows")]
@@ -455,7 +476,6 @@ fn stop_runtime(state: &DesktopState) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
 fn with_stopped_credential_store<T>(
     state: &DesktopState,
     operation: impl FnOnce(&mut CredentialStore) -> Result<T, String>,
@@ -490,35 +510,25 @@ fn with_stopped_credential_store<T>(
 fn list_credentials(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<Vec<CredentialSummary>, String> {
-    #[cfg(target_os = "linux")]
-    {
-        return with_stopped_credential_store(&state, |store| {
-            Ok(store
-                .managed_credentials()
-                .into_iter()
-                .map(|credential| CredentialSummary {
-                    creation_order: credential.creation_order,
-                    relying_party_id: credential.relying_party_id,
-                    user_name: credential.user_name,
-                    user_display_name: credential.user_display_name,
-                    key_protection: match credential.key_metadata.protection {
-                        ghost_fido_core::CredentialKeyProtection::HardwareBacked => {
-                            "Hardware-backed"
-                        }
-                        ghost_fido_core::CredentialKeyProtection::OsProtected => "OS-protected",
-                        ghost_fido_core::CredentialKeyProtection::Software => "Software key",
-                    },
-                    exportable: credential.key_metadata.exportable,
-                    discoverable: credential.discoverable,
-                })
-                .collect())
-        });
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = state;
-        Err("Credential management is currently implemented on Linux only.".into())
-    }
+    with_stopped_credential_store(&state, |store| {
+        Ok(store
+            .managed_credentials()
+            .into_iter()
+            .map(|credential| CredentialSummary {
+                creation_order: credential.creation_order,
+                relying_party_id: credential.relying_party_id,
+                user_name: credential.user_name,
+                user_display_name: credential.user_display_name,
+                key_protection: match credential.key_metadata.protection {
+                    ghost_fido_core::CredentialKeyProtection::HardwareBacked => "Hardware-backed",
+                    ghost_fido_core::CredentialKeyProtection::OsProtected => "OS-protected",
+                    ghost_fido_core::CredentialKeyProtection::Software => "Software key",
+                },
+                exportable: credential.key_metadata.exportable,
+                discoverable: credential.discoverable,
+            })
+            .collect())
+    })
 }
 
 #[tauri::command]
@@ -530,35 +540,27 @@ fn delete_credential(
     if !confirmed {
         return Err("Explicit confirmation is required to delete a credential.".into());
     }
-    #[cfg(target_os = "linux")]
-    {
-        return with_stopped_credential_store(&state, |store| {
-            let credential = store
-                .by_creation_order(creation_order)
-                .ok_or_else(|| "The credential no longer exists.".to_owned())?;
-            let reference = String::from_utf8(credential.key_handle.as_bytes().to_vec())
-                .map_err(|_| "The credential key reference is invalid.".to_owned())?;
-            LinuxKeyStore::new()
-                .delete_key(&KeyReference::new(reference))
-                .map_err(|error| {
-                    format!(
-                        "The credential was kept because its signing key could not be deleted: {}",
-                        error.detail
-                    )
-                })?;
-            store
-                .remove_by_creation_order(creation_order)
-                .map(|_| ())
-                .map_err(|_| {
-                    "The signing key was deleted, but credential metadata could not be removed. Retry deletion to finish cleanup.".to_owned()
-                })
-        });
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (state, creation_order);
-        Err("Credential management is currently implemented on Linux only.".into())
-    }
+    with_stopped_credential_store(&state, |store| {
+        let credential = store
+            .by_creation_order(creation_order)
+            .ok_or_else(|| "The credential no longer exists.".to_owned())?;
+        let reference = String::from_utf8(credential.key_handle.as_bytes().to_vec())
+            .map_err(|_| "The credential key reference is invalid.".to_owned())?;
+        management_key_store()?
+            .delete_key(&KeyReference::new(reference))
+            .map_err(|error| {
+                format!(
+                    "The credential was kept because its signing key could not be deleted: {}",
+                    error.detail
+                )
+            })?;
+        store
+            .remove_by_creation_order(creation_order)
+            .map(|_| ())
+            .map_err(|_| {
+                "The signing key was deleted, but credential metadata could not be removed. Retry deletion to finish cleanup.".to_owned()
+            })
+    })
 }
 
 #[tauri::command]
@@ -569,39 +571,31 @@ fn reset_credentials(
     if !confirmed {
         return Err("Explicit confirmation is required to reset credentials.".into());
     }
-    #[cfg(target_os = "linux")]
-    {
-        return with_stopped_credential_store(&state, |store| {
-            let references = store
-                .provider_key_handles()
-                .into_iter()
-                .map(|handle| {
-                    String::from_utf8(handle.as_bytes().to_vec())
-                        .map(KeyReference::new)
-                        .map_err(|_| "A credential key reference is invalid.".to_owned())
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let key_store = LinuxKeyStore::new();
-            for (index, reference) in references.iter().enumerate() {
-                key_store.delete_key(reference).map_err(|error| {
-                    format!(
-                        "Could not delete signing key {} of {}. Credential metadata was kept; retry reset after fixing the Secret Service issue. {}",
-                        index + 1,
-                        references.len(),
-                        error.detail
-                    )
-                })?;
-            }
-            store.clear().map_err(|_| {
-                "All signing keys were deleted, but credential metadata could not be cleared. Retry reset to finish cleanup.".to_owned()
+    with_stopped_credential_store(&state, |store| {
+        let references = store
+            .provider_key_handles()
+            .into_iter()
+            .map(|handle| {
+                String::from_utf8(handle.as_bytes().to_vec())
+                    .map(KeyReference::new)
+                    .map_err(|_| "A credential key reference is invalid.".to_owned())
             })
-        });
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = state;
-        Err("Credential reset is currently implemented on Linux only.".into())
-    }
+            .collect::<Result<Vec<_>, _>>()?;
+        let key_store = management_key_store()?;
+        for (index, reference) in references.iter().enumerate() {
+            key_store.delete_key(reference).map_err(|error| {
+                format!(
+                    "Could not delete signing key {} of {}. Credential metadata was kept; resolve the provider error before retrying reset. {}",
+                    index + 1,
+                    references.len(),
+                    error.detail
+                )
+            })?;
+        }
+        store.clear().map_err(|_| {
+            "All signing keys were deleted, but credential metadata could not be cleared. Retry reset to finish cleanup.".to_owned()
+        })
+    })
 }
 
 #[tauri::command]
