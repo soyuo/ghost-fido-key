@@ -52,7 +52,11 @@ struct RuntimeStatus {
 
 struct DesktopVerificationProvider {
     app: AppHandle,
-    pending: Mutex<HashMap<String, PendingApproval>>,
+    pending: Arc<Mutex<HashMap<String, PendingApproval>>>,
+    #[cfg(target_os = "windows")]
+    session_locked: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(target_os = "windows")]
+    session_monitor_available: Arc<std::sync::atomic::AtomicBool>,
 }
 
 struct PendingApproval {
@@ -252,7 +256,67 @@ fn initialize_credential_store(app: &AppHandle) -> (Option<CredentialStore>, Str
 }
 
 impl DesktopVerificationProvider {
-    fn resolve(&self, request_id: &str, approved: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    fn session_protection_available(&self) -> bool {
+        use std::sync::atomic::Ordering;
+
+        if !self.session_monitor_available.load(Ordering::Acquire) {
+            return false;
+        }
+
+        match crate::windows_session_lock::active_desktop_is_locked() {
+            Ok(locked) => {
+                if self.session_locked.load(Ordering::Acquire) != locked {
+                    self.set_session_locked(locked);
+                }
+                self.session_monitor_available.load(Ordering::Acquire)
+                    && !locked
+                    && !self.session_locked.load(Ordering::Acquire)
+            }
+            Err(_) => {
+                self.set_session_locked(true);
+                false
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn set_session_monitor_available(&self, available: bool) {
+        use std::sync::atomic::Ordering;
+
+        self.session_monitor_available
+            .store(available, Ordering::Release);
+        if !available {
+            self.set_session_locked(true);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn set_session_locked(&self, locked: bool) {
+        use std::sync::atomic::Ordering;
+
+        self.session_locked.store(locked, Ordering::Release);
+        if locked {
+            self.cancel_pending();
+        }
+        let _ = self.app.emit("session-lock-state", locked);
+    }
+
+    #[cfg(target_os = "windows")]
+    fn session_lock_status(&self) -> &'static str {
+        use std::sync::atomic::Ordering;
+
+        let _ = self.session_protection_available();
+        if !self.session_monitor_available.load(Ordering::Acquire) {
+            "Unavailable (Windows session lock monitor is not ready)"
+        } else if self.session_locked.load(Ordering::Acquire) {
+            "Blocked (Windows session is locked)"
+        } else {
+            "Available (Windows session lock monitor active)"
+        }
+    }
+
+    fn resolve(self: &Arc<Self>, request_id: &str, approved: bool) -> Result<(), String> {
         let parsed_id = Uuid::parse_str(request_id)
             .map_err(|_| "Approval request is unknown or expired.".to_owned())?;
         if parsed_id.hyphenated().to_string() != request_id {
@@ -288,6 +352,15 @@ impl DesktopVerificationProvider {
             return result;
         }
 
+        #[cfg(target_os = "windows")]
+        if !self.session_protection_available() {
+            self.cancel_one(request_id);
+            return Err(
+                "Approval is unavailable while the Windows session is locked or unmonitored."
+                    .into(),
+            );
+        }
+
         let (relying_party_id, relying_party_name, action) = {
             let mut pending = self
                 .pending
@@ -313,41 +386,64 @@ impl DesktopVerificationProvider {
         let message = format!(
             "{name} is requesting: {action}. Continue only if you initiated this action. Approving here authorizes this request to use the authenticator."
         );
-        let decision = if confirm_native_action(
-            &self.app,
-            "Confirm authenticator request",
-            &message,
-        )
-        .is_ok()
-        {
-            VerificationDecision::Approved
-        } else {
-            VerificationDecision::Rejected
-        };
+        let callback_request_id = request_id.to_owned();
+        let pending = Arc::clone(&self.pending);
+        let app = self.app.clone();
+        #[cfg(target_os = "windows")]
+        let verification = Arc::clone(self);
+        self.app
+            .dialog()
+            .message(message)
+            .title("Confirm authenticator request")
+            .kind(MessageDialogKind::Warning)
+            .buttons(MessageDialogButtons::OkCancel)
+            .show(move |confirmed| {
+                #[cfg(not(target_os = "windows"))]
+                let decision = if confirmed {
+                    VerificationDecision::Approved
+                } else {
+                    VerificationDecision::Rejected
+                };
+                #[cfg(target_os = "windows")]
+                let decision = if verification.session_protection_available() {
+                    if confirmed {
+                        VerificationDecision::Approved
+                    } else {
+                        VerificationDecision::Rejected
+                    }
+                } else {
+                    VerificationDecision::Cancelled
+                };
+
+                let approval = pending
+                    .lock()
+                    .ok()
+                    .and_then(|mut pending| pending.remove(callback_request_id.as_str()));
+                if let Some(approval) = approval {
+                    let outcome = match decision {
+                        VerificationDecision::Approved => audit::Outcome::Success,
+                        VerificationDecision::Rejected | VerificationDecision::Cancelled => {
+                            audit::Outcome::Rejected
+                        }
+                    };
+                    let _ = approval.sender.send(decision);
+                    let _ = app.emit("approval-cancelled", &callback_request_id);
+                    audit::record(audit::Event::UserApproval, outcome);
+                }
+            });
+        Ok(())
+    }
+
+    fn cancel_one(&self, request_id: &str) {
         let pending = self
             .pending
             .lock()
-            .map_err(|_| "Approval state is unavailable.".to_owned())?
-            .remove(request_id)
-            .ok_or_else(|| "Approval request is unknown or expired.".to_owned())?;
-        let outcome = if decision == VerificationDecision::Approved {
-            audit::Outcome::Success
-        } else {
-            audit::Outcome::Rejected
-        };
-        let result = pending
-            .sender
-            .send(decision)
-            .map_err(|_| "Approval request is no longer active.".to_owned());
-        audit::record(
-            audit::Event::UserApproval,
-            if result.is_ok() {
-                outcome
-            } else {
-                audit::Outcome::Failure
-            },
-        );
-        result
+            .ok()
+            .and_then(|mut pending| pending.remove(request_id));
+        if let Some(pending) = pending {
+            let _ = pending.sender.send(VerificationDecision::Cancelled);
+            let _ = self.app.emit("approval-cancelled", request_id);
+        }
     }
 }
 
@@ -357,6 +453,15 @@ impl UserVerification for DesktopVerificationProvider {
         request: &VerificationRequest,
         timeout: Duration,
     ) -> Result<VerificationDecision, PlatformError> {
+        #[cfg(target_os = "windows")]
+        if !self.session_protection_available() {
+            return Err(PlatformError::new(
+                PlatformErrorKind::UserVerificationUnavailable,
+                HostPlatform::current(),
+                "Windows session lock monitoring is unavailable or the session is locked",
+            ));
+        }
+
         let request_id = Uuid::new_v4().to_string();
         let prompt = ApprovalPrompt {
             request_id: request_id.clone(),
@@ -391,6 +496,16 @@ impl UserVerification for DesktopVerificationProvider {
                     responding: false,
                 },
             );
+
+        #[cfg(target_os = "windows")]
+        if !self.session_protection_available() {
+            self.cancel_one(&request_id);
+            return Err(PlatformError::new(
+                PlatformErrorKind::UserVerificationUnavailable,
+                HostPlatform::current(),
+                "Windows session locked before approval could be delivered",
+            ));
+        }
 
         if self.app.emit("approval-request", prompt).is_err() {
             if let Ok(mut pending) = self.pending.lock() {
@@ -522,7 +637,16 @@ fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
         virtual_hid_available,
         device_attached,
         key_storage_status,
-        desktop_approval_status: "Available (desktop and native per-request confirmation)",
+        desktop_approval_status: {
+            #[cfg(target_os = "windows")]
+            {
+                state.verification.session_lock_status()
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                "Available (desktop and native per-request confirmation)"
+            }
+        },
         client_pin_status,
         native_user_verification_status: "Not implemented",
         credential_store_available,
@@ -549,6 +673,13 @@ fn start_authenticator(
     app: AppHandle,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    if !state.verification.session_protection_available() {
+        return Err(
+            "Authenticator start is blocked because Windows session lock monitoring is unavailable or the session is locked.".into(),
+        );
+    }
+
     let mut runtime = state
         .runtime
         .lock()
@@ -891,6 +1022,9 @@ fn respond_approval(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "windows")]
+    let mut session_lock_hook = None;
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
@@ -937,7 +1071,11 @@ pub fn run() {
                 credential_store_status: status,
                 verification: Arc::new(DesktopVerificationProvider {
                     app: app.handle().clone(),
-                    pending: Mutex::new(HashMap::new()),
+                    pending: Arc::new(Mutex::new(HashMap::new())),
+                    #[cfg(target_os = "windows")]
+                    session_locked: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                    #[cfg(target_os = "windows")]
+                    session_monitor_available: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 }),
                 virtual_hid: Arc::new(Mutex::new(runtime_status)),
                 runtime: Mutex::new(None),
@@ -957,9 +1095,32 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
-        .run(|app, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
+        .run(move |app, event| {
+            #[cfg(target_os = "windows")]
+            if matches!(event, tauri::RunEvent::Ready) && session_lock_hook.is_none() {
                 if let Some(state) = app.try_state::<DesktopState>() {
+                    let window = app.get_webview_window("main");
+                    match window
+                        .ok_or_else(|| "Main window is unavailable.".to_owned())
+                        .and_then(|window| {
+                            windows_session_lock::install(&window, Arc::clone(&state.verification))
+                        }) {
+                        Ok(hook) => session_lock_hook = Some(hook),
+                        Err(error) => {
+                            state.verification.set_session_monitor_available(false);
+                            log::error!("Windows session lock monitoring is unavailable: {error}");
+                        }
+                    }
+                }
+            }
+
+            if matches!(event, tauri::RunEvent::Exit) {
+                #[cfg(target_os = "windows")]
+                if let Some(hook) = session_lock_hook.take() {
+                    hook.uninstall();
+                }
+                if let Some(state) = app.try_state::<DesktopState>() {
+                    state.verification.cancel_pending();
                     let _ = stop_runtime(&state);
                 }
             }
@@ -968,3 +1129,5 @@ pub fn run() {
 
 mod audit;
 mod authenticator_runtime;
+#[cfg(target_os = "windows")]
+mod windows_session_lock;
