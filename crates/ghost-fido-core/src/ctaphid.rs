@@ -20,6 +20,7 @@ pub enum CtapHidErrorCode {
     InvalidCommand = 0x01,
     InvalidParameter = 0x02,
     InvalidLength = 0x03,
+    InvalidSequence = 0x04,
     ChannelBusy = 0x06,
     InvalidChannel = 0x0b,
     Other = 0x7f,
@@ -28,6 +29,7 @@ pub enum CtapHidErrorCode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CtapHidDispatch {
     AllocateChannel,
+    Resynchronize(Vec<u8>),
     Ping(Vec<u8>),
     Cbor(Vec<u8>),
     Cancel,
@@ -45,6 +47,9 @@ pub fn dispatch(
             if message.channel == BROADCAST_CHANNEL && message.payload.len() == 8 =>
         {
             Ok(CtapHidDispatch::AllocateChannel)
+        }
+        CtapHidCommand::Init if channel_is_active && message.payload.len() == 8 => {
+            Ok(CtapHidDispatch::Resynchronize(message.payload))
         }
         CtapHidCommand::Init => Err(CtapHidErrorCode::InvalidParameter),
         CtapHidCommand::Ping if message.channel != BROADCAST_CHANNEL && channel_is_active => {
@@ -120,6 +125,7 @@ pub enum FrameError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChannelError {
     Exhausted,
+    InactiveChannel,
     InvalidNonceLength(usize),
 }
 
@@ -173,11 +179,28 @@ impl CtapHidChannelAllocator {
             return Err(ChannelError::InvalidNonceLength(nonce.len()));
         }
         let channel = self.allocate(now, timeout)?;
-        let mut response = [0; INIT_RESPONSE_SIZE];
-        response[..INIT_NONCE_SIZE].copy_from_slice(nonce);
-        response[8..12].copy_from_slice(&channel.to_be_bytes());
-        response[12..].copy_from_slice(&[2, 1, 0, 0, 0]);
+        let response = init_response_payload(nonce, channel);
         Ok((channel, response))
+    }
+
+    /// Refreshes an existing channel and returns the CTAPHID_INIT response
+    /// payload used to abort and resynchronize an in-flight transaction.
+    pub fn resynchronize(
+        &mut self,
+        channel: u32,
+        nonce: &[u8],
+        now: Instant,
+        timeout: Duration,
+    ) -> Result<[u8; INIT_RESPONSE_SIZE], ChannelError> {
+        if nonce.len() != INIT_NONCE_SIZE {
+            return Err(ChannelError::InvalidNonceLength(nonce.len()));
+        }
+        let deadline = self
+            .active
+            .get_mut(&channel)
+            .ok_or(ChannelError::InactiveChannel)?;
+        *deadline = now + timeout;
+        Ok(init_response_payload(nonce, channel))
     }
 
     pub fn release(&mut self, channel: u32) -> bool {
@@ -205,6 +228,14 @@ impl CtapHidChannelAllocator {
     pub const fn capacity(&self) -> usize {
         self.capacity
     }
+}
+
+fn init_response_payload(nonce: &[u8], channel: u32) -> [u8; INIT_RESPONSE_SIZE] {
+    let mut response = [0; INIT_RESPONSE_SIZE];
+    response[..INIT_NONCE_SIZE].copy_from_slice(nonce);
+    response[8..12].copy_from_slice(&channel.to_be_bytes());
+    response[12..].copy_from_slice(&[2, 1, 0, 0, 0]);
+    response
 }
 
 impl fmt::Display for FrameError {
@@ -280,23 +311,57 @@ impl CtapHidSession {
 
     pub fn receive(&mut self, report: &[u8], now: Instant) -> Result<SessionEvent, FrameError> {
         self.expire(now);
-        let channel = if report.len() == HID_REPORT_SIZE {
-            u32::from_be_bytes(report[..4].try_into().expect("four bytes"))
-        } else {
-            return Err(FrameError::InvalidReportLength(report.len()));
-        };
+        ensure_report(report)?;
+        let channel = u32::from_be_bytes(report[..4].try_into().expect("four bytes"));
+        if channel == 0 {
+            return Err(FrameError::InvalidChannel);
+        }
         if report[4] & 0x80 == 0 {
-            let assembler = self
+            if !self.channels.is_active(channel) {
+                return Ok(SessionEvent::Response(encode_error(
+                    channel,
+                    CtapHidErrorCode::InvalidChannel,
+                )?));
+            }
+            let continuation = self
                 .pending
                 .get_mut(&channel)
-                .ok_or(FrameError::UnexpectedContinuation)?;
-            return match assembler.push_continuation(report)? {
-                Some(message) => {
+                .ok_or(FrameError::UnexpectedContinuation)
+                .and_then(|assembler| assembler.push_continuation(report));
+            return match continuation {
+                Ok(Some(message)) => {
                     self.pending.remove(&channel);
                     self.dispatch_message(message, now)
                 }
-                None => Ok(SessionEvent::Pending),
+                Ok(None) => Ok(SessionEvent::Pending),
+                Err(error) => {
+                    self.pending.remove(&channel);
+                    Err(error)
+                }
             };
+        }
+
+        let command = CtapHidCommand::from_wire(report[4])?;
+        let is_broadcast_init = channel == BROADCAST_CHANNEL && command == CtapHidCommand::Init;
+        if !is_broadcast_init && !self.channels.is_active(channel) {
+            return Ok(SessionEvent::Response(encode_error(
+                channel,
+                CtapHidErrorCode::InvalidChannel,
+            )?));
+        }
+        if self.pending.contains_key(&channel) {
+            let payload_len = u16::from_be_bytes([report[5], report[6]]) as usize;
+            if command == CtapHidCommand::Init
+                && payload_len == INIT_NONCE_SIZE
+                && self.channels.is_active(channel)
+            {
+                self.pending.remove(&channel);
+            } else {
+                return Ok(SessionEvent::Response(encode_error(
+                    channel,
+                    CtapHidErrorCode::InvalidSequence,
+                )?));
+            }
         }
         let message = CtapHidAssembler::start(report)?;
         if !message.is_complete() {
@@ -326,6 +391,14 @@ impl CtapHidSession {
                     .initialize(&message.payload, now, self.channel_timeout)
                     .map_err(|_| FrameError::InvalidChannel)?;
                 let report = encode_initialization(assigned, CtapHidCommand::Init, &payload)?;
+                Ok(SessionEvent::Response(report))
+            }
+            Ok(CtapHidDispatch::Resynchronize(nonce)) => {
+                let payload = self
+                    .channels
+                    .resynchronize(channel, &nonce, now, self.channel_timeout)
+                    .map_err(|_| FrameError::InvalidChannel)?;
+                let report = encode_initialization(channel, CtapHidCommand::Init, &payload)?;
                 Ok(SessionEvent::Response(report))
             }
             Ok(CtapHidDispatch::Ping(payload)) => {
