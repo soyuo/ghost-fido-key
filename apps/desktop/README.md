@@ -36,4 +36,6 @@ The status view reports request approval, CTAP ClientPIN configuration, and nati
 
 When the authenticator is stopped, desktop settings can set or change the local authenticator PIN. This management path applies the same PIN policy, verifier format, protected storage, and persistent retry counter used by CTAP ClientPIN. It receives PINs through the local Tauri command and does not replace the CTAP ClientPIN key-agreement exchange used by external clients. Wrong current-PIN attempts consume the same retry budget; a blocked PIN currently requires authenticator reset.
 
+The Rust IPC boundary rejects current or new PIN strings longer than 63 UTF-8 bytes before showing a confirmation dialog, hashing, or changing retry state. Approval responses must use the exact lowercase, hyphenated UUID form generated for a pending request; malformed identifiers are rejected before pending state is accessed.
+
 The app can also be previewed in a browser with `npm run dev`; the desktop-only status command is unavailable there. The existing command-line diagnostic remains available as the `ghost-fido` workspace package. Browser WebAuthn interoperability and a signed, entitled distribution still require separate macOS validation.

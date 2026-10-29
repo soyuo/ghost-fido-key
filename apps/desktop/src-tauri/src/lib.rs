@@ -1,5 +1,6 @@
 use ghost_fido_core::{
-    CredentialProtector, CredentialStore, PinManagementError, ProductInfo, configure_client_pin,
+    CredentialProtector, CredentialStore, PIN_MAX_UTF8_BYTES, PinManagementError, ProductInfo,
+    configure_client_pin,
 };
 use ghost_platform::KeyReference;
 #[cfg(target_os = "linux")]
@@ -252,6 +253,12 @@ fn initialize_credential_store(app: &AppHandle) -> (Option<CredentialStore>, Str
 
 impl DesktopVerificationProvider {
     fn resolve(&self, request_id: &str, approved: bool) -> Result<(), String> {
+        let parsed_id = Uuid::parse_str(request_id)
+            .map_err(|_| "Approval request is unknown or expired.".to_owned())?;
+        if parsed_id.hyphenated().to_string() != request_id {
+            return Err("Approval request is unknown or expired.".into());
+        }
+
         if !approved {
             let mut approvals = self
                 .pending
@@ -651,6 +658,16 @@ fn set_client_pin(
     current_pin: Option<String>,
     new_pin: String,
 ) -> Result<(), String> {
+    if new_pin.len() > PIN_MAX_UTF8_BYTES
+        || current_pin
+            .as_ref()
+            .is_some_and(|pin| pin.len() > PIN_MAX_UTF8_BYTES)
+    {
+        return Err(format!(
+            "PIN values must not exceed {PIN_MAX_UTF8_BYTES} UTF-8 bytes."
+        ));
+    }
+
     let current_pin = current_pin.map(|pin| Zeroizing::new(pin.into_bytes()));
     let new_pin = Zeroizing::new(new_pin.into_bytes());
     with_stopped_credential_store(&state, |store| {
