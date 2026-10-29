@@ -4,11 +4,12 @@
 opts into a versioned SQLite database and requires a `CredentialProtector`.
 There is no plaintext persistence mode.
 
-SQLite stores one protected payload containing the full credential record set.
+SQLite stores credential records and PIN state in separate protected payloads.
 Credential IDs, RP ID hashes, user handles, key references, key protection
-metadata, discoverability, and signature counters are inside that payload.
-The schema itself contains only a singleton key and a ciphertext blob. Private
-key bytes are never part of a `CredentialRecord`.
+metadata, discoverability, and signature counters are inside the credential
+payload. The PIN verifier and retry state are in the separate PIN payload.
+Both tables contain only a singleton key and ciphertext blob. Private key bytes
+are never part of a `CredentialRecord`.
 
 The protector must provide authenticated encryption and authenticate the
 associated data supplied by the store. Its encryption key must be managed
@@ -31,18 +32,18 @@ plaintext store. The SQLite file alone is not a backup: Windows recovery depends
 on the original user profile, Linux on the same Secret Service key item, and
 macOS on access to the same default Keychain item.
 
-Schema version 3 stores a single CBOR-encoded record set, including optional
-user name and display name hints and the store-assigned credential creation
-order. New databases are initialized transactionally. Opening a version 1 or 2
-database authenticates it with its original associated data, validates the
-records, assigns legacy records a deterministic order by credential ID, seals
-the v3 payload with v3 associated data, and commits the payload and schema
-version together. A failed migration leaves the original database intact. An
-older binary rejects a v3 database without modifying it. Unsupported schema
-versions, authentication failures, malformed records, and SQLite errors fail
-closed. Record registration and signature-counter updates commit the v3
-protected payload before changing the in-memory view. The default in-memory
-store remains available for volatile use.
+SQLite `user_version` 8 tracks the current complete store format. The credential
+record payload has its own CBOR schema version 7; these are distinct version
+counters because PIN state is stored separately. SQLite stores with `user_version`
+1–3 are read using their original associated data, validated, assigned a
+deterministic legacy creation order where needed, and resealed using the current
+credential payload format. Versions 4–8 are decoded using their corresponding
+credential payload schema. Missing PIN state in a store older than version 8 is
+initialized as protected default state. Unsupported versions, authentication
+failures, malformed records, and SQLite errors fail closed. Record registration
+and signature-counter updates persist the protected record payload before
+changing the in-memory view. The default in-memory store remains available for
+volatile use.
 
 User labels are presentation hints only; they are not credential identifiers or
 authentication inputs. `Debug` output redacts them. Each optional label is
