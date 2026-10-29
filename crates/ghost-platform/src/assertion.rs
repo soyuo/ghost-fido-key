@@ -3,8 +3,9 @@
 use std::{cmp::Reverse, time::Duration};
 
 use ghost_fido_core::{
-    CredentialError, CredentialId, CredentialStore, Ctap2Response, Ctap2Status,
-    GetAssertionRequest, KeyHandle, encode_get_assertion_response_with_count_and_uv,
+    CborValue, CredentialError, CredentialId, CredentialStore, Ctap2Response, Ctap2Status,
+    GetAssertionRequest, KeyHandle, client_pin_process_hmac_secret,
+    encode_get_assertion_response_with_count_and_uv_and_extensions,
     get_assertion_authenticator_data_with_uv,
 };
 use sha2::{Digest, Sha256};
@@ -49,7 +50,15 @@ pub fn execute_get_assertion(
     verification: &dyn UserVerification,
     timeout: Duration,
 ) -> Result<GetAssertionExecution, GetAssertionExecutionError> {
-    execute_get_assertion_with_uv(request, store, key_store, verification, timeout, false)
+    execute_get_assertion_with_uv_and_hmac_secret(
+        request,
+        store,
+        key_store,
+        verification,
+        timeout,
+        false,
+        None,
+    )
 }
 
 pub fn execute_get_assertion_with_uv(
@@ -59,6 +68,26 @@ pub fn execute_get_assertion_with_uv(
     verification: &dyn UserVerification,
     timeout: Duration,
     user_verified: bool,
+) -> Result<GetAssertionExecution, GetAssertionExecutionError> {
+    execute_get_assertion_with_uv_and_hmac_secret(
+        request,
+        store,
+        key_store,
+        verification,
+        timeout,
+        user_verified,
+        None,
+    )
+}
+
+pub fn execute_get_assertion_with_uv_and_hmac_secret(
+    request: &GetAssertionRequest,
+    store: &mut CredentialStore,
+    key_store: &dyn KeyStore,
+    verification: &dyn UserVerification,
+    timeout: Duration,
+    user_verified: bool,
+    hmac_secret_shared_secret: Option<&[u8; 32]>,
 ) -> Result<GetAssertionExecution, GetAssertionExecutionError> {
     if (request.options.user_verification == Some(true) && !user_verified)
         || request.options.user_presence == Some(false)
@@ -129,6 +158,7 @@ pub fn execute_get_assertion_with_uv(
         key_store,
         number_of_credentials,
         user_verified,
+        hmac_secret_shared_secret,
     )?;
     Ok(GetAssertionExecution {
         response,
@@ -153,6 +183,24 @@ pub fn execute_next_assertion_with_uv(
     key_store: &dyn KeyStore,
     user_verified: bool,
 ) -> Result<Ctap2Response, GetAssertionExecutionError> {
+    execute_next_assertion_with_uv_and_hmac_secret(
+        request,
+        credential_id,
+        store,
+        key_store,
+        user_verified,
+        None,
+    )
+}
+
+pub fn execute_next_assertion_with_uv_and_hmac_secret(
+    request: &GetAssertionRequest,
+    credential_id: &CredentialId,
+    store: &mut CredentialStore,
+    key_store: &dyn KeyStore,
+    user_verified: bool,
+    hmac_secret_shared_secret: Option<&[u8; 32]>,
+) -> Result<Ctap2Response, GetAssertionExecutionError> {
     sign_assertion_for_credential(
         request,
         credential_id,
@@ -160,6 +208,7 @@ pub fn execute_next_assertion_with_uv(
         key_store,
         None,
         user_verified,
+        hmac_secret_shared_secret,
     )
 }
 
@@ -170,6 +219,7 @@ fn sign_assertion_for_credential(
     key_store: &dyn KeyStore,
     number_of_credentials: Option<u64>,
     user_verified: bool,
+    hmac_secret_shared_secret: Option<&[u8; 32]>,
 ) -> Result<Ctap2Response, GetAssertionExecutionError> {
     let id = [credential_id.as_bytes().to_vec()];
     let Some(record) = store
@@ -181,6 +231,7 @@ fn sign_assertion_for_credential(
     };
     let key_handle = record.key_handle.clone();
     let user_handle = record.user_handle.clone();
+    let credential_hmac_secret = record.hmac_secret.clone();
     let include_user = request.allow_list.is_none() && record.discoverable;
     let next_sign_count = record
         .sign_count
@@ -188,8 +239,37 @@ fn sign_assertion_for_credential(
         .ok_or(CredentialError::CounterOverflow)?;
     let rp_id_hash = request.rp_id_hash();
     let reference = key_reference(&key_handle)?;
-    let authenticator_data =
-        get_assertion_authenticator_data_with_uv(rp_id_hash, next_sign_count, user_verified);
+    let extensions = if let Some(input) = request.hmac_secret.as_ref() {
+        let Some(material) = credential_hmac_secret.as_ref() else {
+            return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
+        };
+        let Some(shared_secret) = hmac_secret_shared_secret else {
+            return Ok(Ctap2Response::error(Ctap2Status::PinAuthInvalid));
+        };
+        let mut salt_enc = input.salt_enc.clone();
+        let result = client_pin_process_hmac_secret(
+            shared_secret,
+            &mut salt_enc,
+            &input.salt_auth,
+            material.for_uv(user_verified),
+        );
+        let Ok(encrypted_output) = result else {
+            return Ok(Ctap2Response::error(Ctap2Status::PinAuthInvalid));
+        };
+        Some(CborValue::Map(vec![(
+            CborValue::Text("hmac-secret".into()),
+            CborValue::Bytes(encrypted_output),
+        )]))
+    } else {
+        None
+    };
+    let mut authenticator_data =
+        get_assertion_authenticator_data_with_uv(rp_id_hash, next_sign_count, user_verified)
+            .to_vec();
+    if let Some(ref extensions) = extensions {
+        authenticator_data[32] |= 0x80;
+        authenticator_data.extend_from_slice(&ghost_fido_core::encode_cbor(extensions));
+    }
     let mut signed_data =
         Vec::with_capacity(authenticator_data.len() + request.client_data_hash.len());
     signed_data.extend_from_slice(&authenticator_data);
@@ -199,7 +279,7 @@ fn sign_assertion_for_credential(
     let signature = encode_p1363_es256_der(&raw_signature)
         .ok_or(GetAssertionExecutionError::InvalidSignature)?;
 
-    let response = encode_get_assertion_response_with_count_and_uv(
+    let response = encode_get_assertion_response_with_count_and_uv_and_extensions(
         rp_id_hash,
         credential_id.as_bytes(),
         include_user.then_some(user_handle.as_slice()),
@@ -207,6 +287,7 @@ fn sign_assertion_for_credential(
         next_sign_count,
         number_of_credentials,
         user_verified,
+        extensions,
     )
     .map_err(|_| GetAssertionExecutionError::ResponseEncoding)?;
     let committed_sign_count = store.increment_sign_count(credential_id)?;

@@ -11,8 +11,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 
 use crate::cbor::{CborLimits, CborValue, decode_with_limits, encode as encode_cbor};
 
-const STORAGE_SCHEMA_VERSION: i64 = 6;
-const CREDENTIAL_RECORD_SCHEMA_VERSION: i64 = 5;
+const STORAGE_SCHEMA_VERSION: i64 = 7;
+const CREDENTIAL_RECORD_SCHEMA_VERSION: i64 = 6;
 const STORAGE_AAD_V1: &[u8] = b"ghost-fido/credential-store/v1";
 const STORAGE_AAD_V2: &[u8] = b"ghost-fido/credential-store/v2";
 const STORAGE_AAD_V3: &[u8] = b"ghost-fido/credential-store/v3";
@@ -105,11 +105,52 @@ pub struct CredentialRecord {
     /// Persisted public key used by CTAP Credential Management. Legacy records
     /// are populated from their provider before enumeration.
     pub public_key: Option<Es256PublicKey>,
+    /// Credential-scoped HMAC secrets. Persisted only in the protected record blob.
+    pub hmac_secret: Option<HmacSecretMaterial>,
     pub key_metadata: CredentialKeyMetadata,
     pub discoverable: bool,
     /// Store-assigned monotonic ordering used for discoverable credential selection.
     pub creation_order: u64,
     pub sign_count: u32,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct HmacSecretMaterial {
+    with_uv: [u8; 32],
+    without_uv: [u8; 32],
+}
+
+impl HmacSecretMaterial {
+    #[must_use]
+    pub const fn new(with_uv: [u8; 32], without_uv: [u8; 32]) -> Self {
+        Self {
+            with_uv,
+            without_uv,
+        }
+    }
+
+    #[must_use]
+    pub const fn for_uv(&self, user_verified: bool) -> &[u8; 32] {
+        if user_verified {
+            &self.with_uv
+        } else {
+            &self.without_uv
+        }
+    }
+}
+
+impl Drop for HmacSecretMaterial {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.with_uv.zeroize();
+        self.without_uv.zeroize();
+    }
+}
+
+impl fmt::Debug for HmacSecretMaterial {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("HmacSecretMaterial([REDACTED])")
+    }
 }
 
 /// Safe local-management projection of one credential record.
@@ -133,6 +174,10 @@ impl fmt::Debug for CredentialRecord {
             .field("user_name", &"[REDACTED]")
             .field("user_display_name", &"[REDACTED]")
             .field("key_handle", &self.key_handle)
+            .field(
+                "hmac_secret",
+                &self.hmac_secret.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("key_metadata", &self.key_metadata)
             .field("discoverable", &self.discoverable)
             .field("creation_order", &self.creation_order)
@@ -331,12 +376,20 @@ impl CredentialStore {
                     .map_err(|_| CredentialError::StorageFailure)?;
                 records
             }
-            4 | 5 | 6 => {
+            4 | 5 | 6 | 7 => {
                 let protected = read_protected_payload(&connection)?;
                 let plaintext = protector
                     .unprotect(&protected, STORAGE_AAD_V4)
                     .map_err(|_| CredentialError::ProtectedDataInvalid)?;
-                decode_records(&plaintext, if schema_version >= 6 { 5 } else { 4 })?
+                decode_records(
+                    &plaintext,
+                    match schema_version {
+                        7 => 6,
+                        6 => 5,
+                        5 => 4,
+                        _ => 4,
+                    },
+                )?
             }
             other => return Err(CredentialError::UnsupportedSchemaVersion(other)),
         };
@@ -576,6 +629,11 @@ impl CredentialStore {
     #[must_use]
     pub fn pin_state(&self) -> &PinState {
         &self.pin_state
+    }
+
+    #[must_use]
+    pub fn has_protected_storage(&self) -> bool {
+        self.sqlite.is_some()
     }
 
     /// Persists PIN verifier and retry state through the credential protector.
@@ -936,6 +994,15 @@ fn encode_records(
                         CborValue::Bytes(key.y.to_vec()),
                     ])
                 }),
+                record
+                    .hmac_secret
+                    .as_ref()
+                    .map_or(CborValue::Null, |secret| {
+                        CborValue::Array(vec![
+                            CborValue::Bytes(secret.with_uv.to_vec()),
+                            CborValue::Bytes(secret.without_uv.to_vec()),
+                        ])
+                    }),
             ])
         })
         .collect::<Vec<_>>();
@@ -976,13 +1043,25 @@ fn decode_records(
         let CborValue::Array(fields) = value else {
             return Err(CredentialError::ProtectedDataInvalid);
         };
-        let record = if version >= 5 && fields.len() == 13 {
+        let record = if version >= 5 && (fields.len() == 13 || fields.len() == 14) {
+            let (hmac_secret_value, fields) = if fields.len() == 14 {
+                let (value, fields) = fields
+                    .split_last()
+                    .ok_or(CredentialError::ProtectedDataInvalid)?;
+                (Some(value), fields)
+            } else {
+                (None, fields.as_slice())
+            };
             let Some((public_key_value, base_fields)) = fields.split_last() else {
                 return Err(CredentialError::ProtectedDataInvalid);
             };
             let mut record =
                 decode_record_fields(base_fields, with_user_labels, with_creation_order, true)?;
             record.public_key = decode_public_key(public_key_value)?;
+            record.hmac_secret = hmac_secret_value
+                .map(decode_hmac_secret)
+                .transpose()?
+                .flatten();
             record
         } else {
             decode_record_fields(&fields, with_user_labels, with_creation_order, version >= 4)?
@@ -1169,6 +1248,7 @@ fn decode_record_fields(
         key_handle: KeyHandle::new(key_handle.clone())
             .map_err(|_| CredentialError::ProtectedDataInvalid)?,
         public_key: None,
+        hmac_secret: None,
         key_metadata: CredentialKeyMetadata {
             protection: key_protection,
             exportable: *exportable,
@@ -1194,6 +1274,26 @@ fn decode_public_key(value: &CborValue) -> Result<Option<Es256PublicKey>, Creden
                 x: x.as_slice().try_into().expect("length checked"),
                 y: y.as_slice().try_into().expect("length checked"),
             }))
+        }
+        _ => Err(CredentialError::ProtectedDataInvalid),
+    }
+}
+
+fn decode_hmac_secret(value: &CborValue) -> Result<Option<HmacSecretMaterial>, CredentialError> {
+    match value {
+        CborValue::Null => Ok(None),
+        CborValue::Array(secrets) => {
+            let [CborValue::Bytes(with_uv), CborValue::Bytes(without_uv)] = secrets.as_slice()
+            else {
+                return Err(CredentialError::ProtectedDataInvalid);
+            };
+            if with_uv.len() != 32 || without_uv.len() != 32 {
+                return Err(CredentialError::ProtectedDataInvalid);
+            }
+            Ok(Some(HmacSecretMaterial::new(
+                with_uv.as_slice().try_into().expect("length checked"),
+                without_uv.as_slice().try_into().expect("length checked"),
+            )))
         }
         _ => Err(CredentialError::ProtectedDataInvalid),
     }

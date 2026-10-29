@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 use subtle::ConstantTimeEq;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use ghost_fido_core::{
     CborValue, CredentialId, CredentialStore, Ctap2Command, Ctap2Request, Ctap2Response,
@@ -22,7 +22,8 @@ const PIN_PROTOCOL_TIMEOUT: Duration = Duration::from_secs(30);
 use crate::{
     GetAssertionExecutionError, KeyCreationPolicy, KeyReference, KeyStore,
     MakeCredentialExecutionError, PlatformErrorKind, SoftwareKeyConsent, UserVerification,
-    VerificationAction, VerificationDecision, VerificationRequest, execute_next_assertion_with_uv,
+    VerificationAction, VerificationDecision, VerificationRequest,
+    execute_get_assertion_with_uv_and_hmac_secret, execute_next_assertion_with_uv_and_hmac_secret,
 };
 
 const ASSERTION_CONTINUATION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -36,6 +37,15 @@ struct AssertionContinuation {
     credentials: VecDeque<CredentialId>,
     expires_at: Instant,
     user_verified: bool,
+    hmac_secret_shared_secret: Option<[u8; 32]>,
+}
+
+impl Drop for AssertionContinuation {
+    fn drop(&mut self) {
+        if let Some(secret) = &mut self.hmac_secret_shared_secret {
+            secret.zeroize();
+        }
+    }
 }
 
 struct CredentialManagementContinuation {
@@ -257,6 +267,21 @@ impl ClientPinHandler {
             .key
             .derive_shared_secret(peer)
             .map_err(|_| Ctap2Status::InvalidParameter)
+    }
+
+    fn hmac_secret_shared_secret(
+        &mut self,
+        channel: u32,
+        peer: &CborValue,
+    ) -> Result<[u8; 32], Ctap2Status> {
+        let agreement = self
+            .agreements
+            .remove(&channel)
+            .ok_or(Ctap2Status::PinAuthInvalid)?;
+        agreement
+            .key
+            .derive_shared_secret(peer)
+            .map_err(|_| Ctap2Status::PinAuthInvalid)
     }
 
     fn set_pin(
@@ -638,6 +663,12 @@ impl<'a> AuthenticatorService<'a> {
                         .options
                         .push(("credMgmt".into(), credential_management_ready));
                 }
+                profile
+                    .extensions
+                    .retain(|extension| extension != "hmac-secret");
+                if self.store.has_protected_storage() {
+                    profile.extensions.push("hmac-secret".into());
+                }
                 profile.pin_uv_auth_protocols = vec![u64::from(PIN_UV_AUTH_PROTOCOL)];
                 match GetInfoHandler::new(&profile) {
                     Ok(handler) => Ok(handler.handle(&payload)),
@@ -692,6 +723,18 @@ impl<'a> AuthenticatorService<'a> {
                     Ok(request) => request,
                     Err(error) => return Ok(Ctap2Response::error(error.status())),
                 };
+                let mut hmac_secret_shared_secret = if let Some(input) = typed.hmac_secret.as_ref()
+                {
+                    match self
+                        .client_pin
+                        .hmac_secret_shared_secret(channel, &input.key_agreement)
+                    {
+                        Ok(secret) => Some(Zeroizing::new(secret)),
+                        Err(status) => return Ok(Ctap2Response::error(status)),
+                    }
+                } else {
+                    None
+                };
                 let user_verified = match self.verify_pin_authorization(
                     channel,
                     &typed.client_data_hash,
@@ -701,15 +744,21 @@ impl<'a> AuthenticatorService<'a> {
                     &typed.rp_id,
                 ) {
                     Ok(value) => value,
-                    Err(status) => return Ok(Ctap2Response::error(status)),
+                    Err(status) => {
+                        if let Some(secret) = &mut hmac_secret_shared_secret {
+                            secret.zeroize();
+                        }
+                        return Ok(Ctap2Response::error(status));
+                    }
                 };
-                let execution = crate::execute_get_assertion_with_uv(
+                let execution = execute_get_assertion_with_uv_and_hmac_secret(
                     &typed,
                     self.store,
                     self.key_store,
                     self.verification,
                     self.config.request_timeout,
                     user_verified,
+                    hmac_secret_shared_secret.as_deref(),
                 )
                 .map_err(AuthenticatorServiceError::GetAssertion)?;
                 if !execution.remaining_credentials.is_empty() {
@@ -720,8 +769,13 @@ impl<'a> AuthenticatorService<'a> {
                             credentials: execution.remaining_credentials.into(),
                             expires_at: Instant::now() + ASSERTION_CONTINUATION_TIMEOUT,
                             user_verified,
+                            hmac_secret_shared_secret: hmac_secret_shared_secret
+                                .as_ref()
+                                .map(|secret| **secret),
                         },
                     );
+                } else if let Some(secret) = &mut hmac_secret_shared_secret {
+                    secret.zeroize();
                 }
                 Ok(execution.response)
             }
@@ -738,12 +792,13 @@ impl<'a> AuthenticatorService<'a> {
                 let Some(credential_id) = continuation.credentials.pop_front() else {
                     return Ok(Ctap2Response::error(Ctap2Status::NotAllowed));
                 };
-                let result = execute_next_assertion_with_uv(
+                let result = execute_next_assertion_with_uv_and_hmac_secret(
                     &continuation.request,
                     &credential_id,
                     self.store,
                     self.key_store,
                     continuation.user_verified,
+                    continuation.hmac_secret_shared_secret.as_ref(),
                 )
                 .map_err(AuthenticatorServiceError::GetAssertion)?;
                 if result.status != Ctap2Status::Success {

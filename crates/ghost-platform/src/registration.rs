@@ -1,11 +1,12 @@
 //! Platform-independent MakeCredential checks that require local presence.
 
 use ghost_fido_core::{
-    CredentialError, CredentialId, CredentialKeyMetadata, CredentialKeyProtection,
-    CredentialRecord, CredentialStore, Ctap2Response, Ctap2Status, KeyHandle,
-    MakeCredentialRequest, encode_make_credential_response,
+    CborValue, CredentialError, CredentialId, CredentialKeyMetadata, CredentialKeyProtection,
+    CredentialRecord, CredentialStore, Ctap2Response, Ctap2Status, HmacSecretMaterial, KeyHandle,
+    MakeCredentialRequest, encode_make_credential_response_with_extensions,
 };
 use std::time::Duration;
+use zeroize::Zeroize;
 
 use crate::{
     KeyCreationPolicy, KeyStore, PlatformError, PlatformErrorKind, SigningAlgorithm,
@@ -44,6 +45,9 @@ pub fn register_make_credential(
     aaguid: [u8; 16],
     timeout: Duration,
 ) -> Result<Ctap2Response, MakeCredentialExecutionError> {
+    if request.hmac_secret && !store.has_protected_storage() {
+        return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
+    }
     register_make_credential_with_uv(
         request,
         store,
@@ -69,6 +73,9 @@ pub fn register_make_credential_with_uv(
     timeout: Duration,
     user_verified: bool,
 ) -> Result<Ctap2Response, MakeCredentialExecutionError> {
+    if request.hmac_secret && !store.has_protected_storage() {
+        return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
+    }
     if !request
         .public_key_credential_parameters
         .iter()
@@ -114,6 +121,26 @@ pub fn register_make_credential_with_uv(
     let mut credential_id_bytes = [0; 16];
     getrandom::fill(&mut credential_id_bytes)
         .map_err(|_| MakeCredentialExecutionError::Randomness)?;
+    let mut hmac_secret_with_uv = [0; 32];
+    let mut hmac_secret_without_uv = [0; 32];
+    let hmac_secret = if request.hmac_secret {
+        if getrandom::fill(&mut hmac_secret_with_uv).is_err() {
+            hmac_secret_with_uv.zeroize();
+            return Err(MakeCredentialExecutionError::Randomness);
+        }
+        if getrandom::fill(&mut hmac_secret_without_uv).is_err() {
+            hmac_secret_with_uv.zeroize();
+            return Err(MakeCredentialExecutionError::Randomness);
+        }
+        Some(HmacSecretMaterial::new(
+            hmac_secret_with_uv,
+            hmac_secret_without_uv,
+        ))
+    } else {
+        None
+    };
+    hmac_secret_with_uv.zeroize();
+    hmac_secret_without_uv.zeroize();
 
     let created =
         key_store.create_signing_key(SigningAlgorithm::Es256, key_policy, software_key_consent)?;
@@ -143,12 +170,19 @@ pub fn register_make_credential_with_uv(
             ));
         }
     };
-    let response = match encode_make_credential_response(
+    let extensions = request.hmac_secret.then(|| {
+        CborValue::Map(vec![(
+            CborValue::Text("hmac-secret".into()),
+            CborValue::Bool(true),
+        )])
+    });
+    let response = match encode_make_credential_response_with_extensions(
         request.rp_id_hash(),
         aaguid,
         credential_id.as_bytes(),
         &created.public_key,
         user_verified,
+        extensions,
     ) {
         Ok(response) => response,
         Err(_) => {
@@ -168,6 +202,7 @@ pub fn register_make_credential_with_uv(
         user_display_name: request.user.display_name.clone(),
         key_handle,
         public_key: Some(created.public_key.clone()),
+        hmac_secret,
         key_metadata: CredentialKeyMetadata {
             protection: match created.metadata.protection {
                 crate::KeyProtection::HardwareBacked => CredentialKeyProtection::HardwareBacked,

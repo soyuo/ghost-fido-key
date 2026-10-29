@@ -82,6 +82,7 @@ pub fn run(
     let service_thread = thread::spawn(move || {
         let profile = GetInfoProfile {
             versions: vec!["FIDO_2_0".into()],
+            extensions: Vec::new(),
             aaguid: [0; 16],
             options: vec![
                 ("rk".into(), true),

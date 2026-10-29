@@ -113,6 +113,35 @@ pub fn verify_authentication(shared_secret: &[u8; 32], message: &[u8], auth: &[u
     authenticate(shared_secret, message).ct_eq(auth).into()
 }
 
+/// Decrypts the hmac-secret salt input, authenticates it, computes one result
+/// per salt, and encrypts the packed output in place.
+pub fn process_hmac_secret(
+    shared_secret: &[u8; 32],
+    encrypted_salts: &mut [u8],
+    salt_auth: &[u8],
+    credential_secret: &[u8; 32],
+) -> Result<Vec<u8>, PinCryptoError> {
+    use hmac::Mac;
+    use zeroize::Zeroizing;
+    if !matches!(encrypted_salts.len(), 32 | 64)
+        || !verify_authentication(shared_secret, encrypted_salts, salt_auth)
+    {
+        return Err(PinCryptoError::InvalidCiphertext);
+    }
+    let mut salts = Zeroizing::new(encrypted_salts.to_vec());
+    decrypt(shared_secret, &mut salts)?;
+    let mut output = Zeroizing::new(Vec::with_capacity(salts.len()));
+    for salt in salts.chunks_exact(32) {
+        let mut mac =
+            HmacSha256::new_from_slice(credential_secret).expect("HMAC accepts a 32-byte key");
+        mac.update(salt);
+        let digest = Zeroizing::new(<[u8; 32]>::from(mac.finalize().into_bytes()));
+        output.extend_from_slice(&*digest);
+    }
+    encrypt(shared_secret, output.as_mut_slice())?;
+    Ok(core::mem::take(&mut *output))
+}
+
 #[must_use]
 pub fn pin_hash(pin: &[u8]) -> [u8; PIN_HASH_SIZE] {
     Sha256::digest(pin)[..PIN_HASH_SIZE]
