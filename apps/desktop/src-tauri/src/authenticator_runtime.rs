@@ -8,12 +8,12 @@ use std::{
 };
 
 use ghost_fido_core::{
-    Ctap2Request, Ctap2Response, Ctap2Status, CtapHidCommand, GetInfoProfile, encode_initialization,
+    Ctap2Request, Ctap2Response, Ctap2Status, CtapHidCommand, GetInfoProfile, SessionEvent,
+    encode_initialization,
 };
 use ghost_platform::{
-    AuthenticatorHidError, AuthenticatorHidEvent, AuthenticatorHidSession, AuthenticatorService,
-    AuthenticatorServiceConfig, KeyCreationPolicy, KeyStore, PlatformErrorKind, SoftwareKeyConsent,
-    UserVerification, VirtualHidBackend,
+    AuthenticatorHidSession, AuthenticatorService, AuthenticatorServiceConfig, KeyCreationPolicy,
+    KeyStore, PlatformErrorKind, SoftwareKeyConsent, UserVerification, VirtualHidBackend,
 };
 
 use crate::RuntimeStatus;
@@ -166,45 +166,52 @@ pub fn run(
 
         match backend.receive_output_report(IO_POLL_INTERVAL) {
             Ok(report) => match session.receive_report(&report, Instant::now()) {
-                Ok(AuthenticatorHidEvent::Reports(reports)) => {
-                    if let Err(error) = send_reports(backend.as_mut(), &reports) {
-                        runtime_error = Some(error.detail);
-                        break;
-                    }
-                }
-                Ok(AuthenticatorHidEvent::Ctap2Request { channel, request }) => {
-                    if service_tx
-                        .send(ServiceCommand::Request { channel, request })
-                        .is_err()
-                    {
-                        runtime_error = Some("Authenticator service is unavailable.".into());
-                        break;
-                    }
-                    active_request = Some((channel, false, Instant::now()));
-                }
-                Ok(AuthenticatorHidEvent::Cancelled(channel)) => {
-                    if active_request
-                        .is_some_and(|(active_channel, _, _)| active_channel == channel)
-                    {
-                        let _ = service_tx.send(ServiceCommand::Cancel { channel });
-                        if let Some((_, cancelled, _)) = &mut active_request {
-                            *cancelled = true;
+                Ok((expired, event)) => {
+                    handle_expired_channels(expired, &service_tx, &mut active_request);
+                    match event {
+                        SessionEvent::Response(report) => {
+                            if let Err(error) =
+                                send_reports(backend.as_mut(), std::slice::from_ref(&report))
+                            {
+                                runtime_error = Some(error.detail);
+                                break;
+                            }
                         }
+                        SessionEvent::Responses(reports) => {
+                            if let Err(error) = send_reports(backend.as_mut(), &reports) {
+                                runtime_error = Some(error.detail);
+                                break;
+                            }
+                        }
+                        SessionEvent::Ctap2Request { channel, request } => {
+                            if service_tx
+                                .send(ServiceCommand::Request { channel, request })
+                                .is_err()
+                            {
+                                runtime_error =
+                                    Some("Authenticator service is unavailable.".into());
+                                break;
+                            }
+                            active_request = Some((channel, false, Instant::now()));
+                        }
+                        SessionEvent::Cancelled(channel) => {
+                            if active_request
+                                .is_some_and(|(active_channel, _, _)| active_channel == channel)
+                            {
+                                let _ = service_tx.send(ServiceCommand::Cancel { channel });
+                                if let Some((_, cancelled, _)) = &mut active_request {
+                                    *cancelled = true;
+                                }
+                            }
+                        }
+                        SessionEvent::Pending | SessionEvent::Message(_) => {}
                     }
                 }
-                Ok(AuthenticatorHidEvent::Pending | AuthenticatorHidEvent::Message(_)) => {}
-                Err(AuthenticatorHidError::Framing(_)) => {}
+                Err(_) => {}
             },
             Err(error) if error.kind == PlatformErrorKind::Timeout => {
                 let now = Instant::now();
-                for channel in session.expire(now) {
-                    let _ = service_tx.send(ServiceCommand::Cancel { channel });
-                    if active_request
-                        .is_some_and(|(active_channel, _, _)| active_channel == channel)
-                    {
-                        active_request = None;
-                    }
-                }
+                handle_expired_channels(session.expire(now), &service_tx, &mut active_request);
             }
             Err(error) => {
                 runtime_error = Some(error.detail);
@@ -265,6 +272,19 @@ fn send_reports(
         backend.send_input_report(report)?;
     }
     Ok(())
+}
+
+fn handle_expired_channels(
+    expired: Vec<u32>,
+    service: &std::sync::mpsc::Sender<ServiceCommand>,
+    active_request: &mut Option<(u32, bool, Instant)>,
+) {
+    for channel in expired {
+        let _ = service.send(ServiceCommand::Cancel { channel });
+        if active_request.is_some_and(|(active_channel, _, _)| active_channel == channel) {
+            *active_request = None;
+        }
+    }
 }
 
 fn return_store(

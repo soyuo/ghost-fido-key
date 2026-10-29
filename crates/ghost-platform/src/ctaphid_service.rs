@@ -4,23 +4,9 @@ use std::time::{Duration, Instant};
 
 use crate::UserVerification;
 use ghost_fido_core::{
-    Ctap2Request, Ctap2Response, CtapHidDispatch, CtapHidErrorCode, CtapHidSession, FrameError,
-    HID_REPORT_SIZE, SessionEvent, encode_error,
+    Ctap2Response, CtapHidErrorCode, CtapHidSession, FrameError, HID_REPORT_SIZE, SessionEvent,
+    encode_error,
 };
-
-#[derive(Debug)]
-pub enum AuthenticatorHidError {
-    Framing(FrameError),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AuthenticatorHidEvent {
-    Pending,
-    Reports(Vec<[u8; HID_REPORT_SIZE]>),
-    Cancelled(u32),
-    Message(CtapHidDispatch),
-    Ctap2Request { channel: u32, request: Ctap2Request },
-}
 
 /// Owns CTAPHID transport state while leaving CTAP2 execution to its caller.
 ///
@@ -51,33 +37,31 @@ impl<'verification> AuthenticatorHidSession<'verification> {
         &mut self,
         report: &[u8],
         now: Instant,
-    ) -> Result<AuthenticatorHidEvent, AuthenticatorHidError> {
-        self.expire(now);
-        let event = self
-            .hid
-            .receive(report, now)
-            .map_err(AuthenticatorHidError::Framing)?;
-        match event {
-            SessionEvent::Pending => Ok(AuthenticatorHidEvent::Pending),
-            SessionEvent::Response(report) => Ok(AuthenticatorHidEvent::Reports(vec![report])),
-            SessionEvent::Responses(reports) => Ok(AuthenticatorHidEvent::Reports(reports)),
+    ) -> Result<(Vec<u32>, SessionEvent), FrameError> {
+        let (expired, event) = self.hid.receive_with_expired(report, now)?;
+        self.handle_expired(&expired);
+        let event = match event {
+            event @ (SessionEvent::Pending
+            | SessionEvent::Response(_)
+            | SessionEvent::Responses(_)
+            | SessionEvent::Message(_)) => event,
             SessionEvent::Cancelled(channel) => {
                 if self.active_ctap2_channel == Some(channel) {
                     self.verification.cancel_pending();
                 }
-                Ok(AuthenticatorHidEvent::Cancelled(channel))
+                SessionEvent::Cancelled(channel)
             }
-            SessionEvent::Message(message) => Ok(AuthenticatorHidEvent::Message(message)),
             SessionEvent::Ctap2Request { channel, request } => {
                 if self.active_ctap2_channel.is_some() {
-                    let report = encode_error(channel, CtapHidErrorCode::ChannelBusy)
-                        .map_err(AuthenticatorHidError::Framing)?;
-                    return Ok(AuthenticatorHidEvent::Reports(vec![report]));
+                    let report = encode_error(channel, CtapHidErrorCode::ChannelBusy)?;
+                    SessionEvent::Response(report)
+                } else {
+                    self.active_ctap2_channel = Some(channel);
+                    SessionEvent::Ctap2Request { channel, request }
                 }
-                self.active_ctap2_channel = Some(channel);
-                Ok(AuthenticatorHidEvent::Ctap2Request { channel, request })
             }
-        }
+        };
+        Ok((expired, event))
     }
 
     /// Frames a completed authenticator response on its still-active channel.
@@ -95,6 +79,11 @@ impl<'verification> AuthenticatorHidSession<'verification> {
     /// Releases protocol and assertion state for channels whose CTAPHID lease expired.
     pub fn expire(&mut self, now: Instant) -> Vec<u32> {
         let expired = self.hid.expire(now);
+        self.handle_expired(&expired);
+        expired
+    }
+
+    fn handle_expired(&mut self, expired: &[u32]) {
         if self
             .active_ctap2_channel
             .is_some_and(|channel| expired.contains(&channel))
@@ -102,6 +91,5 @@ impl<'verification> AuthenticatorHidSession<'verification> {
             self.verification.cancel_pending();
             self.active_ctap2_channel = None;
         }
-        expired
     }
 }

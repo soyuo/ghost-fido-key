@@ -40,7 +40,7 @@ pub use assertion::{
 pub use authenticator::{
     AuthenticatorService, AuthenticatorServiceConfig, AuthenticatorServiceError,
 };
-pub use ctaphid_service::{AuthenticatorHidError, AuthenticatorHidEvent, AuthenticatorHidSession};
+pub use ctaphid_service::AuthenticatorHidSession;
 pub use registration::{
     MakeCredentialExecutionError, check_credential_exclusion, register_make_credential,
 };

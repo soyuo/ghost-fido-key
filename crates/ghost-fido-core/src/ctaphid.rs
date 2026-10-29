@@ -311,6 +311,26 @@ impl CtapHidSession {
 
     pub fn receive(&mut self, report: &[u8], now: Instant) -> Result<SessionEvent, FrameError> {
         self.expire(now);
+        self.receive_unexpired(report, now)
+    }
+
+    /// Processes one report and also returns channel leases that expired first.
+    /// This lets an adapter apply expiry side effects without running expiry twice.
+    pub fn receive_with_expired(
+        &mut self,
+        report: &[u8],
+        now: Instant,
+    ) -> Result<(Vec<u32>, SessionEvent), FrameError> {
+        let expired = self.expire(now);
+        let event = self.receive_unexpired(report, now)?;
+        Ok((expired, event))
+    }
+
+    fn receive_unexpired(
+        &mut self,
+        report: &[u8],
+        now: Instant,
+    ) -> Result<SessionEvent, FrameError> {
         ensure_report(report)?;
         let channel = u32::from_be_bytes(report[..4].try_into().expect("four bytes"));
         if channel == 0 {
