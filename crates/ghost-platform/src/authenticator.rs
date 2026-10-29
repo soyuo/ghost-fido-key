@@ -1,5 +1,6 @@
 //! CTAP2 command routing across the platform-independent core and providers.
 
+use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, VecDeque},
     time::{Duration, Instant},
@@ -25,6 +26,8 @@ use crate::{
 };
 
 const ASSERTION_CONTINUATION_TIMEOUT: Duration = Duration::from_secs(30);
+const CREDENTIAL_MANAGEMENT_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_CREDENTIAL_MANAGEMENT_CHANNELS: usize = 8;
 const RESET_POWER_UP_WINDOW: Duration = Duration::from_secs(10);
 const LEGACY_CHANNEL: u32 = u32::MAX;
 
@@ -33,6 +36,20 @@ struct AssertionContinuation {
     credentials: VecDeque<CredentialId>,
     expires_at: Instant,
     user_verified: bool,
+}
+
+struct CredentialManagementContinuation {
+    expires_at: Instant,
+    position: usize,
+    entries: CredentialManagementEntries,
+}
+
+enum CredentialManagementEntries {
+    RelyingParties(Vec<(String, [u8; 32], u64)>),
+    Credentials {
+        relying_party_id: String,
+        records: Vec<ghost_fido_core::CredentialRecord>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -57,6 +74,7 @@ pub struct AuthenticatorService<'a> {
     verification: &'a dyn UserVerification,
     config: AuthenticatorServiceConfig,
     assertion_continuations: BTreeMap<u32, AssertionContinuation>,
+    credential_management: BTreeMap<u32, CredentialManagementContinuation>,
     client_pin: ClientPinHandler,
     started_at: Instant,
 }
@@ -103,7 +121,20 @@ impl ClientPinHandler {
         message: &[u8],
         auth: &[u8],
         permission: u8,
-        relying_party_id: &str,
+        relying_party_id: Option<&str>,
+    ) -> Result<(), Ctap2Status> {
+        let relying_party_hash =
+            relying_party_id.map(|rp_id| Sha256::digest(rp_id.as_bytes()).into());
+        self.authorize_rp_hash(channel, message, auth, permission, relying_party_hash)
+    }
+
+    fn authorize_rp_hash(
+        &mut self,
+        channel: u32,
+        message: &[u8],
+        auth: &[u8],
+        permission: u8,
+        relying_party_hash: Option<[u8; 32]>,
     ) -> Result<(), Ctap2Status> {
         self.expire();
         let token = self
@@ -118,11 +149,35 @@ impl ClientPinHandler {
             return Err(Ctap2Status::PinAuthInvalid);
         }
         if token.permissions & permission == 0
-            || token
-                .relying_party_id
-                .as_deref()
-                .is_some_and(|allowed| allowed != relying_party_id)
+            || token.relying_party_id.as_deref().is_some_and(|allowed| {
+                Some(<[u8; 32]>::from(Sha256::digest(allowed.as_bytes()))) != relying_party_hash
+            })
         {
+            return Err(Ctap2Status::UnauthorizedPermission);
+        }
+        Ok(())
+    }
+
+    fn authorize_permission(
+        &mut self,
+        channel: u32,
+        message: &[u8],
+        auth: &[u8],
+        permission: u8,
+    ) -> Result<(), Ctap2Status> {
+        self.expire();
+        let token = self
+            .tokens
+            .get(&channel)
+            .ok_or(Ctap2Status::PinUvAuthTokenRequired)?;
+        if Instant::now() >= token.expires_at {
+            self.tokens.remove(&channel);
+            return Err(Ctap2Status::PinUvAuthTokenRequired);
+        }
+        if !client_pin_verify_authentication(&token.value, message, auth) {
+            return Err(Ctap2Status::PinAuthInvalid);
+        }
+        if token.permissions & permission == 0 {
             return Err(Ctap2Status::UnauthorizedPermission);
         }
         Ok(())
@@ -336,7 +391,7 @@ impl ClientPinHandler {
         else {
             return Ctap2Response::error(Ctap2Status::MissingParameter);
         };
-        if permissions == 0 || permissions & !0x03 != 0 {
+        if permissions == 0 || permissions & !0x07 != 0 {
             return Ctap2Response::error(Ctap2Status::UnauthorizedPermission);
         }
         let relying_party_id = match field(fields, 10) {
@@ -443,6 +498,55 @@ fn uint_field(fields: &[(CborValue, CborValue)], key: u64) -> Option<u64> {
     }
 }
 
+fn text_map_field<'a>(fields: &'a [(CborValue, CborValue)], key: &str) -> Option<&'a CborValue> {
+    fields
+        .iter()
+        .find(|(candidate, _)| *candidate == CborValue::Text(key.to_owned()))
+        .map(|(_, value)| value)
+}
+
+fn optional_text_field(fields: &[(CborValue, CborValue)], key: &str) -> Result<Option<String>, ()> {
+    match text_map_field(fields, key) {
+        None => Ok(None),
+        Some(CborValue::Text(value)) if value.len() <= 256 => Ok(Some(value.clone())),
+        _ => Err(()),
+    }
+}
+
+fn rp_response(entry: &(String, [u8; 32], u64), total: u64) -> Ctap2Response {
+    response_map(vec![
+        (
+            3,
+            CborValue::Map(vec![(
+                CborValue::Text("id".into()),
+                CborValue::Text(entry.0.clone()),
+            )]),
+        ),
+        (4, CborValue::Bytes(entry.1.to_vec())),
+        (5, CborValue::Unsigned(total)),
+    ])
+}
+
+fn user_entity(record: &ghost_fido_core::CredentialRecord) -> CborValue {
+    let mut fields = vec![(
+        CborValue::Text("id".into()),
+        CborValue::Bytes(record.user_handle.clone()),
+    )];
+    if let Some(name) = &record.user_name {
+        fields.push((
+            CborValue::Text("name".into()),
+            CborValue::Text(name.clone()),
+        ));
+    }
+    if let Some(name) = &record.user_display_name {
+        fields.push((
+            CborValue::Text("displayName".into()),
+            CborValue::Text(name.clone()),
+        ));
+    }
+    CborValue::Map(fields)
+}
+
 fn byte_field(fields: &[(CborValue, CborValue)], key: u64) -> Option<&[u8]> {
     match field(fields, key) {
         Some(CborValue::Bytes(value)) => Some(value),
@@ -477,6 +581,7 @@ impl<'a> AuthenticatorService<'a> {
             verification,
             config,
             assertion_continuations: BTreeMap::new(),
+            credential_management: BTreeMap::new(),
             client_pin: ClientPinHandler::default(),
             started_at: Instant::now(),
         })
@@ -499,6 +604,9 @@ impl<'a> AuthenticatorService<'a> {
         if command != Ctap2Command::GetNextAssertion {
             self.assertion_continuations.remove(&channel);
         }
+        if command != Ctap2Command::CredentialManagement {
+            self.credential_management.remove(&channel);
+        }
         self.client_pin.expire();
         match command {
             Ctap2Command::GetInfo => {
@@ -507,6 +615,8 @@ impl<'a> AuthenticatorService<'a> {
                 }
                 let mut profile = self.config.get_info.clone();
                 let pin_is_set = self.store.pin_state().verifier().is_some();
+                let credential_management_ready =
+                    pin_is_set && self.ensure_credential_management_metadata();
                 let mut client_pin_option_present = false;
                 for (name, value) in &mut profile.options {
                     if name == "clientPin" {
@@ -516,6 +626,17 @@ impl<'a> AuthenticatorService<'a> {
                 }
                 if !client_pin_option_present {
                     profile.options.push(("clientPin".into(), pin_is_set));
+                }
+                if let Some((_, value)) = profile
+                    .options
+                    .iter_mut()
+                    .find(|(name, _)| name == "credMgmt")
+                {
+                    *value = credential_management_ready;
+                } else {
+                    profile
+                        .options
+                        .push(("credMgmt".into(), credential_management_ready));
                 }
                 profile.pin_uv_auth_protocols = vec![u64::from(PIN_UV_AUTH_PROTOCOL)];
                 match GetInfoHandler::new(&profile) {
@@ -636,6 +757,9 @@ impl<'a> AuthenticatorService<'a> {
             Ctap2Command::ClientPin => {
                 Ok(self.client_pin.handle(channel, decoded_payload, self.store))
             }
+            Ctap2Command::CredentialManagement => {
+                Ok(self.handle_credential_management(channel, decoded_payload))
+            }
             Ctap2Command::Reset => {
                 if !payload.is_empty() {
                     return Ok(Ctap2Response::error(Ctap2Status::InvalidLength));
@@ -686,6 +810,7 @@ impl<'a> AuthenticatorService<'a> {
                     return Ok(Ctap2Response::error(Ctap2Status::Other));
                 }
                 self.assertion_continuations.clear();
+                self.credential_management.clear();
                 self.client_pin.clear_all();
                 Ok(Ctap2Response::error(Ctap2Status::Success))
             }
@@ -695,12 +820,455 @@ impl<'a> AuthenticatorService<'a> {
 
     pub(crate) fn clear_channel(&mut self, channel: u32) {
         self.assertion_continuations.remove(&channel);
+        self.credential_management.remove(&channel);
     }
 
     /// Clears per-channel state after the transport reports cancellation or expiry.
     pub fn cancel_channel(&mut self, channel: u32) {
         self.clear_channel(channel);
+        self.credential_management.remove(&channel);
         self.client_pin.clear_channel(channel);
+    }
+
+    fn ensure_credential_management_metadata(&mut self) -> bool {
+        let records = self.store.discoverable_records();
+        for record in records {
+            if record.relying_party_id.is_none() {
+                return false;
+            }
+            if record.public_key.is_some() {
+                continue;
+            }
+            let Ok(reference) = std::str::from_utf8(record.key_handle.as_bytes()) else {
+                return false;
+            };
+            let Ok(public_key) = self.key_store.public_key(&KeyReference::new(reference)) else {
+                return false;
+            };
+            if self.store.set_public_key(&record.id, public_key).is_err() {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn handle_credential_management(
+        &mut self,
+        channel: u32,
+        value: Option<CborValue>,
+    ) -> Ctap2Response {
+        let Some(CborValue::Map(fields)) = value else {
+            return Ctap2Response::error(Ctap2Status::CborUnexpectedType);
+        };
+        if fields
+            .iter()
+            .enumerate()
+            .any(|(index, (key, _))| fields[..index].iter().any(|(previous, _)| previous == key))
+            || fields
+                .iter()
+                .any(|(key, _)| !matches!(key, CborValue::Unsigned(1..=4)))
+        {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        }
+        let Some(subcommand) = uint_field(&fields, 1).and_then(|value| u8::try_from(value).ok())
+        else {
+            return Ctap2Response::error(Ctap2Status::MissingParameter);
+        };
+        let params = field(&fields, 2);
+        let protocol = uint_field(&fields, 3);
+        let Some(auth) = byte_field(&fields, 4) else {
+            return Ctap2Response::error(Ctap2Status::PinUvAuthTokenRequired);
+        };
+        if protocol != Some(u64::from(PIN_UV_AUTH_PROTOCOL))
+            || auth.len() != PIN_UV_AUTH_PARAMETER_SIZE
+        {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        }
+        let parameter_value = params.cloned().unwrap_or(CborValue::Map(Vec::new()));
+        let CborValue::Map(parameter_fields) = &parameter_value else {
+            return Ctap2Response::error(Ctap2Status::CborUnexpectedType);
+        };
+        if parameter_fields
+            .iter()
+            .enumerate()
+            .any(|(index, (key, _))| {
+                parameter_fields[..index]
+                    .iter()
+                    .any(|(previous, _)| previous == key)
+            })
+        {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        }
+        let mut auth_message = vec![subcommand];
+        if params.is_some() {
+            auth_message.extend_from_slice(&encode_cbor(&parameter_value));
+        }
+        let auth: &[u8; PIN_UV_AUTH_PARAMETER_SIZE] = match auth.try_into() {
+            Ok(auth) => auth,
+            Err(_) => return Ctap2Response::error(Ctap2Status::InvalidParameter),
+        };
+
+        match subcommand {
+            1 => {
+                if params.is_some() {
+                    return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                }
+                if let Err(status) =
+                    self.client_pin
+                        .authorize(channel, &auth_message, auth, 0x04, None)
+                {
+                    return Ctap2Response::error(status);
+                }
+                if !self.can_start_credential_management(channel) {
+                    return Ctap2Response::error(Ctap2Status::ChannelBusy);
+                }
+                let credentials = self.store.discoverable_records();
+                let count = credentials.len() as u64;
+                response_map(vec![
+                    (1, CborValue::Unsigned(count)),
+                    (
+                        2,
+                        CborValue::Unsigned(self.store.remaining_capacity() as u64),
+                    ),
+                ])
+            }
+            2 => {
+                if params.is_some() {
+                    return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                }
+                if let Err(status) =
+                    self.client_pin
+                        .authorize(channel, &auth_message, auth, 0x04, None)
+                {
+                    return Ctap2Response::error(status);
+                }
+                let mut groups = BTreeMap::<String, ([u8; 32], u64)>::new();
+                for record in self.store.discoverable_records() {
+                    let Some(rp_id) = record.relying_party_id else {
+                        return Ctap2Response::error(Ctap2Status::Other);
+                    };
+                    if <[u8; 32]>::from(Sha256::digest(rp_id.as_bytes())) != record.rp_id_hash {
+                        return Ctap2Response::error(Ctap2Status::Other);
+                    }
+                    let entry = groups.entry(rp_id).or_insert((record.rp_id_hash, 0));
+                    if entry.0 != record.rp_id_hash {
+                        return Ctap2Response::error(Ctap2Status::Other);
+                    }
+                    entry.1 = entry.1.saturating_add(1);
+                }
+                if groups.is_empty() {
+                    return Ctap2Response::error(Ctap2Status::NoCredentials);
+                }
+                let entries = groups
+                    .into_iter()
+                    .map(|(id, (hash, count))| (id, hash, count))
+                    .collect::<Vec<_>>();
+                let total = entries.len() as u64;
+                let first = entries[0].clone();
+                self.credential_management.insert(
+                    channel,
+                    CredentialManagementContinuation {
+                        expires_at: Instant::now() + CREDENTIAL_MANAGEMENT_TIMEOUT,
+                        position: 1,
+                        entries: CredentialManagementEntries::RelyingParties(entries),
+                    },
+                );
+                rp_response(&first, total)
+            }
+            3 => {
+                if params.is_some() {
+                    return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                }
+                if let Err(status) =
+                    self.client_pin
+                        .authorize(channel, &auth_message, auth, 0x04, None)
+                {
+                    return Ctap2Response::error(status);
+                }
+                self.next_credential_management_rp(channel)
+            }
+            4 => {
+                if parameter_fields.len() != 1 || field(parameter_fields, 2).is_some() {
+                    return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                }
+                let Some(CborValue::Bytes(rp_hash)) = field(parameter_fields, 1) else {
+                    return Ctap2Response::error(Ctap2Status::MissingParameter);
+                };
+                let Ok(rp_hash): Result<[u8; 32], _> = rp_hash.as_slice().try_into() else {
+                    return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                };
+                if let Err(status) = self.client_pin.authorize_rp_hash(
+                    channel,
+                    &auth_message,
+                    auth,
+                    0x04,
+                    Some(rp_hash),
+                ) {
+                    return Ctap2Response::error(status);
+                }
+                if !self.can_start_credential_management(channel) {
+                    return Ctap2Response::error(Ctap2Status::ChannelBusy);
+                }
+                let records = self.store.discoverable_records();
+                let matching = records
+                    .iter()
+                    .filter(|record| record.rp_id_hash == rp_hash)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let Some(rp_id) = matching
+                    .first()
+                    .and_then(|record| record.relying_party_id.clone())
+                else {
+                    return Ctap2Response::error(Ctap2Status::NoCredentials);
+                };
+                if matching.iter().any(|record| {
+                    record.relying_party_id.as_deref() != Some(rp_id.as_str())
+                        || record.rp_id_hash != rp_hash
+                }) {
+                    return Ctap2Response::error(Ctap2Status::Other);
+                }
+                if matching.is_empty() {
+                    return Ctap2Response::error(Ctap2Status::NoCredentials);
+                }
+                let total = matching.len() as u64;
+                let first = matching[0].clone();
+                self.credential_management.insert(
+                    channel,
+                    CredentialManagementContinuation {
+                        expires_at: Instant::now() + CREDENTIAL_MANAGEMENT_TIMEOUT,
+                        position: 1,
+                        entries: CredentialManagementEntries::Credentials {
+                            relying_party_id: rp_id,
+                            records: matching,
+                        },
+                    },
+                );
+                self.credential_response(&first, total)
+            }
+            5 => {
+                let rp_id = match self.credential_management.get(&channel) {
+                    Some(CredentialManagementContinuation {
+                        entries:
+                            CredentialManagementEntries::Credentials {
+                                relying_party_id, ..
+                            },
+                        expires_at,
+                        ..
+                    }) if Instant::now() < *expires_at => relying_party_id.clone(),
+                    _ => return Ctap2Response::error(Ctap2Status::NoCredentials),
+                };
+                if params.is_some() {
+                    return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                }
+                if let Err(status) =
+                    self.client_pin
+                        .authorize(channel, &auth_message, auth, 0x04, Some(&rp_id))
+                {
+                    return Ctap2Response::error(status);
+                }
+                self.next_credential_management_credential(channel)
+            }
+            6 | 7 => {
+                if (subcommand == 6 && parameter_fields.len() != 1)
+                    || (subcommand == 7 && parameter_fields.len() != 2)
+                {
+                    return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                }
+                let Some(CborValue::Map(descriptor)) = field(parameter_fields, 2) else {
+                    return Ctap2Response::error(Ctap2Status::MissingParameter);
+                };
+                if descriptor.len() != 2
+                    || text_map_field(descriptor, "type")
+                        != Some(&CborValue::Text("public-key".into()))
+                    || descriptor.iter().enumerate().any(|(index, (key, _))| {
+                        descriptor[..index]
+                            .iter()
+                            .any(|(previous, _)| previous == key)
+                    })
+                {
+                    return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                }
+                let Some(CborValue::Bytes(id_bytes)) = text_map_field(descriptor, "id") else {
+                    return Ctap2Response::error(Ctap2Status::MissingParameter);
+                };
+                let Ok(id) = CredentialId::new(id_bytes.to_vec()) else {
+                    return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                };
+                if let Err(status) =
+                    self.client_pin
+                        .authorize_permission(channel, &auth_message, auth, 0x04)
+                {
+                    return Ctap2Response::error(status);
+                }
+                let Some(record) = self
+                    .store
+                    .discoverable_records()
+                    .into_iter()
+                    .find(|record| record.id == id)
+                else {
+                    return Ctap2Response::error(Ctap2Status::NoCredentials);
+                };
+                let Some(rp_id) = record.relying_party_id.as_deref() else {
+                    return Ctap2Response::error(Ctap2Status::Other);
+                };
+                if let Err(status) =
+                    self.client_pin
+                        .authorize(channel, &auth_message, auth, 0x04, Some(rp_id))
+                {
+                    return Ctap2Response::error(status);
+                }
+                if subcommand == 6 {
+                    let Ok(reference) = std::str::from_utf8(record.key_handle.as_bytes()) else {
+                        return Ctap2Response::error(Ctap2Status::Other);
+                    };
+                    if self
+                        .key_store
+                        .delete_key(&KeyReference::new(reference))
+                        .is_err()
+                    {
+                        return Ctap2Response::error(Ctap2Status::Other);
+                    }
+                    match self.store.remove_by_id(&id) {
+                        Ok(_) => Ctap2Response::error(Ctap2Status::Success),
+                        Err(_) => Ctap2Response::error(Ctap2Status::Other),
+                    }
+                } else {
+                    let Some(CborValue::Map(user)) = field(parameter_fields, 3) else {
+                        return Ctap2Response::error(Ctap2Status::MissingParameter);
+                    };
+                    if user.is_empty()
+                        || (text_map_field(user, "name").is_none()
+                            && text_map_field(user, "displayName").is_none())
+                        || user.iter().any(|(key, _)| {
+                            !matches!(key, CborValue::Text(name) if ["id", "name", "displayName"].contains(&name.as_str()))
+                        })
+                        || user.iter().enumerate().any(|(index, (key, _))| {
+                            user[..index].iter().any(|(previous, _)| previous == key)
+                        })
+                    {
+                        return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                    }
+                    let Some(CborValue::Bytes(user_id)) = text_map_field(user, "id") else {
+                        return Ctap2Response::error(Ctap2Status::MissingParameter);
+                    };
+                    let name = optional_text_field(user, "name");
+                    let display_name = optional_text_field(user, "displayName");
+                    let (Ok(name), Ok(display_name)) = (name, display_name) else {
+                        return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                    };
+                    match self
+                        .store
+                        .update_user_labels(&id, user_id, name, display_name)
+                    {
+                        Ok(()) => Ctap2Response::error(Ctap2Status::Success),
+                        Err(_) => Ctap2Response::error(Ctap2Status::InvalidParameter),
+                    }
+                }
+            }
+            _ => Ctap2Response::error(Ctap2Status::InvalidParameter),
+        }
+    }
+
+    fn next_credential_management_rp(&mut self, channel: u32) -> Ctap2Response {
+        let Some(state) = self.credential_management.get_mut(&channel) else {
+            return Ctap2Response::error(Ctap2Status::NoCredentials);
+        };
+        if Instant::now() >= state.expires_at {
+            self.credential_management.remove(&channel);
+            return Ctap2Response::error(Ctap2Status::NoCredentials);
+        }
+        let CredentialManagementEntries::RelyingParties(entries) = &state.entries else {
+            return Ctap2Response::error(Ctap2Status::NotAllowed);
+        };
+        let Some(entry) = entries.get(state.position).cloned() else {
+            self.credential_management.remove(&channel);
+            return Ctap2Response::error(Ctap2Status::NoCredentials);
+        };
+        state.position += 1;
+        rp_response(&entry, entries.len() as u64)
+    }
+
+    fn can_start_credential_management(&mut self, channel: u32) -> bool {
+        let now = Instant::now();
+        self.credential_management
+            .retain(|_, state| now < state.expires_at);
+        self.credential_management.contains_key(&channel)
+            || self.credential_management.len() < MAX_CREDENTIAL_MANAGEMENT_CHANNELS
+    }
+
+    fn next_credential_management_credential(&mut self, channel: u32) -> Ctap2Response {
+        let Some(state) = self.credential_management.get_mut(&channel) else {
+            return Ctap2Response::error(Ctap2Status::NoCredentials);
+        };
+        if Instant::now() >= state.expires_at {
+            self.credential_management.remove(&channel);
+            return Ctap2Response::error(Ctap2Status::NoCredentials);
+        }
+        let CredentialManagementEntries::Credentials { records, .. } = &state.entries else {
+            return Ctap2Response::error(Ctap2Status::NotAllowed);
+        };
+        let Some(record) = records.get(state.position).cloned() else {
+            self.credential_management.remove(&channel);
+            return Ctap2Response::error(Ctap2Status::NoCredentials);
+        };
+        state.position += 1;
+        let total = records.len() as u64;
+        self.credential_response(&record, total)
+    }
+
+    fn credential_response(
+        &mut self,
+        record: &ghost_fido_core::CredentialRecord,
+        total: u64,
+    ) -> Ctap2Response {
+        let public_key = if let Some(key) = &record.public_key {
+            key.clone()
+        } else {
+            let Ok(reference) = std::str::from_utf8(record.key_handle.as_bytes()) else {
+                return Ctap2Response::error(Ctap2Status::Other);
+            };
+            let Ok(key) = self.key_store.public_key(&KeyReference::new(reference)) else {
+                return Ctap2Response::error(Ctap2Status::Other);
+            };
+            if self.store.set_public_key(&record.id, key.clone()).is_err() {
+                return Ctap2Response::error(Ctap2Status::Other);
+            }
+            key
+        };
+        let user = user_entity(record);
+        response_map(vec![
+            (6, user),
+            (
+                7,
+                CborValue::Map(vec![
+                    (
+                        CborValue::Text("type".into()),
+                        CborValue::Text("public-key".into()),
+                    ),
+                    (
+                        CborValue::Text("id".into()),
+                        CborValue::Bytes(record.id.as_bytes().to_vec()),
+                    ),
+                ]),
+            ),
+            (
+                8,
+                CborValue::Map(vec![
+                    (CborValue::Unsigned(1), CborValue::Unsigned(2)),
+                    (CborValue::Unsigned(3), CborValue::Negative(-7)),
+                    (CborValue::Negative(-1), CborValue::Unsigned(1)),
+                    (
+                        CborValue::Negative(-2),
+                        CborValue::Bytes(public_key.x.to_vec()),
+                    ),
+                    (
+                        CborValue::Negative(-3),
+                        CborValue::Bytes(public_key.y.to_vec()),
+                    ),
+                ]),
+            ),
+            (9, CborValue::Unsigned(total)),
+        ])
     }
 
     fn verify_pin_authorization(
@@ -719,7 +1287,7 @@ impl<'a> AuthenticatorService<'a> {
                     client_data_hash,
                     &auth,
                     permission,
-                    relying_party_id,
+                    Some(relying_party_id),
                 )?;
                 Ok(true)
             }

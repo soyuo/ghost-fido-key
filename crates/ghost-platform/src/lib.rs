@@ -377,6 +377,13 @@ pub trait KeyStore: Send + Sync {
         digest: &[u8],
     ) -> Result<Vec<u8>, PlatformError>;
 
+    /// Returns public ES256 coordinates for a persisted credential key.
+    /// Implementations must never expose private key material.
+    fn public_key(
+        &self,
+        key: &KeyReference,
+    ) -> Result<ghost_fido_core::Es256PublicKey, PlatformError>;
+
     fn delete_key(&self, key: &KeyReference) -> Result<(), PlatformError>;
 }
 
@@ -521,6 +528,17 @@ impl KeyStore for UnavailableBackend {
             PlatformErrorKind::KeyStoreUnavailable,
             HostPlatform::current(),
             "key deletion is unavailable because key storage is not implemented",
+        ))
+    }
+
+    fn public_key(
+        &self,
+        _key: &KeyReference,
+    ) -> Result<ghost_fido_core::Es256PublicKey, PlatformError> {
+        Err(PlatformError::new(
+            PlatformErrorKind::KeyStoreUnavailable,
+            HostPlatform::current(),
+            "public-key retrieval is unavailable because key storage is not implemented",
         ))
     }
 }

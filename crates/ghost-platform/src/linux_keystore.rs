@@ -198,6 +198,26 @@ impl KeyStore for LinuxKeyStore {
         Ok(signature.to_bytes().to_vec())
     }
 
+    fn public_key(&self, reference: &KeyReference) -> Result<Es256PublicKey, PlatformError> {
+        let private_bytes = Self::load_private_key(reference)?;
+        let signing_key = SigningKey::from_slice(private_bytes.as_ref())
+            .map_err(|_| Self::fail("stored software signing key is invalid"))?;
+        let encoded = signing_key.verifying_key().to_encoded_point(false);
+        if encoded.as_bytes().len() != 65 || encoded.as_bytes()[0] != 0x04 {
+            return Err(Self::fail(
+                "stored key returned invalid P-256 public coordinates",
+            ));
+        }
+        Ok(Es256PublicKey {
+            x: encoded.as_bytes()[1..33]
+                .try_into()
+                .expect("length checked"),
+            y: encoded.as_bytes()[33..65]
+                .try_into()
+                .expect("length checked"),
+        })
+    }
+
     fn delete_key(&self, reference: &KeyReference) -> Result<(), PlatformError> {
         let key_id = Self::key_id(reference)?;
         let service = SecretService::connect(EncryptionType::Dh)

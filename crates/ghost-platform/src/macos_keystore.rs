@@ -148,6 +148,10 @@ impl KeyStore for MacOsKeyStore {
         der_to_p1363(&der_signature)
     }
 
+    fn public_key(&self, reference: &KeyReference) -> Result<Es256PublicKey, PlatformError> {
+        Self::public_key(&Self::open_key(reference)?)
+    }
+
     fn delete_key(&self, reference: &KeyReference) -> Result<(), PlatformError> {
         Self::open_key(reference)?.delete().map_err(Self::fail)
     }
