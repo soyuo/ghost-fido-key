@@ -86,9 +86,10 @@ report traffic.
   `/p:GhostFidoVendorId=0x1234 /p:GhostFidoProductId=0x0001`. Replace these
   example values only with USB IDs assigned to the product. Do not use another
   vendor's IDs or claim a third-party identity. CI intentionally uses the zero
-  defaults. The current driver does not implement HID class requests or FIDO
-  traffic, and these properties do not authorize product identity or confer
-  readiness.
+  defaults. The source implements the development HID descriptor, class
+  requests, and report transport, but the status response advertises only
+  `CONTROLLER_READY`; these properties do not authorize product identity or
+  confer runtime readiness.
 - The CI package is unsigned and is not ready for end-user installation or
   product use. Signing and release distribution remain separate gates.
 - Test installation, elevation, reboot, upgrade, and removal on supported
