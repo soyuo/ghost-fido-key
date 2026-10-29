@@ -213,3 +213,72 @@ jobs:
             echo "The Debian package is missing the UHID udev rule" >&2
             exit 1
           fi
+
+  windows-arm64-desktop:
+    name: Build Windows ARM64 desktop development installer
+    runs-on: windows-11-vs2026-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify native Windows ARM64 runner
+        shell: pwsh
+        run: |
+          if ($env:PROCESSOR_ARCHITECTURE -ne 'ARM64') {
+            throw "Expected an ARM64 runner, got $env:PROCESSOR_ARCHITECTURE"
+          }
+          $rustInfo = (rustc -vV) -join "`n"
+          $rustInfo
+          if ($rustInfo -notmatch '(?m)^host: aarch64-pc-windows-msvc$') {
+            throw 'The Rust toolchain host is not Windows ARM64'
+          }
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix apps/desktop
+
+      - name: Build Windows ARM64 NSIS development installer
+        run: npm --prefix apps/desktop run tauri -- build --bundles nsis
+
+      - name: Verify Windows ARM64 app and installer architecture
+        shell: pwsh
+        run: |
+          $app = Get-Item -LiteralPath 'target/release/ghost-fido-desktop.exe'
+          $stream = [System.IO.File]::OpenRead($app.FullName)
+          try {
+            $reader = [System.IO.BinaryReader]::new($stream)
+            $stream.Position = 0x3C
+            $peOffset = $reader.ReadInt32()
+            $stream.Position = $peOffset
+            if ($reader.ReadUInt32() -ne 0x00004550) {
+              throw 'The desktop application does not have a valid PE signature'
+            }
+            if ($reader.ReadUInt16() -ne 0xAA64) {
+              throw 'The desktop application executable is not ARM64'
+            }
+          } finally {
+            $stream.Dispose()
+          }
+          $installer = Get-ChildItem -LiteralPath 'target/release/bundle/nsis' -Filter '*.exe' -File -Recurse | Select-Object -First 1
+          if ($null -eq $installer -or $installer.Length -eq 0) {
+            throw 'Tauri did not produce a non-empty Windows ARM64 NSIS installer'
+          }
+          $app | Select-Object FullName, Length
+          $installer | Select-Object FullName, Length
+
+      - name: Upload unsigned Windows ARM64 desktop development installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-arm64-unsigned-development-installer
+          path: target/release/bundle/nsis/**/*.exe
+          if-no-files-found: error
+          retention-days: 7
