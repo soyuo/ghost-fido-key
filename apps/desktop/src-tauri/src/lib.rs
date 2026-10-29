@@ -409,17 +409,24 @@ impl UserVerification for DesktopVerificationProvider {
                 if let Ok(mut pending) = self.pending.lock() {
                     pending.remove(&request_id);
                 }
+                let _ = self.app.emit("approval-cancelled", &request_id);
                 Err(PlatformError::new(
                     PlatformErrorKind::Timeout,
                     HostPlatform::current(),
                     "approval request timed out",
                 ))
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(PlatformError::new(
-                PlatformErrorKind::UserVerificationUnavailable,
-                HostPlatform::current(),
-                "approval response channel closed",
-            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if let Ok(mut pending) = self.pending.lock() {
+                    pending.remove(&request_id);
+                }
+                let _ = self.app.emit("approval-cancelled", &request_id);
+                Err(PlatformError::new(
+                    PlatformErrorKind::UserVerificationUnavailable,
+                    HostPlatform::current(),
+                    "approval response channel closed",
+                ))
+            }
         }
     }
 
