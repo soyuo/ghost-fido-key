@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use ghost_fido_core::Es256PublicKey;
 use p256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner};
+use p256::elliptic_curve::sec1::ToSec1Point;
 use secret_service::{EncryptionType, blocking::SecretService};
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -130,7 +131,7 @@ impl KeyStore for LinuxKeyStore {
         }
         let signing_key =
             signing_key.ok_or_else(|| Self::fail("could not generate a valid P-256 scalar"))?;
-        let point = signing_key.verifying_key().to_encoded_point(false);
+        let point = signing_key.verifying_key().to_sec1_point(false);
         let encoded_point = point.as_bytes();
         if encoded_point.len() != 65 || encoded_point[0] != 0x04 {
             return Err(Self::fail(
@@ -202,7 +203,7 @@ impl KeyStore for LinuxKeyStore {
         let private_bytes = Self::load_private_key(reference)?;
         let signing_key = SigningKey::from_slice(private_bytes.as_ref())
             .map_err(|_| Self::fail("stored software signing key is invalid"))?;
-        let encoded = signing_key.verifying_key().to_encoded_point(false);
+        let encoded = signing_key.verifying_key().to_sec1_point(false);
         if encoded.as_bytes().len() != 65 || encoded.as_bytes()[0] != 0x04 {
             return Err(Self::fail(
                 "stored key returned invalid P-256 public coordinates",
