@@ -1,5 +1,5 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -57,6 +57,7 @@ impl Outcome {
 
 struct BestEffortLogger {
     file: Mutex<Option<LogFile>>,
+    log_path: Option<PathBuf>,
 }
 
 struct LogFile {
@@ -66,9 +67,13 @@ struct LogFile {
 
 impl BestEffortLogger {
     fn new(log_dir: Option<PathBuf>) -> Self {
+        let log_path = log_dir
+            .as_ref()
+            .map(|directory| directory.join("events.log"));
         let file = log_dir.and_then(open_log_file);
         Self {
             file: Mutex::new(file),
+            log_path,
         }
     }
 }
@@ -151,4 +156,63 @@ pub(crate) fn record(event: Event, outcome: Outcome) {
     } else {
         log::info!(target: AUDIT_TARGET, "event={} outcome={}", event.as_str(), outcome.as_str());
     }
+}
+
+pub(crate) fn read_log() -> Option<String> {
+    let path = LOGGER.get()?.log_path.as_ref()?;
+    let file = File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_LOG_BYTES).read_to_end(&mut bytes).ok()?;
+
+    let contents = String::from_utf8_lossy(&bytes);
+    let mut redacted = String::new();
+    for line in contents.lines() {
+        let Some(line) = sanitize_log_line(line) else {
+            continue;
+        };
+        if redacted.len().saturating_add(line.len() + 1) > MAX_LOG_BYTES as usize {
+            break;
+        }
+        redacted.push_str(&line);
+        redacted.push('\n');
+    }
+    Some(redacted)
+}
+
+fn sanitize_log_line(line: &str) -> Option<String> {
+    let (timestamp, remainder) = line.split_once(" [")?;
+    if timestamp.len() > 20
+        || timestamp.is_empty()
+        || !timestamp.bytes().all(|byte| byte.is_ascii_digit())
+        || timestamp.parse::<u64>().is_err()
+    {
+        return None;
+    }
+
+    let (level, fields) = remainder.split_once("] ")?;
+    let fields = fields.strip_prefix("event=")?;
+    let (event, outcome) = fields.split_once(" outcome=")?;
+    let known_event = matches!(
+        event,
+        "runtime_start_requested"
+            | "runtime_started"
+            | "runtime_stopped"
+            | "runtime_failure"
+            | "credential_store_initialization"
+            | "user_approval"
+            | "client_pin_configuration"
+            | "credential_deletion"
+            | "authenticator_reset"
+    );
+    let valid_level_and_outcome = matches!(
+        (level, outcome),
+        ("INFO", "success" | "rejected") | ("WARN", "failure")
+    );
+    if !known_event || !valid_level_and_outcome {
+        return None;
+    }
+
+    Some(format!(
+        "{timestamp} [{level}] event={event} outcome={outcome}"
+    ))
 }

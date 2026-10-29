@@ -62,6 +62,9 @@ h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.025em; }
 .pin-policy, .pin-result { margin: 0; color: #8995a5; font-size: 11px; line-height: 1.5; }
 .pin-result.is-error { color: #f1b6b6; }
 .credential-list { display: grid; gap: 10px; margin-top: 16px; padding: 20px; border: 1px solid #303b48; border-radius: 13px; background: rgba(19, 26, 37, 0.94); }
+.diagnostic-panel { display: grid; gap: 10px; margin-top: 16px; padding: 20px; border: 1px solid #303b48; border-radius: 13px; background: rgba(19, 26, 37, 0.94); }
+.diagnostic-description { margin: 0; color: #8995a5; font-size: 12px; line-height: 1.5; }
+.diagnostic-log { max-height: 300px; overflow: auto; margin: 0; padding: 12px; border: 1px solid #303946; border-radius: 8px; color: #c4cdd8; background: #111821; font: 11px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .credential-list-heading, .credential-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .credential-list-actions { display: flex; align-items: center; gap: 8px; }
 .credential-list-heading { margin-bottom: 4px; }

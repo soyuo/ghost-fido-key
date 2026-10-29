@@ -56,6 +56,10 @@ function App() {
   const [pinAction, setPinAction] = useState(false);
   const [pinError, setPinError] = useState<string | null>(null);
   const [pinMessage, setPinMessage] = useState<string | null>(null);
+  const [showDiagnosticLog, setShowDiagnosticLog] = useState(false);
+  const [diagnosticLog, setDiagnosticLog] = useState<string | null>(null);
+  const [diagnosticLogError, setDiagnosticLogError] = useState<string | null>(null);
+  const [diagnosticLogLoading, setDiagnosticLogLoading] = useState(false);
   const currentPinRef = useRef<HTMLInputElement>(null);
   const newPinRef = useRef<HTMLInputElement>(null);
   const confirmPinRef = useRef<HTMLInputElement>(null);
@@ -68,6 +72,19 @@ function App() {
       setCredentialError(null);
     } catch (cause) {
       setCredentialError(typeof cause === "string" ? cause : "자격 증명 목록을 불러오지 못했습니다.");
+    }
+  };
+
+  const loadDiagnosticLog = async () => {
+    setDiagnosticLogLoading(true);
+    setDiagnosticLogError(null);
+    try {
+      setDiagnosticLog(await invoke<string>("read_diagnostic_log"));
+    } catch {
+      setDiagnosticLog(null);
+      setDiagnosticLogError("Redacted diagnostic events are unavailable.");
+    } finally {
+      setDiagnosticLogLoading(false);
     }
   };
 
@@ -440,6 +457,49 @@ function App() {
                 : "Linux에서 인증기를 시작하려면 세션별 소프트웨어 키 사용 동의가 필요합니다."}</p>
         </div>
       </section>
+
+      {isTauri() && (
+        <section className="diagnostic-panel" aria-label="Redacted diagnostic events">
+          <div className="credential-list-heading">
+            <div>
+              <p className="eyebrow">Local diagnostics</p>
+              <h2>Redacted events</h2>
+            </div>
+            <div className="credential-list-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowDiagnosticLog(true);
+                  void loadDiagnosticLog();
+                }}
+              >
+                {showDiagnosticLog ? "Refresh" : "View events"}
+              </button>
+              {showDiagnosticLog && (
+                <button type="button" onClick={() => setShowDiagnosticLog(false)}>
+                  Hide
+                </button>
+              )}
+            </div>
+          </div>
+          {showDiagnosticLog && (
+            <>
+              <p className="diagnostic-description">
+                Fixed event codes and coarse outcomes only. Entries stay on this device.
+              </p>
+              {diagnosticLogLoading ? (
+                <p className="status-message" role="status">Loading diagnostics…</p>
+              ) : diagnosticLogError ? (
+                <p className="status-message" role="status">{diagnosticLogError}</p>
+              ) : (
+                <pre className="diagnostic-log" aria-live="polite">
+                  {diagnosticLog || "No diagnostic events have been recorded."}
+                </pre>
+              )}
+            </>
+          )}
+        </section>
+      )}
 
       <footer className="app-footer">
         <span>{status?.productName ?? "Ghost FIDO Key"} {status?.productVersion ?? "0.1.0"}</span>
