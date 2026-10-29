@@ -2,12 +2,12 @@
 
 `AuthenticatorHidSession` owns transport-neutral `CtapHidSession` state. The
 transport owner passes each complete 64-byte output report to `receive_report`
-with a monotonic timestamp and sends reports returned in
-`AuthenticatorHidEvent::Reports` to the HID host. Initialization and ping
-responses are framed by the core session.
+with a monotonic timestamp. It returns expired channel IDs alongside the core
+`SessionEvent`, so the caller can clear channel-scoped service state while
+initialization, ping, error, and CTAP2 response reports use one event model.
 
 A completed CBOR request is emitted as
-`AuthenticatorHidEvent::Ctap2Request { channel, request }`. The caller executes
+`SessionEvent::Ctap2Request { channel, request }`. The caller executes
 it through `AuthenticatorService` and passes the response to
 `respond_ctap2`. This keeps the report loop available while the service waits
 for user approval. The adapter allows one active CTAP2 request at a time and
@@ -23,5 +23,6 @@ expiry event.
 
 This layer does not own an OS device handle, background thread, or event loop.
 Each platform backend remains responsible for attachment, report I/O, shutdown,
-and delivering reports to this adapter. The Tauri desktop app is not wired to a
-live backend yet.
+and delivering reports to this adapter. The desktop runtime clears service
+continuations when expiry is reported, whether expiry is discovered during
+report reception or while waiting for the next report.
