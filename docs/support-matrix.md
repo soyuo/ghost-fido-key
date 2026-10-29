@@ -35,6 +35,11 @@ device enumeration, FIDO discovery, CTAPHID exchange, CTAP2 execution, RP
 registration, assertion, and server-side signature verification. No such
 end-to-end result is currently recorded for any combination.
 
+The development-only [local WebAuthn test RP](../tools/webauthn-test-rp/README.md)
+provides a loopback relying party for the registration and assertion stages.
+It does not provide an authenticator or replace the OS, browser-discovery, HID,
+or CTAP evidence required for a support result.
+
 | OS / architecture | Browser | OS / browser versions | Registration | Assertion | Server signature verification | Result |
 | --- | --- | --- | --- | --- | --- | --- |
 | Ubuntu LTS x64 | Chrome | Not recorded | Not run | Not run | Not recorded | Not verified |
