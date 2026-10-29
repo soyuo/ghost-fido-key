@@ -5,9 +5,13 @@ use aes::{
     cipher::{BlockDecryptMut, BlockEncryptMut, KeyIvInit, block_padding::NoPadding},
 };
 use cbc::{Decryptor, Encryptor};
+use getrandom::SysRng;
 use hmac::{Hmac, Mac};
-use p256::{PublicKey, ecdh::EphemeralSecret, elliptic_curve::sec1::ToEncodedPoint};
-use rand_core::OsRng;
+use p256::{
+    PublicKey,
+    ecdh::EphemeralSecret,
+    elliptic_curve::{Generate, sec1::ToSec1Point},
+};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
@@ -98,15 +102,16 @@ pub struct PinKeyAgreement {
 
 impl PinKeyAgreement {
     #[must_use]
-    pub fn generate() -> Self {
-        let secret = EphemeralSecret::random(&mut OsRng);
+    pub fn generate() -> Result<Self, PinCryptoError> {
+        let secret = EphemeralSecret::try_generate_from_rng(&mut SysRng)
+            .map_err(|_| PinCryptoError::RandomGenerationFailed)?;
         let public_key = PublicKey::from(&secret);
-        Self { secret, public_key }
+        Ok(Self { secret, public_key })
     }
 
     #[must_use]
     pub fn cose_public_key(&self) -> Vec<u8> {
-        let point = self.public_key.to_encoded_point(false);
+        let point = self.public_key.to_sec1_point(false);
         encode(&CborValue::Map(vec![
             (CborValue::Unsigned(1), CborValue::Unsigned(2)),
             (CborValue::Unsigned(3), CborValue::Negative(-25)),
@@ -134,6 +139,7 @@ impl PinKeyAgreement {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PinCryptoError {
+    RandomGenerationFailed,
     InvalidPeerKey,
     InvalidCiphertext,
     InvalidPin,

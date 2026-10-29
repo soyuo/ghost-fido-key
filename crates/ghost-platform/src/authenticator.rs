@@ -231,7 +231,10 @@ impl ClientPinHandler {
                 CborValue::Unsigned(u64::from(store.pin_state().retries())),
             )]),
             2 => {
-                let agreement = PinKeyAgreement::generate();
+                let agreement = match PinKeyAgreement::generate() {
+                    Ok(agreement) => agreement,
+                    Err(_) => return Ctap2Response::error(Ctap2Status::Other),
+                };
                 let public_key = match decode_cbor(&agreement.cose_public_key()) {
                     Ok(value) => value,
                     Err(_) => return Ctap2Response::error(Ctap2Status::Other),
