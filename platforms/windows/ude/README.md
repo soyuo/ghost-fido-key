@@ -99,8 +99,9 @@ report traffic.
   defaults. The status response advertises all four source-implemented
   capability bits. The response exposes the configured IDs, but defaults both
   to zero, and Rust explicitly reports that a valid product-assigned VID/PID is
-  required. Identity data or capability bits alone do not confer runtime
-  readiness.
+  required. Together, valid assigned identity, all required capability bits,
+  and exact report sizes produce a `Configured` state that permits a runtime
+  start attempt; this is not proof of operational transport readiness.
 - The CI package is unsigned and is not ready for end-user installation or
   product use. Signing and release distribution remain separate gates.
 - Test installation, elevation, reboot, upgrade, and removal on supported
@@ -112,11 +113,13 @@ report traffic.
 
 CI compiles x64 and ARM64 `.sys` files and stages unsigned INF/SYS/CAT packages
 under the ignored `target/` directory. Those build outputs are not signed or
-ready for general installation. The source implements
-the descriptor, class-request, and report-transport paths, but real Windows
-runtime round-trip, assigned product VID/PID, signed packaging, installation,
-and browser discovery still require validation. Until those gates pass,
-`WindowsUdeBackend` reports unavailable and fails closed.
+ready for general installation. The source implements the descriptor,
+class-request, and report-transport paths. At runtime, valid assigned IDs and
+the required readiness profile allow the desktop to attempt attaching the
+configured backend. Successful attach still does not prove bidirectional
+report exchange or browser discovery. Signed packaging, installation, runtime
+round-trip, and Chrome/Edge WebAuthn continue to require direct validation;
+until then, the platform remains unverified and is not declared supported.
 
 ## References
 
