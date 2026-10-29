@@ -2,7 +2,7 @@
 
 Tauri 2 desktop shell with a React and TypeScript single-page frontend. The UI reads status from the Rust backend. Linux and Windows have platform-specific virtual HID adapters; macOS uses a Swift CoreHID bridge and remains unavailable until assigned product IDs and the signed virtual HID entitlement are configured.
 
-No OS/browser combination is currently declared supported. The [platform and browser support matrix](../../docs/support-matrix.md) separates CI build evidence from signed installation, virtual HID runtime, and end-to-end WebAuthn validation.
+No OS/browser combination is currently declared supported. The [platform and browser support matrix](../../docs/support-matrix.md) separates CI build evidence from signed installation, virtual HID runtime, and end-to-end WebAuthn validation. In the app, “backend ready” means only that local HID and credential-store prerequisites report ready; it does not mean browser WebAuthn support has been verified.
 
 ## Prerequisites
 

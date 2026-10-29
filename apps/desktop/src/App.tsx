@@ -241,7 +241,7 @@ function App() {
       <section className="hero" aria-labelledby="page-title">
         <p className="eyebrow">가상 인증기</p>
         <h1 id="page-title">보안 키 상태</h1>
-        <p className="intro">가상 FIDO 인증기의 연결 상태와 이 컴퓨터의 준비 상태를 확인합니다.</p>
+        <p className="intro">가상 FIDO HID 백엔드와 이 컴퓨터의 준비 상태를 확인합니다. 브라우저 WebAuthn 상호운용성은 아직 검증되지 않았으며, 현재 지원이 선언된 OS·브라우저 조합은 없습니다. 검증 현황은 저장소의 docs/support-matrix.md에서 확인할 수 있습니다.</p>
 
         <div className="status-card" aria-live="polite" aria-busy={!status && !error}>
           <div className="status-heading">
@@ -256,12 +256,12 @@ function App() {
                   : status?.virtualHidAvailable && status?.hostPlatform === "Linux"
                     ? "연결 대기"
                     : status?.virtualHidAvailable
-                      ? "사용 준비됨"
-                    : "사용할 수 없음"}
+                    ? "HID 백엔드 준비됨"
+                    : "HID 백엔드 사용 불가"}
               </h2>
             </div>
             <span className={`status-pill ${status?.virtualHidAvailable ? "pill-ready" : "pill-pending"}`}>
-              {status?.virtualHidAvailable ? "준비됨" : "개발 중"}
+              {status?.virtualHidAvailable ? "백엔드 준비" : "백엔드 미준비"}
             </span>
           </div>
           <p className="status-message">
@@ -435,7 +435,9 @@ function App() {
             ? "인증기가 실행 중입니다. 자격 증명 생성과 인증은 각각 사용자 승인이 필요합니다."
             : status?.hostPlatform === "Windows"
               ? "Windows에서는 검증된 UDE 드라이버와 TPM 보호 키 저장소가 준비된 경우에만 인증기를 시작할 수 있습니다."
-              : "Linux에서 인증기를 시작하려면 세션별 소프트웨어 키 사용 동의가 필요합니다."}</p>
+              : status?.hostPlatform === "macOS"
+                ? "macOS 인증기를 시작하려면 할당된 제품 ID와 Apple의 서명된 HID entitlement가 필요합니다."
+                : "Linux에서 인증기를 시작하려면 세션별 소프트웨어 키 사용 동의가 필요합니다."}</p>
         </div>
       </section>
 
