@@ -1,4 +1,6 @@
-use ghost_fido_core::{CredentialProtector, CredentialStore, ProductInfo};
+use ghost_fido_core::{
+    CredentialProtector, CredentialStore, PinManagementError, ProductInfo, configure_client_pin,
+};
 use ghost_platform::KeyReference;
 #[cfg(target_os = "linux")]
 use ghost_platform::LinuxKeyStore;
@@ -21,6 +23,7 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 struct DesktopState {
     credential_store: Arc<Mutex<Option<CredentialStore>>>,
@@ -511,6 +514,43 @@ fn with_stopped_credential_store<T>(
 }
 
 #[tauri::command]
+fn set_client_pin(
+    state: tauri::State<'_, DesktopState>,
+    current_pin: Option<String>,
+    new_pin: String,
+    confirmed: bool,
+) -> Result<(), String> {
+    if !confirmed {
+        return Err("Explicit confirmation is required to change the authenticator PIN.".into());
+    }
+    let current_pin = current_pin.map(|pin| Zeroizing::new(pin.into_bytes()));
+    let new_pin = Zeroizing::new(new_pin.into_bytes());
+    with_stopped_credential_store(&state, |store| {
+        configure_client_pin(
+            store,
+            current_pin.as_ref().map(|pin| pin.as_slice()),
+            new_pin.as_slice(),
+        )
+        .map_err(|error| match error {
+            PinManagementError::ProtectedStorageRequired => {
+                "Protected credential storage is required to configure a PIN.".into()
+            }
+            PinManagementError::CurrentPinRequired => "Enter the current authenticator PIN.".into(),
+            PinManagementError::PinNotSet => "No authenticator PIN is configured.".into(),
+            PinManagementError::PinBlocked => {
+                "The authenticator PIN is blocked. Reset the authenticator to configure a new PIN."
+                    .into()
+            }
+            PinManagementError::InvalidPin => {
+                "The new PIN does not meet the authenticator PIN policy.".into()
+            }
+            PinManagementError::InvalidCurrentPin => "The current PIN is incorrect.".into(),
+            PinManagementError::Persistence => "The protected PIN state could not be saved.".into(),
+        })
+    })
+}
+
+#[tauri::command]
 fn list_credentials(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<Vec<CredentialSummary>, String> {
@@ -663,7 +703,8 @@ pub fn run() {
             stop_authenticator,
             list_credentials,
             delete_credential,
-            reset_credentials
+            reset_credentials,
+            set_client_pin
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

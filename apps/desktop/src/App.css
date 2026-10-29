@@ -57,6 +57,14 @@ h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.025em; }
 .software-key-warning .eyebrow { margin-bottom: 8px; }
 .software-key-warning h2 { margin-bottom: 12px; }
 .software-key-warning p:not(.eyebrow) { color: #c6b797; font-size: 13px; line-height: 1.6; }
+.pin-settings { display: grid; gap: 12px; margin-top: 16px; padding: 18px; border: 1px solid #303b48; border-radius: 12px; background: rgba(19, 26, 37, 0.72); }
+.pin-settings h2 { margin: 0; font-size: 15px; }
+.pin-settings label { display: grid; gap: 6px; color: #aeb9c8; font-size: 12px; }
+.pin-settings input { width: 100%; box-sizing: border-box; padding: 9px 11px; border: 1px solid #465364; border-radius: 7px; color: #e8edf5; background: #111821; }
+.pin-settings input:focus-visible { outline: 2px solid #9fe2c0; outline-offset: 1px; }
+.pin-settings input:disabled { opacity: 0.6; }
+.pin-policy, .pin-result { margin: 0; color: #8995a5; font-size: 11px; line-height: 1.5; }
+.pin-result.is-error { color: #f1b6b6; }
 .credential-list { display: grid; gap: 10px; margin-top: 16px; padding: 20px; border: 1px solid #303b48; border-radius: 13px; background: rgba(19, 26, 37, 0.94); }
 .credential-list-heading, .credential-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .credential-list-actions { display: flex; align-items: center; gap: 8px; }

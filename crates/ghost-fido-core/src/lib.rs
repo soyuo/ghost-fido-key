@@ -16,7 +16,8 @@ pub use cbor::{
 pub use client_pin::{
     PIN_ENCRYPTED_SIZE, PIN_HASH_SIZE, PIN_MAX_UTF8_BYTES, PIN_MIN_CODEPOINTS,
     PIN_UV_AUTH_PARAMETER_SIZE, PIN_UV_AUTH_PROTOCOL, PinCryptoError, PinKeyAgreement,
-    authenticate as client_pin_authenticate, decrypt as client_pin_decrypt,
+    PinManagementError, authenticate as client_pin_authenticate,
+    configure_pin as configure_client_pin, decrypt as client_pin_decrypt,
     decrypt_pin as client_pin_decrypt_pin, encrypt as client_pin_encrypt,
     pin_hash as client_pin_hash, process_hmac_secret as client_pin_process_hmac_secret,
     validate_pin as client_pin_validate, verify_authentication as client_pin_verify_authentication,
