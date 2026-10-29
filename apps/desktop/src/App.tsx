@@ -10,7 +10,9 @@ type PlatformStatus = {
   virtualHidAvailable: boolean;
   deviceAttached: boolean;
   keyStorageStatus: string;
-  userVerificationStatus: string;
+  desktopApprovalStatus: string;
+  clientPinStatus: string;
+  nativeUserVerificationStatus: string;
   credentialStoreAvailable: boolean;
   credentialStoreStatus: string;
   statusMessage: string;
@@ -285,8 +287,16 @@ function App() {
               <dd>{status?.keyStorageStatus ?? "확인 중"}</dd>
             </div>
             <div>
-              <dt>사용자 확인</dt>
-              <dd>{status?.userVerificationStatus ?? "확인 중"}</dd>
+              <dt>앱 승인</dt>
+              <dd>{status?.desktopApprovalStatus ?? "확인 중"}</dd>
+            </div>
+            <div>
+              <dt>인증기 PIN</dt>
+              <dd>{status?.clientPinStatus ?? "확인 중"}</dd>
+            </div>
+            <div>
+              <dt>운영체제 사용자 확인</dt>
+              <dd>{status?.nativeUserVerificationStatus ?? "확인 중"}</dd>
             </div>
           </dl>
           <p
