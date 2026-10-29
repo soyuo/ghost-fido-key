@@ -22,6 +22,7 @@ use std::{
     time::Duration,
 };
 use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -333,6 +334,21 @@ impl UserVerification for DesktopVerificationProvider {
     }
 }
 
+fn confirm_destructive_action(app: &AppHandle, title: &str, message: &str) -> Result<(), String> {
+    let confirmed = app
+        .dialog()
+        .message(message)
+        .title(title)
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancel)
+        .blocking_show();
+    if confirmed {
+        Ok(())
+    } else {
+        Err("Action cancelled by the user.".into())
+    }
+}
+
 #[tauri::command]
 fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
     let product = ProductInfo::current();
@@ -515,17 +531,19 @@ fn with_stopped_credential_store<T>(
 
 #[tauri::command]
 fn set_client_pin(
+    app: AppHandle,
     state: tauri::State<'_, DesktopState>,
     current_pin: Option<String>,
     new_pin: String,
-    confirmed: bool,
 ) -> Result<(), String> {
-    if !confirmed {
-        return Err("Explicit confirmation is required to change the authenticator PIN.".into());
-    }
     let current_pin = current_pin.map(|pin| Zeroizing::new(pin.into_bytes()));
     let new_pin = Zeroizing::new(new_pin.into_bytes());
     with_stopped_credential_store(&state, |store| {
+        confirm_destructive_action(
+            &app,
+            "Change authenticator PIN",
+            "Set or change the authenticator PIN? The verifier will be stored in this computer's protected credential store.",
+        )?;
         configure_client_pin(
             store,
             current_pin.as_ref().map(|pin| pin.as_slice()),
@@ -577,17 +595,28 @@ fn list_credentials(
 
 #[tauri::command]
 fn delete_credential(
+    app: AppHandle,
     state: tauri::State<'_, DesktopState>,
     creation_order: u64,
-    confirmed: bool,
 ) -> Result<(), String> {
-    if !confirmed {
-        return Err("Explicit confirmation is required to delete a credential.".into());
-    }
     with_stopped_credential_store(&state, |store| {
         let credential = store
             .by_creation_order(creation_order)
             .ok_or_else(|| "The credential no longer exists.".to_owned())?;
+        let relying_party = credential
+            .relying_party_id
+            .as_deref()
+            .unwrap_or("unknown relying party");
+        let user = credential
+            .user_display_name
+            .as_deref()
+            .or(credential.user_name.as_deref())
+            .unwrap_or("unknown user");
+        confirm_destructive_action(
+            &app,
+            "Delete credential",
+            &format!("Delete the credential for {user} at {relying_party}? This cannot be undone."),
+        )?;
         let reference = String::from_utf8(credential.key_handle.as_bytes().to_vec())
             .map_err(|_| "The credential key reference is invalid.".to_owned())?;
         management_key_store()?
@@ -609,13 +638,15 @@ fn delete_credential(
 
 #[tauri::command]
 fn reset_credentials(
+    app: AppHandle,
     state: tauri::State<'_, DesktopState>,
-    confirmed: bool,
 ) -> Result<usize, String> {
-    if !confirmed {
-        return Err("Explicit confirmation is required to reset credentials.".into());
-    }
     with_stopped_credential_store(&state, |store| {
+        confirm_destructive_action(
+            &app,
+            "Reset authenticator",
+            "Delete all credentials and signing keys from this computer? This cannot be undone.",
+        )?;
         let references = store
             .provider_key_handles()
             .into_iter()
@@ -654,6 +685,7 @@ fn respond_approval(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let (store, status) = initialize_credential_store(app.handle());
             let store_available = store.is_some();
