@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
@@ -49,6 +49,12 @@ function App() {
   const [credentials, setCredentials] = useState<CredentialSummary[]>([]);
   const [credentialError, setCredentialError] = useState<string | null>(null);
   const [resetAction, setResetAction] = useState(false);
+  const [pinAction, setPinAction] = useState(false);
+  const [pinError, setPinError] = useState<string | null>(null);
+  const [pinMessage, setPinMessage] = useState<string | null>(null);
+  const currentPinRef = useRef<HTMLInputElement>(null);
+  const newPinRef = useRef<HTMLInputElement>(null);
+  const confirmPinRef = useRef<HTMLInputElement>(null);
 
   const refreshStatus = () => invoke<PlatformStatus>("platform_status").then(setStatus);
   const refreshCredentials = () => invoke<CredentialSummary[]>("list_credentials").then(setCredentials);
@@ -148,6 +154,37 @@ function App() {
       setRuntimeError(typeof cause === "string" ? cause : "인증기를 정상적으로 중지하지 못했습니다.");
     } finally {
       setRuntimeAction(false);
+    }
+  };
+
+  const submitClientPin = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setPinError(null);
+    setPinMessage(null);
+    const newPin = newPinRef.current?.value ?? "";
+    const confirmation = confirmPinRef.current?.value ?? "";
+    if (newPin !== confirmation) {
+      setPinError("새 PIN과 확인 값이 일치하지 않습니다.");
+      confirmPinRef.current?.focus();
+      return;
+    }
+    const currentPin = status?.clientPinStatus === "Configured"
+      ? currentPinRef.current?.value ?? ""
+      : null;
+    if (!window.confirm("인증기 PIN을 설정하거나 변경할까요? 앱은 PIN을 기록하지 않지만 이 컴퓨터의 보호된 credential 저장소에 검증값을 저장합니다.")) return;
+
+    setPinAction(true);
+    try {
+      await invoke("set_client_pin", { currentPin, newPin, confirmed: true });
+      setPinMessage("인증기 PIN을 업데이트했습니다.");
+      await refreshStatus();
+    } catch (cause) {
+      setPinError(typeof cause === "string" ? cause : "인증기 PIN을 업데이트하지 못했습니다.");
+    } finally {
+      if (currentPinRef.current) currentPinRef.current.value = "";
+      if (newPinRef.current) newPinRef.current.value = "";
+      if (confirmPinRef.current) confirmPinRef.current.value = "";
+      setPinAction(false);
     }
   };
 
@@ -310,6 +347,32 @@ function App() {
           >
             {status?.credentialStoreStatus ?? "Credential storage status is unavailable."}
           </p>
+          {isTauri() && status?.credentialStoreAvailable && !status.authenticatorRunning &&
+            (status.clientPinStatus === "Configured" || status.clientPinStatus === "Not configured") && (
+            <form className="pin-settings" onSubmit={(event) => void submitClientPin(event)}>
+              <h2>{status.clientPinStatus === "Configured" ? "인증기 PIN 변경" : "인증기 PIN 설정"}</h2>
+              {status.clientPinStatus === "Configured" && (
+                <label>
+                  현재 PIN
+                  <input ref={currentPinRef} type="password" autoComplete="off" required disabled={pinAction} />
+                </label>
+              )}
+              <label>
+                새 PIN
+                <input ref={newPinRef} type="password" autoComplete="off" minLength={4} required disabled={pinAction} />
+              </label>
+              <label>
+                새 PIN 확인
+                <input ref={confirmPinRef} type="password" autoComplete="off" minLength={4} required disabled={pinAction} />
+              </label>
+              <p className="pin-policy">최소 4개의 Unicode 코드 포인트, UTF-8 기준 최대 63바이트입니다. 보호된 저장소에 PIN 검증값만 저장됩니다.</p>
+              <div className="runtime-actions">
+                <button type="submit" disabled={pinAction}>{pinAction ? "저장 중…" : "PIN 저장"}</button>
+              </div>
+              {pinError && <p role="alert" className="pin-result is-error">{pinError}</p>}
+              {pinMessage && <p role="status" className="pin-result">{pinMessage}</p>}
+            </form>
+          )}
         </div>
 
         {showCredentials && status?.credentialStoreAvailable && (

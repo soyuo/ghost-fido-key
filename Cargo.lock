@@ -1398,6 +1398,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

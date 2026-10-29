@@ -10,9 +10,12 @@ use p256::{PublicKey, ecdh::EphemeralSecret, elliptic_curve::sec1::ToEncodedPoin
 use rand_core::OsRng;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
-use crate::cbor::{CborValue, encode};
+use crate::{
+    cbor::{CborValue, encode},
+    credentials::CredentialStore,
+};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -22,6 +25,70 @@ pub const PIN_HASH_SIZE: usize = 16;
 pub const PIN_ENCRYPTED_SIZE: usize = 64;
 pub const PIN_MIN_CODEPOINTS: usize = 4;
 pub const PIN_MAX_UTF8_BYTES: usize = 63;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinManagementError {
+    ProtectedStorageRequired,
+    CurrentPinRequired,
+    PinNotSet,
+    PinBlocked,
+    InvalidPin,
+    InvalidCurrentPin,
+    Persistence,
+}
+
+/// Configures the authenticator PIN through the protected local credential store.
+///
+/// This is intended for the desktop settings surface. Protocol callers must continue
+/// using CTAP ClientPIN so that their PIN is protected by the protocol key agreement.
+pub fn configure_pin(
+    store: &mut CredentialStore,
+    current_pin: Option<&[u8]>,
+    new_pin: &[u8],
+) -> Result<(), PinManagementError> {
+    if !store.has_protected_storage() {
+        return Err(PinManagementError::ProtectedStorageRequired);
+    }
+    if store.pin_state().verifier().is_some() && store.pin_state().retries() == 0 {
+        return Err(PinManagementError::PinBlocked);
+    }
+    validate_pin(new_pin).map_err(|_| PinManagementError::InvalidPin)?;
+
+    if let Some(expected_verifier) = store.pin_state().verifier() {
+        let expected_verifier = Zeroizing::new(expected_verifier);
+        let Some(current_pin) = current_pin else {
+            return Err(PinManagementError::CurrentPinRequired);
+        };
+        let retries = store.pin_state().retries();
+        let mut actual_verifier = pin_hash(current_pin);
+        let correct = actual_verifier
+            .as_slice()
+            .ct_eq(expected_verifier.as_slice())
+            .unwrap_u8()
+            == 1;
+        actual_verifier.zeroize();
+        if !correct {
+            let next_retries = retries.saturating_sub(1);
+            store
+                .set_pin_retries(next_retries)
+                .map_err(|_| PinManagementError::Persistence)?;
+            return Err(if next_retries == 0 {
+                PinManagementError::PinBlocked
+            } else {
+                PinManagementError::InvalidCurrentPin
+            });
+        }
+    } else if current_pin.is_some() {
+        return Err(PinManagementError::PinNotSet);
+    }
+
+    let mut verifier = pin_hash(new_pin);
+    let result = store
+        .set_pin_verifier(Some(verifier))
+        .map_err(|_| PinManagementError::Persistence);
+    verifier.zeroize();
+    result
+}
 
 /// An ephemeral P-256 key agreement for one ClientPIN command exchange.
 pub struct PinKeyAgreement {
