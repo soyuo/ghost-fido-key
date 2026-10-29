@@ -33,6 +33,8 @@
     ],
     "linux": {
       "deb": {
+        "postInstallScript": "scripts/refresh-udev-rules.sh",
+        "postRemoveScript": "scripts/refresh-udev-rules.sh",
         "files": {
           "/usr/lib/udev/rules.d/70-ghost-fido-key.rules": "../../../platforms/linux/udev/70-ghost-fido-key.rules"
         }

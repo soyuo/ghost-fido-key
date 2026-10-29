@@ -4,9 +4,11 @@ The authenticator uses Linux `/dev/uhid`. The Debian package installs
 `udev/70-ghost-fido-key.rules` at `/usr/lib/udev/rules.d/` so systemd-logind's
 `uaccess` tag grants access to the active local seat user. The rule does not
 make the device world-writable and the desktop app does not need to run as
-root.
+root. Debian install, upgrade, and removal hooks reload udev rules and retrigger
+the UHID rule when `udevadm` is available.
 
-After installing or upgrading the Debian package, reload udev rules and
+If the package hook reports that udev could not be refreshed, or if the package
+was installed in an environment without `udevadm`, reload rules manually and
 reconnect the session or reboot:
 
 ```sh
