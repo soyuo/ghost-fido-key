@@ -31,9 +31,11 @@ Driver Kit (WDK).
 The status response reports the driver capabilities implemented in source:
 the FIDO HID profile, attach/detach, and both report-I/O directions. These bits
 describe the source-level driver contract; they do not prove that the driver is
-installed, attached, or working on a target device. The Rust adapter keeps the
-backend unavailable until the identity is valid and the complete transport has
-passed runtime validation on supported Windows systems.
+installed, attached, or working on a target device. With a valid assigned
+identity, all required capability bits, and exact report sizes, the Rust adapter
+reports `Configured` and permits a runtime start attempt. Strict `Available`
+status remains gated on runtime validation; configuration or a successful attach
+does not prove report exchange or browser support.
 
 ## User-mode control protocol
 
