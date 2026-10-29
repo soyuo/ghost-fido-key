@@ -1,6 +1,7 @@
 //! Small, bounded CBOR decoder for CTAP2 request validation.
 
 use core::fmt;
+use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CborValue {
@@ -12,6 +13,27 @@ pub enum CborValue {
     Map(Vec<(CborValue, CborValue)>),
     Bool(bool),
     Null,
+}
+
+impl Zeroize for CborValue {
+    fn zeroize(&mut self) {
+        match self {
+            Self::Unsigned(value) => value.zeroize(),
+            Self::Negative(value) => value.zeroize(),
+            Self::Bytes(value) => value.zeroize(),
+            Self::Text(value) => value.zeroize(),
+            Self::Array(values) => values.iter_mut().for_each(Zeroize::zeroize),
+            Self::Map(entries) => {
+                for (key, value) in entries {
+                    key.zeroize();
+                    value.zeroize();
+                }
+            }
+            Self::Bool(value) => value.zeroize(),
+            Self::Null => {}
+        }
+        *self = Self::Null;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,8 +90,9 @@ pub fn decode_with_limits(input: &[u8], limits: CborLimits) -> Result<CborValue,
     if input.is_empty() {
         return Err(CborError::Empty);
     }
-    let (value, offset) = parse(input, 0, 0, limits)?;
+    let (mut value, offset) = parse(input, 0, 0, limits)?;
     if offset != input.len() {
+        value.zeroize();
         return Err(CborError::TrailingData);
     }
     Ok(value)
@@ -124,22 +147,33 @@ fn parse(
             }
             let count = bounded_len(argument, limits.max_items, false)?;
             if major == 4 {
-                let mut values = Vec::with_capacity(count);
+                let mut values = Zeroizing::new(CborValue::Array(Vec::with_capacity(count)));
                 for _ in 0..count {
                     let (value, end) = parse(input, offset, depth + 1, limits)?;
                     offset = end;
+                    let CborValue::Array(values) = &mut *values else {
+                        unreachable!();
+                    };
                     values.push(value);
                 }
-                Ok((CborValue::Array(values), offset))
+                Ok((std::mem::replace(&mut *values, CborValue::Null), offset))
             } else {
-                let mut values = Vec::with_capacity(count);
+                let mut values = Zeroizing::new(CborValue::Map(Vec::with_capacity(count)));
                 for _ in 0..count {
                     let (key, key_end) = parse(input, offset, depth + 1, limits)?;
+                    let mut key = Zeroizing::new(key);
                     let (value, value_end) = parse(input, key_end, depth + 1, limits)?;
+                    let mut value = Zeroizing::new(value);
                     offset = value_end;
-                    values.push((key, value));
+                    let CborValue::Map(values) = &mut *values else {
+                        unreachable!();
+                    };
+                    values.push((
+                        std::mem::replace(&mut *key, CborValue::Null),
+                        std::mem::replace(&mut *value, CborValue::Null),
+                    ));
                 }
-                Ok((CborValue::Map(values), offset))
+                Ok((std::mem::replace(&mut *values, CborValue::Null), offset))
             }
         }
         7 => match info {

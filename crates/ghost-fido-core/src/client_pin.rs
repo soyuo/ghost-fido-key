@@ -59,7 +59,7 @@ pub fn configure_pin(
     validate_pin(new_pin).map_err(|_| PinManagementError::InvalidPin)?;
 
     if let Some(expected_verifier) = store.pin_state().verifier() {
-        let expected_verifier = Zeroizing::new(expected_verifier);
+        let expected_verifier = Zeroizing::new(*expected_verifier);
         let Some(current_pin) = current_pin else {
             return Err(PinManagementError::CurrentPinRequired);
         };

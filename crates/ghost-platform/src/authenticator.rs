@@ -330,7 +330,7 @@ impl ClientPinHandler {
         fields: &[(CborValue, CborValue)],
         store: &mut CredentialStore,
     ) -> Ctap2Response {
-        let Some(verifier) = store.pin_state().verifier() else {
+        let Some(verifier) = store.pin_state().verifier().copied().map(Zeroizing::new) else {
             return Ctap2Response::error(Ctap2Status::PinNotSet);
         };
         if store.pin_state().retries() == 0 {
@@ -434,7 +434,7 @@ impl ClientPinHandler {
         permissions: u8,
         relying_party_id: Option<String>,
     ) -> Ctap2Response {
-        let Some(verifier) = store.pin_state().verifier() else {
+        let Some(verifier) = store.pin_state().verifier().copied().map(Zeroizing::new) else {
             return Ctap2Response::error(Ctap2Status::PinNotSet);
         };
         if store.pin_state().retries() == 0 {
