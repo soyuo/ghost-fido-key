@@ -18,7 +18,7 @@ use ghost_platform::{
     KeyStore, PlatformErrorKind, SoftwareKeyConsent, UserVerification, VirtualHidBackend,
 };
 
-use crate::RuntimeStatus;
+use crate::{RuntimeStatus, audit};
 
 const CTAPHID_CHANNELS: usize = 16;
 const CTAPHID_CHANNEL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -75,6 +75,7 @@ pub fn run(
         true,
         "Virtual authenticator is running.",
     );
+    audit::record(audit::Event::RuntimeStarted, audit::Outcome::Success);
 
     let (service_tx, service_rx) = channel();
     let (response_tx, response_rx) = channel();
@@ -300,6 +301,12 @@ pub fn run(
         }
         Err(_) => Some("Authenticator service failed unexpectedly.".to_owned()),
     };
+    let outcome = if runtime_error.is_some() || service_error.is_some() || detach_error.is_some() {
+        audit::Outcome::Failure
+    } else {
+        audit::Outcome::Success
+    };
+    audit::record(audit::Event::RuntimeStopped, outcome);
 
     let message = runtime_error
         .or(service_error)
@@ -376,6 +383,7 @@ fn return_store(
 }
 
 fn set_runtime_failure(status: &Arc<Mutex<RuntimeStatus>>, message: &str) {
+    audit::record(audit::Event::RuntimeFailure, audit::Outcome::Failure);
     set_runtime_status(status, false, false, false, message);
 }
 

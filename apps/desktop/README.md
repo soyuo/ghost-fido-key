@@ -41,3 +41,13 @@ When the authenticator is stopped, desktop settings can set or change the local 
 The Rust IPC boundary rejects current or new PIN strings longer than 63 UTF-8 bytes before showing a confirmation dialog, hashing, or changing retry state. Approval responses must use the exact lowercase, hyphenated UUID form generated for a pending request; malformed identifiers are rejected before pending state is accessed.
 
 The app can also be previewed in a browser with `npm run dev`; the desktop-only status command is unavailable there. The existing command-line diagnostic remains available as the `ghost-fido` workspace package. Browser WebAuthn interoperability and a signed, entitled distribution still require separate macOS validation.
+
+## Local diagnostics
+
+The desktop app writes a best-effort operational event log to `events.log` in the operating system's recommended application log directory for `com.ghostfido.desktop`:
+
+- Linux: `$XDG_DATA_HOME/com.ghostfido.desktop/logs`, or `$HOME/.local/share/com.ghostfido.desktop/logs` when `XDG_DATA_HOME` is unset.
+- macOS: `~/Library/Logs/com.ghostfido.desktop`.
+- Windows: `%LOCALAPPDATA%\com.ghostfido.desktop\logs`.
+
+The file is limited to 1 MiB; when it reaches that size, the existing contents are cleared before new events are written. If the log directory is unavailable or a write fails, logging is silently disabled and does not affect authenticator or credential operations. Events record only fixed operation names and coarse outcomes, such as runtime lifecycle, local approval, PIN configuration, credential deletion, and reset. They omit RP names and identifiers, user names, credential IDs, PINs and PIN hashes, key material, request IDs, and CTAP/CBOR/HID payloads. This is a local diagnostic aid, not a tamper-proof audit record.

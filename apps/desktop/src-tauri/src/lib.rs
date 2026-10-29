@@ -273,10 +273,19 @@ impl DesktopVerificationProvider {
             let pending = approvals
                 .remove(request_id)
                 .ok_or_else(|| "Approval request is unknown or expired.".to_owned())?;
-            return pending
+            let result = pending
                 .sender
                 .send(VerificationDecision::Rejected)
                 .map_err(|_| "Approval request is no longer active.".to_owned());
+            audit::record(
+                audit::Event::UserApproval,
+                if result.is_ok() {
+                    audit::Outcome::Rejected
+                } else {
+                    audit::Outcome::Failure
+                },
+            );
+            return result;
         }
 
         let (relying_party_id, relying_party_name, action) = {
@@ -321,10 +330,24 @@ impl DesktopVerificationProvider {
             .map_err(|_| "Approval state is unavailable.".to_owned())?
             .remove(request_id)
             .ok_or_else(|| "Approval request is unknown or expired.".to_owned())?;
-        pending
+        let outcome = if decision == VerificationDecision::Approved {
+            audit::Outcome::Success
+        } else {
+            audit::Outcome::Rejected
+        };
+        let result = pending
             .sender
             .send(decision)
-            .map_err(|_| "Approval request is no longer active.".to_owned())
+            .map_err(|_| "Approval request is no longer active.".to_owned());
+        audit::record(
+            audit::Event::UserApproval,
+            if result.is_ok() {
+                outcome
+            } else {
+                audit::Outcome::Failure
+            },
+        );
+        result
     }
 }
 
@@ -520,17 +543,19 @@ fn start_authenticator(
             *runtime = Some(existing);
             return Err("The authenticator is already starting or running.".into());
         }
-        existing
-            .worker
-            .join()
-            .map_err(|_| "The previous authenticator session failed.")?;
+        if existing.worker.join().is_err() {
+            audit::record(audit::Event::RuntimeFailure, audit::Outcome::Failure);
+            return Err("The previous authenticator session failed.".into());
+        }
     }
     if !credential_store_is_available(&state) {
+        audit::record(audit::Event::RuntimeStartRequested, audit::Outcome::Failure);
         return Err(credential_store_status(&state));
     }
     let backend = ghost_platform::host_virtual_hid_backend();
     let availability = backend.availability();
     if availability.state != CapabilityState::Available {
+        audit::record(audit::Event::RuntimeStartRequested, audit::Outcome::Failure);
         return Err(availability
             .detail
             .unwrap_or_else(|| "Virtual HID is unavailable.".into()));
@@ -570,7 +595,10 @@ fn start_authenticator(
                 software_key_consent,
             );
         })
-        .map_err(|error| format!("Could not start authenticator runtime: {error}"))?;
+        .map_err(|error| {
+            audit::record(audit::Event::RuntimeStartRequested, audit::Outcome::Failure);
+            format!("Could not start authenticator runtime: {error}")
+        })?;
     if let Ok(mut status) = state.virtual_hid.lock() {
         status.authenticator_running = true;
         status.key_storage_status = key_storage_status.into();
@@ -580,6 +608,7 @@ fn start_authenticator(
         stop: stop_tx,
         worker,
     });
+    audit::record(audit::Event::RuntimeStartRequested, audit::Outcome::Success);
     Ok(())
 }
 
@@ -596,10 +625,10 @@ fn stop_runtime(state: &DesktopState) -> Result<(), String> {
         .take();
     if let Some(runtime) = runtime {
         let _ = runtime.stop.send(());
-        runtime
-            .worker
-            .join()
-            .map_err(|_| "Authenticator runtime stopped unexpectedly.".to_owned())?;
+        if runtime.worker.join().is_err() {
+            audit::record(audit::Event::RuntimeFailure, audit::Outcome::Failure);
+            return Err("Authenticator runtime stopped unexpectedly.".to_owned());
+        }
     }
     Ok(())
 }
@@ -665,12 +694,16 @@ fn set_client_pin(
             .as_ref()
             .is_some_and(|pin| pin.len() > PIN_MAX_UTF8_BYTES)
     {
+        audit::record(
+            audit::Event::ClientPinConfiguration,
+            audit::Outcome::Failure,
+        );
         return Err(format!(
             "PIN values must not exceed {PIN_MAX_UTF8_BYTES} UTF-8 bytes."
         ));
     }
 
-    with_stopped_credential_store(&state, |store| {
+    let result = with_stopped_credential_store(&state, |store| {
         confirm_native_action(
             &app,
             "Change authenticator PIN",
@@ -697,7 +730,16 @@ fn set_client_pin(
             PinManagementError::InvalidCurrentPin => "The current PIN is incorrect.".into(),
             PinManagementError::Persistence => "The protected PIN state could not be saved.".into(),
         })
-    })
+    });
+    audit::record(
+        audit::Event::ClientPinConfiguration,
+        if result.is_ok() {
+            audit::Outcome::Success
+        } else {
+            audit::Outcome::Failure
+        },
+    );
+    result
 }
 
 #[tauri::command]
@@ -731,7 +773,7 @@ fn delete_credential(
     state: tauri::State<'_, DesktopState>,
     creation_order: u64,
 ) -> Result<(), String> {
-    with_stopped_credential_store(&state, |store| {
+    let result = with_stopped_credential_store(&state, |store| {
         let credential = store
             .by_creation_order(creation_order)
             .ok_or_else(|| "The credential no longer exists.".to_owned())?;
@@ -765,7 +807,16 @@ fn delete_credential(
             .map_err(|_| {
                 "The signing key was deleted, but credential metadata could not be removed. Retry deletion to finish cleanup.".to_owned()
             })
-    })
+    });
+    audit::record(
+        audit::Event::CredentialDeletion,
+        if result.is_ok() {
+            audit::Outcome::Success
+        } else {
+            audit::Outcome::Failure
+        },
+    );
+    result
 }
 
 #[tauri::command]
@@ -773,7 +824,7 @@ fn reset_credentials(
     app: AppHandle,
     state: tauri::State<'_, DesktopState>,
 ) -> Result<usize, String> {
-    with_stopped_credential_store(&state, |store| {
+    let result = with_stopped_credential_store(&state, |store| {
         confirm_native_action(
             &app,
             "Reset authenticator",
@@ -802,7 +853,16 @@ fn reset_credentials(
         store.clear().map_err(|_| {
             "All signing keys were deleted, but credential metadata could not be cleared. Retry reset to finish cleanup.".to_owned()
         })
-    })
+    });
+    audit::record(
+        audit::Event::AuthenticatorReset,
+        if result.is_ok() {
+            audit::Outcome::Success
+        } else {
+            audit::Outcome::Failure
+        },
+    );
+    result
 }
 
 #[tauri::command]
@@ -819,8 +879,17 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            audit::init(app.path().app_log_dir().ok());
             let (store, status) = initialize_credential_store(app.handle());
             let store_available = store.is_some();
+            audit::record(
+                audit::Event::CredentialStoreInitialization,
+                if store_available {
+                    audit::Outcome::Success
+                } else {
+                    audit::Outcome::Failure
+                },
+            );
             let backend = ghost_platform::host_virtual_hid_backend();
             let availability = backend.availability();
             let platform_name = match HostPlatform::current() {
@@ -881,4 +950,5 @@ pub fn run() {
         })
 }
 
+mod audit;
 mod authenticator_runtime;
