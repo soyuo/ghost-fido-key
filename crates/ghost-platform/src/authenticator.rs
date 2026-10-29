@@ -158,6 +158,31 @@ impl ClientPinHandler {
         Ok(())
     }
 
+    fn authorize_permission(
+        &mut self,
+        channel: u32,
+        message: &[u8],
+        auth: &[u8],
+        permission: u8,
+    ) -> Result<(), Ctap2Status> {
+        self.expire();
+        let token = self
+            .tokens
+            .get(&channel)
+            .ok_or(Ctap2Status::PinUvAuthTokenRequired)?;
+        if Instant::now() >= token.expires_at {
+            self.tokens.remove(&channel);
+            return Err(Ctap2Status::PinUvAuthTokenRequired);
+        }
+        if !client_pin_verify_authentication(&token.value, message, auth) {
+            return Err(Ctap2Status::PinAuthInvalid);
+        }
+        if token.permissions & permission == 0 {
+            return Err(Ctap2Status::UnauthorizedPermission);
+        }
+        Ok(())
+    }
+
     fn clear_channel(&mut self, channel: u32) {
         self.agreements.remove(&channel);
         self.tokens.remove(&channel);
@@ -1069,6 +1094,12 @@ impl<'a> AuthenticatorService<'a> {
                 let Ok(id) = CredentialId::new(id_bytes.to_vec()) else {
                     return Ctap2Response::error(Ctap2Status::InvalidParameter);
                 };
+                if let Err(status) =
+                    self.client_pin
+                        .authorize_permission(channel, &auth_message, auth, 0x04)
+                {
+                    return Ctap2Response::error(status);
+                }
                 let Some(record) = self
                     .store
                     .discoverable_records()
