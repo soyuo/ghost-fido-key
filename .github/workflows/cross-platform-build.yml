@@ -45,7 +45,7 @@ jobs:
             libxdo-dev \
             wget
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Verify native Linux ARM64 runner
         if: matrix.os == 'ubuntu-24.04-arm'
@@ -105,7 +105,7 @@ jobs:
 
       - name: Upload unsigned Windows UDE development packages
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-ude-unsigned-development-packages
           path: target/windows-ude/packages/
@@ -116,7 +116,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -162,7 +162,7 @@ jobs:
 
       - name: Upload unsigned macOS development bundles
         if: runner.os == 'macOS'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: macos-${{ runner.arch }}-unsigned-development-bundles
           path: |
@@ -187,7 +187,7 @@ jobs:
 
       - name: Upload unsigned Windows desktop development installer
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-${{ runner.arch }}-unsigned-development-installer
           path: target/release/bundle/nsis/*.exe
@@ -219,7 +219,7 @@ jobs:
     runs-on: windows-11-vs2026-arm
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Verify native Windows ARM64 runner
         shell: pwsh
@@ -237,7 +237,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -276,7 +276,7 @@ jobs:
           $installer | Select-Object FullName, Length
 
       - name: Upload unsigned Windows ARM64 desktop development installer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: windows-arm64-unsigned-development-installer
           path: target/release/bundle/nsis/**/*.exe
