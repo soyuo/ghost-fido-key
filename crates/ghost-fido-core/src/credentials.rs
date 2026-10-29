@@ -11,8 +11,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 
 use crate::cbor::{CborLimits, CborValue, decode_with_limits, encode as encode_cbor};
 
-const STORAGE_SCHEMA_VERSION: i64 = 5;
-const CREDENTIAL_RECORD_SCHEMA_VERSION: i64 = 4;
+const STORAGE_SCHEMA_VERSION: i64 = 6;
+const CREDENTIAL_RECORD_SCHEMA_VERSION: i64 = 5;
 const STORAGE_AAD_V1: &[u8] = b"ghost-fido/credential-store/v1";
 const STORAGE_AAD_V2: &[u8] = b"ghost-fido/credential-store/v2";
 const STORAGE_AAD_V3: &[u8] = b"ghost-fido/credential-store/v3";
@@ -102,6 +102,9 @@ pub struct CredentialRecord {
     pub user_name: Option<String>,
     pub user_display_name: Option<String>,
     pub key_handle: KeyHandle,
+    /// Persisted public key used by CTAP Credential Management. Legacy records
+    /// are populated from their provider before enumeration.
+    pub public_key: Option<Es256PublicKey>,
     pub key_metadata: CredentialKeyMetadata,
     pub discoverable: bool,
     /// Store-assigned monotonic ordering used for discoverable credential selection.
@@ -328,12 +331,12 @@ impl CredentialStore {
                     .map_err(|_| CredentialError::StorageFailure)?;
                 records
             }
-            4 | 5 => {
+            4 | 5 | 6 => {
                 let protected = read_protected_payload(&connection)?;
                 let plaintext = protector
                     .unprotect(&protected, STORAGE_AAD_V4)
                     .map_err(|_| CredentialError::ProtectedDataInvalid)?;
-                decode_records(&plaintext, 4)?
+                decode_records(&plaintext, if schema_version >= 6 { 5 } else { 4 })?
             }
             other => return Err(CredentialError::UnsupportedSchemaVersion(other)),
         };
@@ -413,6 +416,64 @@ impl CredentialStore {
             .values()
             .filter(|record| record.rp_id_hash == rp_id_hash && record.discoverable)
             .collect()
+    }
+
+    /// Returns a snapshot of discoverable credentials for protocol management.
+    #[must_use]
+    pub fn discoverable_records(&self) -> Vec<CredentialRecord> {
+        self.records
+            .values()
+            .filter(|record| record.discoverable)
+            .cloned()
+            .collect()
+    }
+
+    /// Removes a credential by its protocol identifier after provider-key deletion.
+    pub fn remove_by_id(&mut self, id: &CredentialId) -> Result<CredentialRecord, CredentialError> {
+        let removed = self
+            .records
+            .get(id)
+            .cloned()
+            .ok_or(CredentialError::NotFound)?;
+        let mut next_records = self.records.clone();
+        next_records.remove(id);
+        self.persist(&next_records)?;
+        self.records = next_records;
+        Ok(removed)
+    }
+
+    /// Changes only the mutable CTAP user labels while preserving the user handle.
+    pub fn update_user_labels(
+        &mut self,
+        id: &CredentialId,
+        expected_user_handle: &[u8],
+        name: Option<String>,
+        display_name: Option<String>,
+    ) -> Result<(), CredentialError> {
+        if name
+            .as_ref()
+            .is_some_and(|value| value.len() > MAX_USER_LABEL_BYTES)
+            || display_name
+                .as_ref()
+                .is_some_and(|value| value.len() > MAX_USER_LABEL_BYTES)
+        {
+            return Err(CredentialError::UserLabelTooLong);
+        }
+        let record = self.records.get(id).ok_or(CredentialError::NotFound)?;
+        if !record.discoverable || record.user_handle != expected_user_handle {
+            return Err(CredentialError::NotFound);
+        }
+        let mut next_records = self.records.clone();
+        let record = next_records.get_mut(id).ok_or(CredentialError::NotFound)?;
+        if let Some(name) = name {
+            record.user_name = Some(name);
+        }
+        if let Some(display_name) = display_name {
+            record.user_display_name = Some(display_name);
+        }
+        self.persist(&next_records)?;
+        self.records = next_records;
+        Ok(())
     }
 
     /// Selects assertion credentials without disclosing non-discoverable ones.
@@ -566,9 +627,34 @@ impl CredentialStore {
         self.records = next_records;
         Ok(sign_count)
     }
+
+    /// Persists a provider-recovered public key for a legacy credential.
+    pub fn set_public_key(
+        &mut self,
+        id: &CredentialId,
+        public_key: Es256PublicKey,
+    ) -> Result<(), CredentialError> {
+        let record = self.records.get(id).ok_or(CredentialError::NotFound)?;
+        if record.public_key.as_ref() == Some(&public_key) {
+            return Ok(());
+        }
+        let mut next_records = self.records.clone();
+        next_records
+            .get_mut(id)
+            .ok_or(CredentialError::NotFound)?
+            .public_key = Some(public_key);
+        self.persist(&next_records)?;
+        self.records = next_records;
+        Ok(())
+    }
     #[must_use]
     pub fn len(&self) -> usize {
         self.records.len()
+    }
+
+    #[must_use]
+    pub fn remaining_capacity(&self) -> usize {
+        MAX_PERSISTED_RECORDS.saturating_sub(self.records.len())
     }
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -844,6 +930,12 @@ fn encode_records(
                     .relying_party_id
                     .as_ref()
                     .map_or(CborValue::Null, |rp_id| CborValue::Text(rp_id.clone())),
+                record.public_key.as_ref().map_or(CborValue::Null, |key| {
+                    CborValue::Array(vec![
+                        CborValue::Bytes(key.x.to_vec()),
+                        CborValue::Bytes(key.y.to_vec()),
+                    ])
+                }),
             ])
         })
         .collect::<Vec<_>>();
@@ -865,7 +957,7 @@ fn decode_records(
         bytes,
         CborLimits {
             max_depth: 4,
-            max_items: MAX_PERSISTED_RECORDS * 12,
+            max_items: MAX_PERSISTED_RECORDS * 16,
             max_bytes: MAX_PERSISTED_BYTES,
         },
     )
@@ -884,8 +976,17 @@ fn decode_records(
         let CborValue::Array(fields) = value else {
             return Err(CredentialError::ProtectedDataInvalid);
         };
-        let record =
-            decode_record_fields(&fields, with_user_labels, with_creation_order, version >= 4)?;
+        let record = if version >= 5 && fields.len() == 13 {
+            let Some((public_key_value, base_fields)) = fields.split_last() else {
+                return Err(CredentialError::ProtectedDataInvalid);
+            };
+            let mut record =
+                decode_record_fields(base_fields, with_user_labels, with_creation_order, true)?;
+            record.public_key = decode_public_key(public_key_value)?;
+            record
+        } else {
+            decode_record_fields(&fields, with_user_labels, with_creation_order, version >= 4)?
+        };
         if with_creation_order && !creation_orders.insert(record.creation_order) {
             return Err(CredentialError::ProtectedDataInvalid);
         }
@@ -1067,6 +1168,7 @@ fn decode_record_fields(
         user_display_name,
         key_handle: KeyHandle::new(key_handle.clone())
             .map_err(|_| CredentialError::ProtectedDataInvalid)?,
+        public_key: None,
         key_metadata: CredentialKeyMetadata {
             protection: key_protection,
             exportable: *exportable,
@@ -1076,6 +1178,25 @@ fn decode_record_fields(
         sign_count: u32::try_from(*sign_count)
             .map_err(|_| CredentialError::ProtectedDataInvalid)?,
     })
+}
+
+fn decode_public_key(value: &CborValue) -> Result<Option<Es256PublicKey>, CredentialError> {
+    match value {
+        CborValue::Null => Ok(None),
+        CborValue::Array(coordinates) => {
+            let [CborValue::Bytes(x), CborValue::Bytes(y)] = coordinates.as_slice() else {
+                return Err(CredentialError::ProtectedDataInvalid);
+            };
+            if x.len() != 32 || y.len() != 32 {
+                return Err(CredentialError::ProtectedDataInvalid);
+            }
+            Ok(Some(Es256PublicKey {
+                x: x.as_slice().try_into().expect("length checked"),
+                y: y.as_slice().try_into().expect("length checked"),
+            }))
+        }
+        _ => Err(CredentialError::ProtectedDataInvalid),
+    }
 }
 
 fn decode_rp_id(value: &CborValue) -> Result<Option<String>, CredentialError> {

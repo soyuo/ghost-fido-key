@@ -167,6 +167,7 @@ pub fn register_make_credential_with_uv(
         user_name: request.user.name.clone(),
         user_display_name: request.user.display_name.clone(),
         key_handle,
+        public_key: Some(created.public_key.clone()),
         key_metadata: CredentialKeyMetadata {
             protection: match created.metadata.protection {
                 crate::KeyProtection::HardwareBacked => CredentialKeyProtection::HardwareBacked,

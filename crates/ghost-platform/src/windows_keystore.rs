@@ -257,6 +257,28 @@ impl KeyStore for WindowsKeyStore {
         Ok(signature)
     }
 
+    fn public_key(&self, key: &KeyReference) -> Result<Es256PublicKey, PlatformError> {
+        let provider = self.open_provider()?;
+        let name = Self::key_name(key)?;
+        let mut handle = NCRYPT_KEY_HANDLE(0);
+        // SAFETY: provider and NUL-terminated key name are valid; handle is writable.
+        unsafe {
+            NCryptOpenKey(
+                provider,
+                &mut handle,
+                PCWSTR(name.as_ptr()),
+                CERT_KEY_SPEC(0),
+                NCRYPT_FLAGS(0),
+            )
+        }
+        .map_err(Self::fail)?;
+        let public_key = Self::export_public_key(handle);
+        // SAFETY: both handles were opened successfully and are now being released.
+        unsafe { NCryptFreeObject(handle.into()) }.map_err(Self::fail)?;
+        unsafe { NCryptFreeObject(provider.into()) }.map_err(Self::fail)?;
+        public_key
+    }
+
     fn delete_key(&self, key: &KeyReference) -> Result<(), PlatformError> {
         let provider = self.open_provider()?;
         let name = Self::key_name(key)?;
