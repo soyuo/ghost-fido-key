@@ -48,6 +48,7 @@ jobs:
             build-essential \
             curl \
             file \
+            libdbus-1-dev \
             libayatana-appindicator3-dev \
             libclang-dev \
             libssl-dev \
