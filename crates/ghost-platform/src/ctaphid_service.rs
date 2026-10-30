@@ -6,7 +6,9 @@ use std::{
 };
 
 use crate::UserVerification;
-use ghost_fido_core::{Ctap2Response, CtapHidSession, FrameError, HID_REPORT_SIZE, SessionEvent};
+use ghost_fido_core::{
+    Ctap2Response, CtapHidErrorCode, CtapHidSession, FrameError, HID_REPORT_SIZE, SessionEvent,
+};
 
 /// Owns CTAPHID transport state while leaving CTAP2 execution to its caller.
 ///
@@ -90,6 +92,25 @@ impl<'verification> AuthenticatorHidSession<'verification> {
             self.processing_channel = None;
         }
         self.hid.respond_ctap2_result(channel, response)
+    }
+
+    /// Rejects a completed request without disturbing another channel's request.
+    pub fn reject_channel_busy(
+        &mut self,
+        channel: u32,
+    ) -> Result<Vec<[u8; HID_REPORT_SIZE]>, FrameError> {
+        let Some(count) = self.active_ctap2_requests.get_mut(&channel) else {
+            return Ok(Vec::new());
+        };
+        if *count <= 1 {
+            self.active_ctap2_requests.remove(&channel);
+        } else {
+            *count -= 1;
+        }
+        let report = self
+            .hid
+            .respond_error(channel, CtapHidErrorCode::ChannelBusy)?;
+        Ok(vec![report])
     }
 
     /// Marks the channel currently executing in the serialized authenticator service.
