@@ -16,6 +16,8 @@ const STORAGE_SCHEMA_VERSION: i64 = 12;
 const PIN_STATE_SCHEMA_VERSION: i64 = 8;
 const CREDENTIAL_RECORD_SCHEMA_VERSION: i64 = 7;
 const RESET_JOURNAL_SCHEMA_VERSION: i64 = 9;
+const RESET_METADATA_KEY_CLEANUP_SCHEMA_VERSION: i64 = 11;
+const PROVIDER_KEY_JOURNAL_SCHEMA_VERSION: i64 = 11;
 const PROVIDER_KEY_JOURNAL_AAD_V1: &[u8] = b"ghost-fido/provider-key-journal/v1";
 const CREDENTIAL_DELETION_JOURNAL_AAD_V1: &[u8] = b"ghost-fido/credential-deletion-journal/v1";
 const STORAGE_AAD_V1: &[u8] = b"ghost-fido/credential-store/v1";
@@ -1469,7 +1471,7 @@ fn prepare_reset_journal_schema(
                 |row| row.get(0),
             )
             .map_err(|_| CredentialError::StorageFailure)?;
-        if !cleanup_column_exists && schema_version >= STORAGE_SCHEMA_VERSION {
+        if !cleanup_column_exists && schema_version >= RESET_METADATA_KEY_CLEANUP_SCHEMA_VERSION {
             return Err(CredentialError::ProtectedDataInvalid);
         }
         if !cleanup_column_exists {
@@ -1502,7 +1504,7 @@ fn prepare_reset_journal_schema(
             |row| row.get(0),
         )
         .map_err(|_| CredentialError::StorageFailure)?;
-    if !creation_table_exists && schema_version >= STORAGE_SCHEMA_VERSION {
+    if !creation_table_exists && schema_version >= PROVIDER_KEY_JOURNAL_SCHEMA_VERSION {
         return Err(CredentialError::ProtectedDataInvalid);
     }
     if !creation_table_exists {
