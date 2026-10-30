@@ -1,7 +1,7 @@
 //! Connects CTAPHID report sessions to the configured authenticator service.
 
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     time::{Duration, Instant},
 };
 
@@ -15,7 +15,7 @@ use ghost_fido_core::{Ctap2Response, CtapHidSession, FrameError, HID_REPORT_SIZE
 pub struct AuthenticatorHidSession<'verification> {
     hid: CtapHidSession,
     verification: &'verification dyn UserVerification,
-    active_ctap2_channels: HashSet<u32>,
+    active_ctap2_requests: HashMap<u32, usize>,
     processing_channel: Option<u32>,
 }
 
@@ -29,7 +29,7 @@ impl<'verification> AuthenticatorHidSession<'verification> {
         Self {
             hid: CtapHidSession::new(channel_capacity, channel_timeout),
             verification,
-            active_ctap2_channels: HashSet::new(),
+            active_ctap2_requests: HashMap::new(),
             processing_channel: None,
         }
     }
@@ -48,15 +48,23 @@ impl<'verification> AuthenticatorHidSession<'verification> {
             | SessionEvent::Responses(_)
             | SessionEvent::Message(_)) => event,
             SessionEvent::Cancelled(channel) => {
-                self.active_ctap2_channels.remove(&channel);
                 if self.processing_channel == Some(channel) {
                     self.verification.cancel_pending();
                     self.processing_channel = None;
                 }
                 SessionEvent::Cancelled(channel)
             }
+            SessionEvent::Resynchronized { channel, response } => {
+                self.active_ctap2_requests.remove(&channel);
+                if self.processing_channel == Some(channel) {
+                    self.verification.cancel_pending();
+                    self.processing_channel = None;
+                }
+                SessionEvent::Resynchronized { channel, response }
+            }
             SessionEvent::Ctap2Request { channel, request } => {
-                self.active_ctap2_channels.insert(channel);
+                let count = self.active_ctap2_requests.entry(channel).or_default();
+                *count = count.saturating_add(1);
                 SessionEvent::Ctap2Request { channel, request }
             }
         };
@@ -69,8 +77,14 @@ impl<'verification> AuthenticatorHidSession<'verification> {
         channel: u32,
         response: &Ctap2Response,
     ) -> Result<Vec<[u8; HID_REPORT_SIZE]>, FrameError> {
-        if !self.active_ctap2_channels.remove(&channel) {
+        let Some(count) = self.active_ctap2_requests.get_mut(&channel) else {
             return Ok(Vec::new());
+        };
+        let remove_channel = *count <= 1;
+        if remove_channel {
+            self.active_ctap2_requests.remove(&channel);
+        } else {
+            *count -= 1;
         }
         if self.processing_channel == Some(channel) {
             self.processing_channel = None;
@@ -80,7 +94,7 @@ impl<'verification> AuthenticatorHidSession<'verification> {
 
     /// Marks the channel currently executing in the serialized authenticator service.
     pub fn mark_processing(&mut self, channel: u32) {
-        if self.active_ctap2_channels.contains(&channel) {
+        if self.active_ctap2_requests.contains_key(&channel) {
             self.processing_channel = Some(channel);
         }
     }
@@ -94,7 +108,7 @@ impl<'verification> AuthenticatorHidSession<'verification> {
 
     fn handle_expired(&mut self, expired: &[u32]) {
         for channel in expired {
-            self.active_ctap2_channels.remove(channel);
+            self.active_ctap2_requests.remove(channel);
             if self.processing_channel == Some(*channel) {
                 self.verification.cancel_pending();
                 self.processing_channel = None;
