@@ -577,9 +577,13 @@ impl CredentialStore {
         record.creation_order = creation_order;
         let mut next_records = self.records.clone();
         next_records.insert(record.id.clone(), record);
-        self.persist_with_provider_key_cleanup(&next_records, created_key)?;
-        self.records = next_records;
-        self.next_creation_order = creation_order;
+        self.records = self.persist_with_provider_key_cleanup(&next_records, created_key)?;
+        self.next_creation_order = self
+            .records
+            .values()
+            .map(|record| record.creation_order)
+            .max()
+            .unwrap_or(0);
         if created_key.is_some() {
             self.pending_provider_key = None;
         }
@@ -626,8 +630,7 @@ impl CredentialStore {
             .ok_or(CredentialError::NotFound)?;
         let mut next_records = self.records.clone();
         next_records.remove(id);
-        self.persist(&next_records)?;
-        self.records = next_records;
+        self.records = self.persist(&next_records)?;
         Ok(removed)
     }
 
@@ -660,8 +663,7 @@ impl CredentialStore {
         if let Some(display_name) = display_name {
             record.user_display_name = Some(display_name);
         }
-        self.persist(&next_records)?;
-        self.records = next_records;
+        self.records = self.persist(&next_records)?;
         Ok(())
     }
 
@@ -737,8 +739,7 @@ impl CredentialStore {
             .ok_or(CredentialError::NotFound)?;
         let mut next_records = self.records.clone();
         next_records.remove(&id);
-        self.persist(&next_records)?;
-        self.records = next_records;
+        self.records = self.persist(&next_records)?;
         Ok(removed)
     }
 
@@ -809,13 +810,18 @@ impl CredentialStore {
         let conflicting_cleanup_pending: bool = transaction
             .query_row(
                 "SELECT EXISTS (SELECT 1 FROM provider_key_journal WHERE singleton = 1)
-                    OR EXISTS (SELECT 1 FROM reset_journal WHERE singleton = 1)",
+                    OR EXISTS (SELECT 1 FROM reset_journal WHERE singleton = 1)
+                    OR EXISTS (SELECT 1 FROM credential_deletion_journal WHERE singleton = 1)",
                 [],
                 |row| row.get(0),
             )
             .map_err(|_| CredentialError::StorageFailure)?;
         if conflicting_cleanup_pending {
             return Err(CredentialError::ProviderKeyCleanupPending);
+        }
+        let current_records = read_credential_records(&transaction, backend.protector.as_ref())?;
+        if current_records.get(id).map(|record| &record.key_handle) != Some(&handle) {
+            return Err(CredentialError::NotFound);
         }
         transaction
             .execute(
@@ -826,6 +832,12 @@ impl CredentialStore {
         transaction
             .commit()
             .map_err(|_| CredentialError::StorageFailure)?;
+        self.next_creation_order = current_records
+            .values()
+            .map(|record| record.creation_order)
+            .max()
+            .unwrap_or(0);
+        self.records = current_records;
         self.pending_credential_deletion = Some((id.clone(), handle.clone()));
         Ok(handle)
     }
@@ -837,27 +849,77 @@ impl CredentialStore {
         id: &CredentialId,
         handle: &KeyHandle,
     ) -> Result<(), CredentialError> {
-        if self.pending_credential_deletion.as_ref() != Some(&(id.clone(), handle.clone()))
-            || self.records.get(id).map(|record| &record.key_handle) != Some(handle)
-        {
+        if self.pending_credential_deletion.as_ref() != Some(&(id.clone(), handle.clone())) {
             return Err(CredentialError::ProviderKeyCleanupPending);
         }
-        let mut next_records = self.records.clone();
-        next_records.remove(id).ok_or(CredentialError::NotFound)?;
         let backend = self
             .sqlite
             .as_mut()
             .ok_or(CredentialError::StorageFailure)?;
+        let transaction = backend
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| CredentialError::StorageFailure)?;
+        let conflicting_cleanup_pending: bool = transaction
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM provider_key_journal WHERE singleton = 1)
+                    OR EXISTS (SELECT 1 FROM reset_journal WHERE singleton = 1)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| CredentialError::StorageFailure)?;
+        if conflicting_cleanup_pending {
+            return Err(CredentialError::ProviderKeyCleanupPending);
+        }
+        let journal_payload: Option<Vec<u8>> = transaction
+            .query_row(
+                "SELECT payload FROM credential_deletion_journal WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|_| CredentialError::StorageFailure)?;
+        let current_records = read_credential_records(&transaction, backend.protector.as_ref())?;
+        let Some(journal_payload) = journal_payload else {
+            if current_records
+                .get(id)
+                .is_some_and(|record| &record.key_handle == handle)
+            {
+                return Err(CredentialError::ProviderKeyCleanupPending);
+            }
+            transaction
+                .commit()
+                .map_err(|_| CredentialError::StorageFailure)?;
+            self.next_creation_order = current_records
+                .values()
+                .map(|record| record.creation_order)
+                .max()
+                .unwrap_or(0);
+            self.records = current_records;
+            self.pending_credential_deletion = None;
+            return Ok(());
+        };
+        validate_protected_payload(&journal_payload)?;
+        let journal_plaintext = backend
+            .protector
+            .unprotect(&journal_payload, CREDENTIAL_DELETION_JOURNAL_AAD_V1)
+            .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+        if decode_credential_deletion_journal(&journal_plaintext)? != (id.clone(), handle.clone()) {
+            return Err(CredentialError::ProviderKeyCleanupPending);
+        }
+        let mut next_records = current_records;
+        if let Some(record) = next_records.get(id) {
+            if &record.key_handle != handle {
+                return Err(CredentialError::ProviderKeyCleanupPending);
+            }
+            next_records.remove(id);
+        }
         let plaintext = encode_records(&next_records)?;
         let protected = backend
             .protector
             .protect(&plaintext, STORAGE_AAD_V4)
             .map_err(|_| CredentialError::ProtectedDataInvalid)?;
         validate_protected_payload(&protected)?;
-        let transaction = backend
-            .connection
-            .transaction()
-            .map_err(|_| CredentialError::StorageFailure)?;
         write_payload(&transaction, &protected)?;
         transaction
             .execute(
@@ -868,6 +930,11 @@ impl CredentialStore {
         transaction
             .commit()
             .map_err(|_| CredentialError::StorageFailure)?;
+        self.next_creation_order = next_records
+            .values()
+            .map(|record| record.creation_order)
+            .max()
+            .unwrap_or(0);
         self.records = next_records;
         self.pending_credential_deletion = None;
         Ok(())
@@ -930,8 +997,13 @@ impl CredentialStore {
             .ok_or(CredentialError::StorageFailure)?;
         let transaction = backend
             .connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| CredentialError::StorageFailure)?;
+        if read_provider_key_journal(&transaction, backend.protector.as_ref())?.as_ref()
+            != Some(handle)
+        {
+            return Err(CredentialError::ProviderKeyCleanupPending);
+        }
         transaction
             .execute("DELETE FROM provider_key_journal WHERE singleton = 1", [])
             .map_err(|_| CredentialError::StorageFailure)?;
@@ -1135,8 +1207,7 @@ impl CredentialStore {
             .get_mut(id)
             .ok_or(CredentialError::NotFound)?
             .sign_count = sign_count;
-        self.persist(&next_records)?;
-        self.records = next_records;
+        self.records = self.persist(&next_records)?;
         Ok(sign_count)
     }
 
@@ -1252,7 +1323,7 @@ impl CredentialStore {
     fn persist(
         &mut self,
         records: &BTreeMap<CredentialId, CredentialRecord>,
-    ) -> Result<(), CredentialError> {
+    ) -> Result<BTreeMap<CredentialId, CredentialRecord>, CredentialError> {
         self.persist_with_provider_key_cleanup(records, None)
     }
 
@@ -1260,7 +1331,7 @@ impl CredentialStore {
         &mut self,
         records: &BTreeMap<CredentialId, CredentialRecord>,
         created_key: Option<&KeyHandle>,
-    ) -> Result<(), CredentialError> {
+    ) -> Result<BTreeMap<CredentialId, CredentialRecord>, CredentialError> {
         if self.reset_is_pending() {
             return Err(CredentialError::ResetInProgress);
         }
@@ -1269,18 +1340,54 @@ impl CredentialStore {
         }
         self.ensure_sqlite_initialized()?;
         let Some(backend) = self.sqlite.as_mut() else {
-            return Ok(());
+            return Ok(records.clone());
         };
-        let plaintext = encode_records(records)?;
+        let transaction = backend
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| CredentialError::StorageFailure)?;
+        let reset_pending: bool = transaction
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM reset_journal WHERE singleton = 1)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| CredentialError::StorageFailure)?;
+        if reset_pending {
+            return Err(CredentialError::ResetInProgress);
+        }
+        if let Some(created_key) = created_key {
+            if read_provider_key_journal(&transaction, backend.protector.as_ref())?.as_ref()
+                != Some(created_key)
+            {
+                return Err(CredentialError::ProviderKeyCleanupPending);
+            }
+        }
+        let current_records = read_credential_records(&transaction, backend.protector.as_ref())?;
+        let merged_records =
+            match merge_credential_records(&self.records, records, &current_records) {
+                Ok(records) => records,
+                Err(error) => {
+                    drop(transaction);
+                    self.records = current_records;
+                    self.next_creation_order = self
+                        .records
+                        .values()
+                        .map(|record| record.creation_order)
+                        .max()
+                        .unwrap_or(0);
+                    return Err(error);
+                }
+            };
+        if merged_records.len() > MAX_PERSISTED_RECORDS {
+            return Err(CredentialError::RecordLimitExceeded);
+        }
+        let plaintext = encode_records(&merged_records)?;
         let protected = backend
             .protector
             .protect(&plaintext, STORAGE_AAD_V4)
             .map_err(|_| CredentialError::ProtectedDataInvalid)?;
         validate_protected_payload(&protected)?;
-        let transaction = backend
-            .connection
-            .transaction()
-            .map_err(|_| CredentialError::StorageFailure)?;
         write_payload(&transaction, &protected)?;
         if created_key.is_some() {
             transaction
@@ -1289,7 +1396,8 @@ impl CredentialStore {
         }
         transaction
             .commit()
-            .map_err(|_| CredentialError::StorageFailure)
+            .map_err(|_| CredentialError::StorageFailure)?;
+        Ok(merged_records)
     }
 
     fn persist_pin_state(&mut self, pin_state: &PinState) -> Result<(), CredentialError> {
@@ -1303,16 +1411,32 @@ impl CredentialStore {
         let Some(backend) = self.sqlite.as_mut() else {
             return Ok(());
         };
+        let transaction = backend
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| CredentialError::StorageFailure)?;
+        let reset_pending: bool = transaction
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM reset_journal WHERE singleton = 1)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| CredentialError::StorageFailure)?;
+        if reset_pending {
+            return Err(CredentialError::ResetInProgress);
+        }
+        let current_pin_state = read_pin_state(&transaction, backend.protector.as_ref())?;
+        if current_pin_state != self.pin_state {
+            drop(transaction);
+            self.pin_state = current_pin_state;
+            return Err(CredentialError::StorageFailure);
+        }
         let plaintext = encode_pin_state(pin_state)?;
         let protected = backend
             .protector
             .protect(&plaintext, PIN_STATE_AAD_V1)
             .map_err(|_| CredentialError::ProtectedDataInvalid)?;
         validate_protected_payload(&protected)?;
-        let transaction = backend
-            .connection
-            .transaction()
-            .map_err(|_| CredentialError::StorageFailure)?;
         write_pin_payload(&transaction, &protected)?;
         transaction
             .commit()
@@ -1500,6 +1624,103 @@ fn write_payload(transaction: &Transaction<'_>, payload: &[u8]) -> Result<(), Cr
         return Err(CredentialError::ProtectedDataInvalid);
     }
     Ok(())
+}
+
+fn read_credential_records(
+    transaction: &Transaction<'_>,
+    protector: &dyn CredentialProtector,
+) -> Result<BTreeMap<CredentialId, CredentialRecord>, CredentialError> {
+    let protected = read_protected_payload(transaction)?;
+    validate_protected_payload(&protected)?;
+    let plaintext = protector
+        .unprotect(&protected, STORAGE_AAD_V4)
+        .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+    decode_records(&plaintext, 7)
+}
+
+fn read_pin_state(
+    transaction: &Transaction<'_>,
+    protector: &dyn CredentialProtector,
+) -> Result<PinState, CredentialError> {
+    let protected: Vec<u8> = transaction
+        .query_row(
+            "SELECT payload FROM pin_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+    validate_protected_payload(&protected)?;
+    let plaintext = protector
+        .unprotect(&protected, PIN_STATE_AAD_V1)
+        .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+    decode_pin_state(&plaintext)
+}
+
+fn read_provider_key_journal(
+    transaction: &Transaction<'_>,
+    protector: &dyn CredentialProtector,
+) -> Result<Option<KeyHandle>, CredentialError> {
+    let payload: Option<Vec<u8>> = transaction
+        .query_row(
+            "SELECT payload FROM provider_key_journal WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| CredentialError::StorageFailure)?;
+    let Some(payload) = payload else {
+        return Ok(None);
+    };
+    validate_protected_payload(&payload)?;
+    let plaintext = protector
+        .unprotect(&payload, PROVIDER_KEY_JOURNAL_AAD_V1)
+        .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+    KeyHandle::new(plaintext.to_vec())
+        .map(Some)
+        .map_err(|_| CredentialError::ProtectedDataInvalid)
+}
+
+fn merge_credential_records(
+    base: &BTreeMap<CredentialId, CredentialRecord>,
+    desired: &BTreeMap<CredentialId, CredentialRecord>,
+    current: &BTreeMap<CredentialId, CredentialRecord>,
+) -> Result<BTreeMap<CredentialId, CredentialRecord>, CredentialError> {
+    let changed_ids: BTreeSet<_> = base.keys().chain(desired.keys()).cloned().collect();
+    let mut merged = current.clone();
+    let mut creation_order = current
+        .values()
+        .map(|record| record.creation_order)
+        .max()
+        .unwrap_or(0);
+
+    for id in changed_ids {
+        let before = base.get(&id);
+        let after = desired.get(&id);
+        if before == after {
+            continue;
+        }
+        let persisted = current.get(&id);
+        if persisted != before {
+            return Err(CredentialError::StorageFailure);
+        }
+        match after {
+            Some(record) => {
+                let mut record = record.clone();
+                if before.is_none() && persisted.is_none() {
+                    creation_order = creation_order
+                        .checked_add(1)
+                        .ok_or(CredentialError::CreationOrderOverflow)?;
+                    record.creation_order = creation_order;
+                }
+                merged.insert(id, record);
+            }
+            None => {
+                merged.remove(&id);
+            }
+        }
+    }
+
+    Ok(merged)
 }
 
 fn write_pin_payload(transaction: &Transaction<'_>, payload: &[u8]) -> Result<(), CredentialError> {
