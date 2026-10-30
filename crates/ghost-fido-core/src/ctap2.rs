@@ -3,9 +3,11 @@
 use crate::{
     cbor::{CborError, CborValue, decode, encode},
     credentials::{
-        CredentialProtectionPolicy, CredentialRecord, CredentialStore, Es256PublicKey, RpIdHash,
+        CredentialProtectionPolicy, CredentialRecord, CredentialStore, Es256PublicKey,
+        LargeBlobKey, RpIdHash,
     },
 };
+use zeroize::Zeroizing;
 
 use core::fmt;
 use sha2::{Digest, Sha256};
@@ -215,6 +217,26 @@ pub fn encode_make_credential_response_with_extensions(
     user_verified: bool,
     extensions: Option<CborValue>,
 ) -> Result<Ctap2Response, MakeCredentialResponseError> {
+    encode_make_credential_response_with_extensions_and_large_blob_key(
+        rp_id_hash,
+        aaguid,
+        credential_id,
+        public_key,
+        user_verified,
+        extensions,
+        None,
+    )
+}
+
+pub fn encode_make_credential_response_with_extensions_and_large_blob_key(
+    rp_id_hash: RpIdHash,
+    aaguid: [u8; 16],
+    credential_id: &[u8],
+    public_key: &Es256PublicKey,
+    user_verified: bool,
+    extensions: Option<CborValue>,
+    large_blob_key: Option<&LargeBlobKey>,
+) -> Result<Ctap2Response, MakeCredentialResponseError> {
     if credential_id.is_empty() {
         return Err(MakeCredentialResponseError::EmptyCredentialId);
     }
@@ -240,23 +262,21 @@ pub fn encode_make_credential_response_with_extensions(
         authenticator_data.extend_from_slice(&encode(&extensions)?);
     }
 
-    let attestation_object = encode(&CborValue::Map(vec![
-        (
-            CborValue::Text("fmt".into()),
-            CborValue::Text("none".into()),
-        ),
-        (
-            CborValue::Text("authData".into()),
-            CborValue::Bytes(authenticator_data),
-        ),
-        (
-            CborValue::Text("attStmt".into()),
-            CborValue::Map(Vec::new()),
-        ),
-    ]))?;
+    let mut response = vec![
+        (CborValue::Unsigned(1), CborValue::Text("none".into())),
+        (CborValue::Unsigned(2), CborValue::Bytes(authenticator_data)),
+        (CborValue::Unsigned(3), CborValue::Map(Vec::new())),
+    ];
+    if let Some(key) = large_blob_key {
+        response.push((
+            CborValue::Unsigned(5),
+            CborValue::Bytes(key.as_bytes().to_vec()),
+        ));
+    }
+    let response = Zeroizing::new(CborValue::Map(response));
     Ok(Ctap2Response {
         status: Ctap2Status::Success,
-        payload: attestation_object,
+        payload: encode(&response)?,
     })
 }
 
@@ -405,6 +425,32 @@ pub fn encode_get_assertion_response_with_count_and_presence_and_uv_and_extensio
     user_verified: bool,
     extensions: Option<CborValue>,
 ) -> Result<Ctap2Response, GetAssertionResponseError> {
+    encode_get_assertion_response_with_count_and_presence_and_uv_and_extensions_and_large_blob_key(
+        rp_id_hash,
+        credential_id,
+        user_handle,
+        signature,
+        sign_count,
+        number_of_credentials,
+        user_present,
+        user_verified,
+        extensions,
+        None,
+    )
+}
+
+pub fn encode_get_assertion_response_with_count_and_presence_and_uv_and_extensions_and_large_blob_key(
+    rp_id_hash: RpIdHash,
+    credential_id: &[u8],
+    user_handle: Option<&[u8]>,
+    signature: &[u8],
+    sign_count: u32,
+    number_of_credentials: Option<u64>,
+    user_present: bool,
+    user_verified: bool,
+    extensions: Option<CborValue>,
+    large_blob_key: Option<&LargeBlobKey>,
+) -> Result<Ctap2Response, GetAssertionResponseError> {
     if credential_id.is_empty() {
         return Err(GetAssertionResponseError::EmptyCredentialId);
     }
@@ -465,17 +511,34 @@ pub fn encode_get_assertion_response_with_count_and_presence_and_uv_and_extensio
             )]),
         ));
     }
+    if let Some(key) = large_blob_key {
+        response.push((
+            CborValue::Unsigned(7),
+            CborValue::Bytes(key.as_bytes().to_vec()),
+        ));
+    }
 
+    let response = Zeroizing::new(CborValue::Map(response));
     Ok(Ctap2Response {
         status: Ctap2Status::Success,
-        payload: encode(&CborValue::Map(response))?,
+        payload: encode(&response)?,
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Ctap2Response {
     pub status: Ctap2Status,
     pub payload: Vec<u8>,
+}
+
+impl fmt::Debug for Ctap2Response {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Ctap2Response")
+            .field("status", &self.status)
+            .field("payload_len", &self.payload.len())
+            .finish()
+    }
 }
 
 impl Ctap2Response {
@@ -496,6 +559,7 @@ pub struct GetAssertionRequest {
     pub allow_list: Option<Vec<Vec<u8>>>,
     pub options: GetAssertionOptions,
     pub hmac_secret: Option<HmacSecretInput>,
+    pub large_blob_key: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -548,6 +612,7 @@ pub struct MakeCredentialRequest {
     pub hmac_secret: bool,
     pub cred_protect: Option<CredentialProtectionPolicy>,
     pub enforce_credential_protection_policy: bool,
+    pub large_blob_key: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -556,6 +621,7 @@ pub enum MakeCredentialError {
     MissingParameter(u64),
     UnexpectedType(u64),
     InvalidParameter(u64),
+    InvalidOption,
 }
 
 impl From<GetAssertionError> for MakeCredentialError {
@@ -565,6 +631,7 @@ impl From<GetAssertionError> for MakeCredentialError {
             GetAssertionError::MissingParameter(parameter) => Self::MissingParameter(parameter),
             GetAssertionError::UnexpectedType(parameter) => Self::UnexpectedType(parameter),
             GetAssertionError::InvalidParameter(parameter) => Self::InvalidParameter(parameter),
+            GetAssertionError::InvalidOption => Self::InvalidOption,
         }
     }
 }
@@ -577,6 +644,7 @@ impl MakeCredentialError {
             Self::MissingParameter(_) => Ctap2Status::MissingParameter,
             Self::UnexpectedType(_) => Ctap2Status::CborUnexpectedType,
             Self::InvalidParameter(_) => Ctap2Status::InvalidParameter,
+            Self::InvalidOption => Ctap2Status::InvalidOption,
         }
     }
 }
@@ -662,16 +730,22 @@ impl MakeCredentialRequest {
         if public_key_credential_parameters.is_empty() {
             return Err(MakeCredentialError::InvalidParameter(4));
         }
+        let options = options.unwrap_or_default();
+        let extensions = extensions.unwrap_or((false, None, false, false));
+        if extensions.3 && options.resident_key != Some(true) {
+            return Err(MakeCredentialError::InvalidOption);
+        }
         Ok(Self {
             client_data_hash: client_data_hash.ok_or(MakeCredentialError::MissingParameter(1))?,
             rp: rp.ok_or(MakeCredentialError::MissingParameter(2))?,
             user: user.ok_or(MakeCredentialError::MissingParameter(3))?,
             public_key_credential_parameters,
             exclude_list,
-            options: options.unwrap_or_default(),
-            hmac_secret: extensions.as_ref().is_some_and(|value| value.0),
-            cred_protect: extensions.as_ref().and_then(|value| value.1),
-            enforce_credential_protection_policy: extensions.is_some_and(|value| value.2),
+            options,
+            hmac_secret: extensions.0,
+            cred_protect: extensions.1,
+            enforce_credential_protection_policy: extensions.2,
+            large_blob_key: extensions.3,
         })
     }
 
@@ -880,13 +954,14 @@ fn parse_make_credential_options(
 
 fn parse_make_credential_extensions(
     value: CborValue,
-) -> Result<(bool, Option<CredentialProtectionPolicy>, bool), MakeCredentialError> {
+) -> Result<(bool, Option<CredentialProtectionPolicy>, bool, bool), MakeCredentialError> {
     let CborValue::Map(entries) = value else {
         return Err(MakeCredentialError::UnexpectedType(6));
     };
     let mut requested = None;
     let mut cred_protect = None;
     let mut enforce_policy = None;
+    let mut large_blob_key = None;
     for (key, value) in entries {
         let CborValue::Text(key) = key else {
             continue;
@@ -924,6 +999,15 @@ fn parse_make_credential_extensions(
                 };
                 enforce_policy = Some(value);
             }
+            "largeBlobKey" => {
+                if large_blob_key.is_some() {
+                    return Err(MakeCredentialError::InvalidParameter(6));
+                }
+                if value != CborValue::Bool(true) {
+                    return Err(MakeCredentialError::InvalidOption);
+                }
+                large_blob_key = Some(true);
+            }
             _ => {}
         }
     }
@@ -931,6 +1015,7 @@ fn parse_make_credential_extensions(
         requested.unwrap_or(false),
         cred_protect,
         enforce_policy.unwrap_or(false),
+        large_blob_key.unwrap_or(false),
     ))
 }
 
@@ -940,6 +1025,7 @@ pub enum GetAssertionError {
     MissingParameter(u64),
     UnexpectedType(u64),
     InvalidParameter(u64),
+    InvalidOption,
 }
 
 impl GetAssertionError {
@@ -950,6 +1036,7 @@ impl GetAssertionError {
             Self::MissingParameter(_) => Ctap2Status::MissingParameter,
             Self::UnexpectedType(_) => Ctap2Status::CborUnexpectedType,
             Self::InvalidParameter(_) => Ctap2Status::InvalidParameter,
+            Self::InvalidOption => Ctap2Status::InvalidOption,
         }
     }
 }
@@ -969,6 +1056,7 @@ impl GetAssertionRequest {
         let mut allow_list = None;
         let mut options = None;
         let mut hmac_secret = None;
+        let mut large_blob_key = false;
         let mut extensions_seen = false;
         for (key, value) in entries {
             let CborValue::Unsigned(key) = key else {
@@ -1013,7 +1101,9 @@ impl GetAssertionRequest {
                         return Err(GetAssertionError::InvalidParameter(4));
                     }
                     extensions_seen = true;
-                    hmac_secret = parse_hmac_secret_assertion(value)?;
+                    let parsed = parse_hmac_secret_assertion(value)?;
+                    hmac_secret = parsed.0;
+                    large_blob_key = parsed.1;
                 }
                 5 => {
                     if options.is_some() {
@@ -1030,6 +1120,7 @@ impl GetAssertionRequest {
             allow_list,
             options: options.unwrap_or_default(),
             hmac_secret,
+            large_blob_key,
         })
     }
 
@@ -1046,21 +1137,27 @@ impl GetAssertionRequest {
 
 fn parse_hmac_secret_assertion(
     value: CborValue,
-) -> Result<Option<HmacSecretInput>, GetAssertionError> {
+) -> Result<(Option<HmacSecretInput>, bool), GetAssertionError> {
     let CborValue::Map(entries) = value else {
         return Err(GetAssertionError::UnexpectedType(4));
     };
     let mut secret_value = None;
+    let mut large_blob_key = false;
     for (key, value) in entries {
         if key == CborValue::Text("hmac-secret".into()) {
             if secret_value.is_some() {
                 return Err(GetAssertionError::InvalidParameter(4));
             }
             secret_value = Some(value);
+        } else if key == CborValue::Text("largeBlobKey".into()) {
+            if large_blob_key || value != CborValue::Bool(true) {
+                return Err(GetAssertionError::InvalidOption);
+            }
+            large_blob_key = true;
         }
     }
     let Some(secret_value) = secret_value else {
-        return Ok(None);
+        return Ok((None, large_blob_key));
     };
     let CborValue::Map(fields) = secret_value else {
         return Err(GetAssertionError::UnexpectedType(4));
@@ -1110,12 +1207,15 @@ fn parse_hmac_secret_assertion(
     {
         return Err(GetAssertionError::InvalidParameter(4));
     }
-    Ok(Some(HmacSecretInput {
-        key_agreement: CborValue::Map(key_agreement),
-        salt_enc,
-        salt_auth,
-        pin_uv_auth_protocol: protocol,
-    }))
+    Ok((
+        Some(HmacSecretInput {
+            key_agreement: CborValue::Map(key_agreement),
+            salt_enc,
+            salt_auth,
+            pin_uv_auth_protocol: protocol,
+        }),
+        large_blob_key,
+    ))
 }
 
 fn parse_get_assertion_options(value: CborValue) -> Result<GetAssertionOptions, GetAssertionError> {

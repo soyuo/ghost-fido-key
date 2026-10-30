@@ -29,7 +29,7 @@ pub use client_pin::{
 pub use credentials::{
     CredentialError, CredentialId, CredentialKeyMetadata, CredentialKeyProtection,
     CredentialProtectionError, CredentialProtectionPolicy, CredentialProtector, CredentialRecord,
-    CredentialStore, Es256PublicKey, HmacSecretMaterial, KeyHandle,
+    CredentialStore, Es256PublicKey, HmacSecretMaterial, KeyHandle, LargeBlobKey,
     MAX_SERIALIZED_LARGE_BLOB_ARRAY, ManagedCredential, PinState, RpIdHash,
 };
 pub use ctap2::{
@@ -40,11 +40,12 @@ pub use ctap2::{
     MakeCredentialUser, PublicKeyCredentialParameter, encode_es256_cose_public_key,
     encode_get_assertion_response, encode_get_assertion_response_with_count,
     encode_get_assertion_response_with_count_and_presence_and_uv_and_extensions,
+    encode_get_assertion_response_with_count_and_presence_and_uv_and_extensions_and_large_blob_key,
     encode_get_assertion_response_with_count_and_uv,
     encode_get_assertion_response_with_count_and_uv_and_extensions, encode_get_info,
     encode_make_credential_response, encode_make_credential_response_with_extensions,
-    encode_response, get_assertion_authenticator_data,
-    get_assertion_authenticator_data_with_presence_and_uv,
+    encode_make_credential_response_with_extensions_and_large_blob_key, encode_response,
+    get_assertion_authenticator_data, get_assertion_authenticator_data_with_presence_and_uv,
     get_assertion_authenticator_data_with_uv,
 };
 pub use ctaphid::{
