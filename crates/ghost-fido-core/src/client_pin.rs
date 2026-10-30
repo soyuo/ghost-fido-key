@@ -63,6 +63,28 @@ impl PinUvAuthProtocol {
             Self::Two => 32,
         }
     }
+
+    #[must_use]
+    pub fn authenticate_token(self, token: &[u8; 32], message: &[u8]) -> Vec<u8> {
+        let mut mac = HmacSha256::new_from_slice(token).expect("HMAC accepts a 32-byte key");
+        mac.update(message);
+        let full = Zeroizing::new(<[u8; 32]>::from(mac.finalize().into_bytes()));
+        match self {
+            Self::One => full[..16].to_vec(),
+            Self::Two => full.to_vec(),
+        }
+    }
+
+    #[must_use]
+    pub fn verify_token_authentication(
+        self,
+        token: &[u8; 32],
+        message: &[u8],
+        auth: &[u8],
+    ) -> bool {
+        auth.len() == self.auth_parameter_size()
+            && self.authenticate_token(token, message).ct_eq(auth).into()
+    }
 }
 
 /// Protocol-selected key material. Protocol 1 uses the first 32 bytes; Protocol 2
@@ -152,6 +174,12 @@ impl PinUvAuthSharedSecret {
             .decrypt_padded_mut::<NoPadding>(&mut plaintext)
             .map_err(|_| PinCryptoError::InvalidCiphertext)?;
         Ok(plaintext)
+    }
+}
+
+impl Zeroize for PinUvAuthSharedSecret {
+    fn zeroize(&mut self) {
+        self.key.zeroize();
     }
 }
 

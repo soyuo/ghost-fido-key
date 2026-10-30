@@ -4,7 +4,8 @@ use std::{cmp::Reverse, time::Duration};
 
 use ghost_fido_core::{
     CborValue, CredentialError, CredentialId, CredentialProtectionPolicy, CredentialStore,
-    Ctap2Response, Ctap2Status, GetAssertionRequest, KeyHandle, client_pin_process_hmac_secret,
+    Ctap2Response, Ctap2Status, GetAssertionRequest, KeyHandle, PinUvAuthSharedSecret,
+    client_pin_process_hmac_secret_with_protocol,
     encode_get_assertion_response_with_count_and_presence_and_uv_and_extensions,
     get_assertion_authenticator_data_with_presence_and_uv,
 };
@@ -87,7 +88,7 @@ pub fn execute_get_assertion_with_uv_and_hmac_secret(
     verification: &dyn UserVerification,
     timeout: Duration,
     user_verified: bool,
-    hmac_secret_shared_secret: Option<&[u8; 32]>,
+    hmac_secret_shared_secret: Option<&PinUvAuthSharedSecret>,
 ) -> Result<GetAssertionExecution, GetAssertionExecutionError> {
     if request.options.user_verification == Some(true) && !user_verified {
         return Ok(single_response(Ctap2Response::error(
@@ -221,7 +222,7 @@ pub fn execute_next_assertion_with_uv_and_hmac_secret(
     store: &mut CredentialStore,
     key_store: &dyn KeyStore,
     user_verified: bool,
-    hmac_secret_shared_secret: Option<&[u8; 32]>,
+    hmac_secret_shared_secret: Option<&PinUvAuthSharedSecret>,
 ) -> Result<Ctap2Response, GetAssertionExecutionError> {
     sign_assertion_for_credential(
         request,
@@ -241,7 +242,7 @@ fn sign_assertion_for_credential(
     key_store: &dyn KeyStore,
     number_of_credentials: Option<u64>,
     user_verified: bool,
-    hmac_secret_shared_secret: Option<&[u8; 32]>,
+    hmac_secret_shared_secret: Option<&PinUvAuthSharedSecret>,
 ) -> Result<Ctap2Response, GetAssertionExecutionError> {
     let id = [credential_id.as_bytes().to_vec()];
     let Some(record) = store
@@ -269,7 +270,10 @@ fn sign_assertion_for_credential(
             return Ok(Ctap2Response::error(Ctap2Status::PinAuthInvalid));
         };
         let mut salt_enc = input.salt_enc.clone();
-        let result = client_pin_process_hmac_secret(
+        if shared_secret.protocol().id() as u64 != input.pin_uv_auth_protocol {
+            return Ok(Ctap2Response::error(Ctap2Status::PinAuthInvalid));
+        }
+        let result = client_pin_process_hmac_secret_with_protocol(
             shared_secret,
             &mut salt_enc,
             &input.salt_auth,
@@ -280,7 +284,7 @@ fn sign_assertion_for_credential(
         };
         Some(CborValue::Map(vec![(
             CborValue::Text("hmac-secret".into()),
-            CborValue::Bytes(encrypted_output),
+            CborValue::Bytes(encrypted_output.to_vec()),
         )]))
     } else {
         None
