@@ -775,6 +775,8 @@ impl CredentialStore {
         self.pending_provider_key.is_some() || self.pending_credential_deletion.is_some()
     }
 
+    /// Returns the pending credential selector and provider handle for internal recovery.
+    /// Callers must keep both values out of logs and external responses.
     #[must_use]
     pub fn pending_credential_deletion(&self) -> Option<(CredentialId, KeyHandle)> {
         self.pending_credential_deletion.clone()
@@ -828,6 +830,7 @@ impl CredentialStore {
     }
 
     /// Atomically removes the credential and its journal after provider deletion succeeds.
+    /// Callers must not invoke this before the provider confirms key deletion.
     pub fn finish_credential_deletion(
         &mut self,
         id: &CredentialId,
