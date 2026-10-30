@@ -733,7 +733,7 @@ fn parse_make_credential_rp(value: CborValue) -> Result<MakeCredentialRp, MakeCr
         }
     }
     Ok(MakeCredentialRp {
-        id: id.ok_or(MakeCredentialError::MissingParameter(2))?,
+        id: id.ok_or(MakeCredentialError::UnexpectedType(2))?,
         name,
     })
 }
@@ -784,7 +784,7 @@ fn parse_make_credential_user(value: CborValue) -> Result<MakeCredentialUser, Ma
         }
     }
     Ok(MakeCredentialUser {
-        id: id.ok_or(MakeCredentialError::MissingParameter(3))?,
+        id: id.ok_or(MakeCredentialError::UnexpectedType(3))?,
         name,
         display_name,
     })
@@ -836,9 +836,9 @@ fn parse_public_key_parameters(
             }
         }
         if credential_type.is_none() {
-            return Err(MakeCredentialError::MissingParameter(4));
+            return Err(MakeCredentialError::UnexpectedType(4));
         }
-        let algorithm = algorithm.ok_or(MakeCredentialError::MissingParameter(4))?;
+        let algorithm = algorithm.ok_or(MakeCredentialError::UnexpectedType(4))?;
         if parsed.iter().any(|entry| entry.algorithm == algorithm) {
             return Err(MakeCredentialError::InvalidParameter(4));
         }
@@ -1188,7 +1188,7 @@ fn parse_credential_descriptors(
                 }
             }
             if credential_type.is_none() || id.is_none() {
-                return Err(GetAssertionError::MissingParameter(parameter));
+                return Err(GetAssertionError::UnexpectedType(parameter));
             }
             Ok(id.expect("validated above"))
         })
