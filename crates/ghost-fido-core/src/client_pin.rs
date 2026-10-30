@@ -394,15 +394,7 @@ pub fn process_hmac_secret_with_protocol(
     credential_secret: &[u8; 32],
 ) -> Result<Zeroizing<Vec<u8>>, PinCryptoError> {
     use hmac::Mac;
-    if !matches!(encrypted_salts.len(), 32 | 48 | 64 | 80)
-        || !shared_secret.verify(encrypted_salts, salt_auth)
-    {
-        return Err(PinCryptoError::InvalidCiphertext);
-    }
-    let salts = shared_secret.decrypt(encrypted_salts)?;
-    if !matches!(salts.len(), 32 | 64) {
-        return Err(PinCryptoError::InvalidCiphertext);
-    }
+    let salts = decrypt_hmac_secret_salts(shared_secret, encrypted_salts, salt_auth)?;
     let mut output = Zeroizing::new(Vec::with_capacity(salts.len()));
     for salt in salts.chunks_exact(32) {
         let mut mac =
@@ -412,6 +404,33 @@ pub fn process_hmac_secret_with_protocol(
         output.extend_from_slice(&*digest);
     }
     shared_secret.encrypt(&output)
+}
+
+/// Authenticates and decrypts an hmac-secret request when no credential
+/// secret is available to produce an extension output.
+pub fn validate_hmac_secret_request_with_protocol(
+    shared_secret: &PinUvAuthSharedSecret,
+    encrypted_salts: &[u8],
+    salt_auth: &[u8],
+) -> Result<(), PinCryptoError> {
+    decrypt_hmac_secret_salts(shared_secret, encrypted_salts, salt_auth).map(drop)
+}
+
+fn decrypt_hmac_secret_salts(
+    shared_secret: &PinUvAuthSharedSecret,
+    encrypted_salts: &[u8],
+    salt_auth: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, PinCryptoError> {
+    if !matches!(encrypted_salts.len(), 32 | 48 | 64 | 80)
+        || !shared_secret.verify(encrypted_salts, salt_auth)
+    {
+        return Err(PinCryptoError::InvalidCiphertext);
+    }
+    let salts = shared_secret.decrypt(encrypted_salts)?;
+    if !matches!(salts.len(), 32 | 64) {
+        return Err(PinCryptoError::InvalidCiphertext);
+    }
+    Ok(salts)
 }
 
 #[must_use]

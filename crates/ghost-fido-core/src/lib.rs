@@ -23,6 +23,7 @@ pub use client_pin::{
     encrypt as client_pin_encrypt, pin_hash as client_pin_hash,
     process_hmac_secret as client_pin_process_hmac_secret,
     process_hmac_secret_with_protocol as client_pin_process_hmac_secret_with_protocol,
+    validate_hmac_secret_request_with_protocol as client_pin_validate_hmac_secret_request_with_protocol,
     validate_pin as client_pin_validate, verify_authentication as client_pin_verify_authentication,
 };
 pub use credentials::{
