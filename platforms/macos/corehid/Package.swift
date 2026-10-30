@@ -18,6 +18,7 @@ let package = Package(
             sources: ["GhostFidoVirtualDevice.swift", "GhostFidoCoreHIDBridge.swift"],
             linkerSettings: [
                 .linkedFramework("CoreHID"),
+                .linkedFramework("AppKit"),
                 .linkedFramework("Foundation"),
                 .linkedFramework("Security"),
             ]

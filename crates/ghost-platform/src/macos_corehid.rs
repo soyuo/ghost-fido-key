@@ -34,6 +34,12 @@ pub struct MacOsCoreHidBackend {
 }
 
 impl MacOsCoreHidBackend {
+    /// Returns the native session-switch generation used to invalidate pending approvals.
+    #[must_use]
+    pub fn session_generation() -> u64 {
+        crate::macos_corehid_ffi::session_generation()
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self {

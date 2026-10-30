@@ -1,8 +1,41 @@
 import CoreHID
 import Foundation
+import AppKit
 import Security
 
 private let ghostFidoVirtualHIDEntitlement = "com.apple.developer.hid.virtual.device"
+
+/// Tracks user-session transitions only; this is not a screen-lock detector.
+private final class GhostFidoSessionGeneration: @unchecked Sendable {
+    static let shared = GhostFidoSessionGeneration()
+
+    private let lock = NSLock()
+    private var value: UInt64 = 0
+    private var observers: [NSObjectProtocol] = []
+
+    private init() {
+        let center = NSWorkspace.shared.notificationCenter
+        observers.append(center.addObserver(
+            forName: NSWorkspace.sessionDidResignActiveNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.advance()
+        })
+    }
+
+    var current: UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    private func advance() {
+        lock.lock()
+        value &+= 1
+        lock.unlock()
+    }
+}
 
 private enum GhostFidoCoreHIDBridgeStatus: Int32 {
     case success = 0
@@ -109,6 +142,12 @@ private func processHasVirtualHIDEntitlement() -> Bool {
     let signingInformation = information as NSDictionary
     let entitlements = signingInformation[kSecCodeInfoEntitlementsDict as String] as? NSDictionary
     return entitlements?[ghostFidoVirtualHIDEntitlement] as? Bool == true
+}
+
+/// Returns the generation advanced whenever macOS reports session switch-out.
+@_cdecl("ghost_fido_corehid_session_generation")
+public func ghostFidoCoreHIDSessionGeneration() -> UInt64 {
+    GhostFidoSessionGeneration.shared.current
 }
 
 /// Reports readiness only when the process signature includes Apple's virtual HID entitlement.
