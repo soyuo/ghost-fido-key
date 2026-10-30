@@ -16,6 +16,7 @@ const NOT_READY: i32 = 4;
 const NO_RESOURCES: i32 = 5;
 
 unsafe extern "C" {
+    fn ghost_fido_corehid_session_generation() -> u64;
     fn ghost_fido_corehid_check_readiness(vendor_id: u32, product_id: u32) -> i32;
     fn ghost_fido_corehid_create(
         vendor_id: u32,
@@ -45,6 +46,11 @@ pub(super) enum BridgeError {
     NotReady,
     NoResources,
     Io,
+}
+
+pub(super) fn session_generation() -> u64 {
+    // SAFETY: the Swift function returns an integer snapshot and retains no pointers.
+    unsafe { ghost_fido_corehid_session_generation() }
 }
 
 pub(super) fn check_readiness(vendor_id: u16, product_id: u16) -> Result<(), BridgeError> {

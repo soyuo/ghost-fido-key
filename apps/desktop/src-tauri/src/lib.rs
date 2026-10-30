@@ -6,6 +6,8 @@ use ghost_platform::KeyReference;
 #[cfg(target_os = "linux")]
 use ghost_platform::LinuxKeyStore;
 #[cfg(target_os = "macos")]
+use ghost_platform::MacOsCoreHidBackend;
+#[cfg(target_os = "macos")]
 use ghost_platform::MacOsKeyStore;
 #[cfg(target_os = "windows")]
 use ghost_platform::WindowsKeyStore;
@@ -16,6 +18,8 @@ use ghost_platform::{
 use ghost_platform::{KeyCreationPolicy, KeyStore, SoftwareKeyConsent};
 use serde::Serialize;
 use std::collections::HashMap;
+#[cfg(target_os = "macos")]
+use std::time::Instant;
 use std::{
     fs,
     sync::{Arc, Mutex, mpsc, mpsc::SyncSender},
@@ -594,6 +598,8 @@ impl UserVerification for DesktopVerificationProvider {
         }
 
         let request_id = Uuid::new_v4().to_string();
+        #[cfg(target_os = "macos")]
+        let session_generation = MacOsCoreHidBackend::session_generation();
         let prompt = ApprovalPrompt {
             request_id: request_id.clone(),
             relying_party_id: request.relying_party_id.clone(),
@@ -658,29 +664,66 @@ impl UserVerification for DesktopVerificationProvider {
             ));
         }
 
-        match receiver.recv_timeout(timeout) {
-            Ok(decision) => Ok(decision),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                if let Ok(mut pending) = self.pending.lock() {
-                    pending.remove(&request_id);
+        #[cfg(target_os = "macos")]
+        let started_at = Instant::now();
+        loop {
+            #[cfg(target_os = "macos")]
+            let wait = timeout
+                .saturating_sub(started_at.elapsed())
+                .min(Duration::from_millis(100));
+            #[cfg(not(target_os = "macos"))]
+            let wait = timeout;
+
+            match receiver.recv_timeout(wait) {
+                Ok(decision) => {
+                    #[cfg(target_os = "macos")]
+                    if MacOsCoreHidBackend::session_generation() != session_generation {
+                        self.cancel_one(&request_id);
+                        let _ = self.app.emit("approval-cancelled", &request_id);
+                        return Err(PlatformError::new(
+                            PlatformErrorKind::UserVerificationUnavailable,
+                            HostPlatform::MacOs,
+                            "macOS user session switched during the approval request",
+                        ));
+                    }
+                    return Ok(decision);
                 }
-                let _ = self.app.emit("approval-cancelled", &request_id);
-                Err(PlatformError::new(
-                    PlatformErrorKind::Timeout,
-                    HostPlatform::current(),
-                    "approval request timed out",
-                ))
-            }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                if let Ok(mut pending) = self.pending.lock() {
-                    pending.remove(&request_id);
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    #[cfg(target_os = "macos")]
+                    {
+                        if MacOsCoreHidBackend::session_generation() != session_generation {
+                            self.cancel_one(&request_id);
+                            return Err(PlatformError::new(
+                                PlatformErrorKind::UserVerificationUnavailable,
+                                HostPlatform::MacOs,
+                                "macOS user session switched during the approval request",
+                            ));
+                        }
+                        if started_at.elapsed() < timeout {
+                            continue;
+                        }
+                    }
+                    if let Ok(mut pending) = self.pending.lock() {
+                        pending.remove(&request_id);
+                    }
+                    let _ = self.app.emit("approval-cancelled", &request_id);
+                    return Err(PlatformError::new(
+                        PlatformErrorKind::Timeout,
+                        HostPlatform::current(),
+                        "approval request timed out",
+                    ));
                 }
-                let _ = self.app.emit("approval-cancelled", &request_id);
-                Err(PlatformError::new(
-                    PlatformErrorKind::UserVerificationUnavailable,
-                    HostPlatform::current(),
-                    "approval response channel closed",
-                ))
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    if let Ok(mut pending) = self.pending.lock() {
+                        pending.remove(&request_id);
+                    }
+                    let _ = self.app.emit("approval-cancelled", &request_id);
+                    return Err(PlatformError::new(
+                        PlatformErrorKind::UserVerificationUnavailable,
+                        HostPlatform::current(),
+                        "approval response channel closed",
+                    ));
+                }
             }
         }
     }
