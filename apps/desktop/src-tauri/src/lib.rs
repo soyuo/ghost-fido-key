@@ -1044,6 +1044,31 @@ fn with_stopped_credential_store<T>(
     let store = store_slot
         .as_mut()
         .ok_or_else(|| credential_store_status(state))?;
+    if let Some((id, handle)) = store.pending_credential_deletion() {
+        let reference = std::str::from_utf8(handle.as_bytes())
+            .map_err(|_| "A pending credential key reference is invalid.".to_owned())?;
+        management_key_store()?
+            .delete_key(&KeyReference::new(reference))
+            .map_err(|error| format!("Could not resume credential deletion. {}", error.detail))?;
+        store
+            .finish_credential_deletion(&id, &handle)
+            .map_err(|_| "Could not finish pending credential deletion.".to_owned())?;
+        state
+            .provider_key_cleanup_pending
+            .store(store.provider_key_cleanup_pending(), Ordering::Release);
+    } else if let Some(handle) = store.pending_provider_key_handle().cloned() {
+        let reference = std::str::from_utf8(handle.as_bytes())
+            .map_err(|_| "A pending provider key reference is invalid.".to_owned())?;
+        management_key_store()?
+            .delete_key(&KeyReference::new(reference))
+            .map_err(|error| format!("Could not resume provider-key cleanup. {}", error.detail))?;
+        store
+            .mark_provider_key_deleted(&handle)
+            .map_err(|_| "Could not clear the pending provider-key cleanup.".to_owned())?;
+        state
+            .provider_key_cleanup_pending
+            .store(store.provider_key_cleanup_pending(), Ordering::Release);
+    }
     operation(store)
 }
 
@@ -1161,9 +1186,9 @@ fn delete_credential(
     creation_order: u64,
 ) -> Result<(), String> {
     let result = with_stopped_credential_store(&state, |store| {
-        let credential = store
-            .by_creation_order(creation_order)
-            .ok_or_else(|| "The credential no longer exists.".to_owned())?;
+        let Some(credential) = store.by_creation_order(creation_order).cloned() else {
+            return Ok(());
+        };
         let relying_party = credential
             .relying_party_id
             .as_deref()
@@ -1180,6 +1205,12 @@ fn delete_credential(
         )?;
         let reference = String::from_utf8(credential.key_handle.as_bytes().to_vec())
             .map_err(|_| "The credential key reference is invalid.".to_owned())?;
+        let handle = store
+            .begin_credential_deletion(&credential.id)
+            .map_err(|_| "Could not persist the credential deletion intent.".to_owned())?;
+        state
+            .provider_key_cleanup_pending
+            .store(true, Ordering::Release);
         management_key_store()?
             .delete_key(&KeyReference::new(reference))
             .map_err(|error| {
@@ -1189,11 +1220,14 @@ fn delete_credential(
                 )
             })?;
         store
-            .remove_by_creation_order(creation_order)
-            .map(|_| ())
+            .finish_credential_deletion(&credential.id, &handle)
             .map_err(|_| {
                 "The signing key was deleted, but credential metadata could not be removed. Retry deletion to finish cleanup.".to_owned()
-            })
+            })?;
+        state
+            .provider_key_cleanup_pending
+            .store(false, Ordering::Release);
+        Ok(())
     });
     audit::record(
         audit::Event::CredentialDeletion,
@@ -1225,7 +1259,22 @@ fn reset_credentials(
                 "Delete all credentials, signing keys, and app-managed metadata encryption keys from this computer? This cannot be undone.",
             )?;
         }
-        if let Some(handle) = store.pending_provider_key_handle().cloned() {
+        if let Some((id, handle)) = store.pending_credential_deletion() {
+            let reference = std::str::from_utf8(handle.as_bytes())
+                .map_err(|_| "A pending credential key reference is invalid.".to_owned())?;
+            management_key_store()?
+                .delete_key(&KeyReference::new(reference))
+                .map_err(|error| {
+                    format!("Could not resume credential deletion. {}", error.detail)
+                })?;
+            store.finish_credential_deletion(&id, &handle).map_err(|_| {
+                "Credential key cleanup succeeded, but its deletion journal could not be cleared."
+                    .to_owned()
+            })?;
+            state
+                .provider_key_cleanup_pending
+                .store(false, Ordering::Release);
+        } else if let Some(handle) = store.pending_provider_key_handle().cloned() {
             let reference = std::str::from_utf8(handle.as_bytes())
                 .map_err(|_| "A pending provider key reference is invalid.".to_owned())?;
             management_key_store()?
@@ -1339,10 +1388,11 @@ pub fn run() {
                     .as_ref()
                     .is_some_and(CredentialStore::reset_is_pending),
             ));
-            let provider_key_cleanup_pending =
-                Arc::new(AtomicBool::new(store.as_ref().is_some_and(|store| {
-                    store.pending_provider_key_handle().is_some()
-                })));
+            let provider_key_cleanup_pending = Arc::new(AtomicBool::new(
+                store
+                    .as_ref()
+                    .is_some_and(|store| store.provider_key_cleanup_pending()),
+            ));
             audit::record(
                 audit::Event::CredentialStoreInitialization,
                 if store_available {
