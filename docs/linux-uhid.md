@@ -12,6 +12,8 @@ contract from `ghost-platform`.
   attached device.
 - Input reports are accepted only when they are exactly 64 bytes.
 - Output, open, close, stop, and feature-report events are handled explicitly.
+- Each output-read call uses one monotonic timeout; unrelated UHID events do not
+  restart the caller's deadline.
 - `detach` sends `UHID_DESTROY`; the backend also attempts cleanup during drop.
 - Missing `/dev/uhid`, insufficient permissions, malformed events, and timeout
   are mapped to explicit shared capability or platform error states.
