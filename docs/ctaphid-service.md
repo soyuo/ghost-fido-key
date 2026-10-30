@@ -15,15 +15,20 @@ available during user approval. Pending channels receive independent
 keepalives and deadlines; the shared credential store and service remain
 serialized.
 
-A valid CTAPHID CANCEL removes a queued request before it can execute. For the
-currently executing channel, it cancels pending user verification and discards
-the eventual service response; the next queued request starts after that
-service call returns. Channel expiry follows the same per-channel cleanup.
-Cancelled or expired channels never receive a stale response. The service
-executor should return CTAP2 `KEEPALIVE_CANCEL` when cancellation reaches an
-active CTAP command. The transport owner must clear that channel's
-`AuthenticatorService` continuation state when it receives a cancellation or
-expiry event.
+A valid CTAPHID CANCEL completes the original CBOR transaction with
+`KEEPALIVE_CANCEL`; the CANCEL command itself receives no response. A queued
+request can be completed immediately when it reaches dispatch order. For the
+currently executing request, the runtime cancels pending user verification,
+discards the eventual service result, and sends `KEEPALIVE_CANCEL` after that
+call returns.
+
+A valid same-channel INIT resynchronization sends its INIT response, aborts the
+prior CBOR transaction, and discards that request's eventual service result.
+Request IDs keep the old completion separate from a new request on the same
+channel, which can execute after the prior service call unwinds. Channel expiry
+uses the same stale-result protection but emits no CBOR response. The transport
+owner must clear that channel's `AuthenticatorService` continuation state on
+cancellation, resynchronization, or expiry.
 
 This layer does not own an OS device handle, background thread, or event loop.
 Each platform backend remains responsible for attachment, report I/O, shutdown,
