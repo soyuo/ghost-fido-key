@@ -13,7 +13,7 @@ it through `AuthenticatorService` and passes the response to
 packet arrives and holds it through the response or abort. If a different
 channel starts a request while that transaction is active, the session returns
 `CTAPHID_ERROR(ERR_CHANNEL_BUSY)` on the requesting channel without dispatching
-or queuing the request. If a same-channel INIT has aborted the HID transaction
+or queuing the request. A broadcast-CID INIT remains a channel-allocation request and`r`ndoes not contend for the active application channel. If a same-channel INIT has aborted the HID transaction
 but its serialized service call is still unwinding, the desktop runtime also
 rejects completed requests from other channels instead of queueing them. The
 active transaction continues normally. The desktop runtime keeps the report

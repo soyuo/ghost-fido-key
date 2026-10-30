@@ -381,9 +381,10 @@ impl CtapHidSession {
                 CtapHidErrorCode::InvalidChannel,
             )?));
         }
-        if self
-            .transaction_channel
-            .is_some_and(|active_channel| active_channel != channel)
+        if !is_broadcast_init
+            && self
+                .transaction_channel
+                .is_some_and(|active_channel| active_channel != channel)
         {
             return Ok(SessionEvent::Response(encode_error(
                 channel,
