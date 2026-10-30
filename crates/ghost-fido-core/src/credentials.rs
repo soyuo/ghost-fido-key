@@ -435,7 +435,7 @@ impl CredentialStore {
                         .map_err(|_| CredentialError::StorageFailure)?;
                     records
                 }
-                4 | 5 | 6 | 7 | 8 | 9 | 10 => {
+                4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 => {
                     let protected = read_protected_payload(&connection)?;
                     let plaintext = protector
                         .unprotect(&protected, STORAGE_AAD_V4)
