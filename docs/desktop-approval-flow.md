@@ -16,12 +16,33 @@ prompt. Cancellation maps to CTAP2 `KEEPALIVE_CANCEL`. Failure to deliver an
 event or receive a response fails closed. The event does not include credential
 IDs, user handles, key references, or private key material.
 
-If the desktop session locks while approval is pending, the request remains
-unapproved and expires at its normal deadline (30 seconds in the desktop
-runtime). Unlocking does not restore the expired request. The app does not
-currently subscribe to an OS-specific lock notification; verify this timeout
-behavior on target systems using the T-022 procedure in
-[`security-acceptance.md`](security-acceptance.md).
+## Session-lock behavior
+
+The desktop checks session protection before starting the authenticator and
+before delivering an approval. A lock cancels pending requests on Windows and
+Linux; the UI removes each prompt through `approval-cancelled`. Unlocking does
+not restore a canceled request. The 30-second approval deadline remains a
+fail-closed fallback.
+
+- **Windows:** the app registers for this login session's WTS lock/unlock
+  notifications and checks whether the active desktop is locked. A lock
+  cancels pending approvals and blocks new ones. If the monitor cannot be
+  installed or the lock state cannot be checked, authentication fails closed.
+- **Linux:** the app monitors the current systemd-logind session's `Lock` and
+  `Unlock` signals and re-reads `LockedHint`. A `Lock` signal cancels pending
+  approvals. `Unlock` alone does not resume them; authentication remains
+  blocked until the next check confirms `LockedHint` is false. Missing or
+  unavailable logind protection fails closed. Behavior depends on the desktop
+  environment delivering the expected signal and lock hint.
+- **macOS:** an observed user-session switch-out invalidates pending approval
+  during the runtime's polling interval. This detects session switch-out, not
+  screen locking; no screen-lock detection is claimed. The 30-second deadline
+  remains the fallback when no session-switch notification is observed.
+
+These runtime paths still require target-machine acceptance. Follow the T-022
+procedure in [`security-acceptance.md`](security-acceptance.md), retain the
+relying-party result, and leave each platform row unverified until its required
+cases pass. This documentation does not establish OS or browser support.
 
 This is the desktop approval boundary only. The Tauri app still has no live HID
 request source, so it does not receive browser authentication requests.
