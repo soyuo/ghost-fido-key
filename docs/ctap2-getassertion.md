@@ -6,8 +6,12 @@ and the known `up`/`uv` boolean options.
 Each allow-list descriptor must identify a non-empty credential ID of type
 `public-key`. `rp_id_hash` computes SHA-256 over the UTF-8 RP ID, and
 `find_credentials` selects matching records through the RP-isolated credential
-store. When the allow-list is absent, only discoverable credentials are
-selected. Unknown option names are ignored and absent `up`/`uv` options remain
+store. An empty but present allow-list remains distinct from an absent list: it
+matches no credentials and returns `NoCredentials`; it never selects
+discoverable credentials. CTAP instructs platforms not to send empty allow-lists,
+but this behavior follows the authenticator algorithm when one is received.
+When the allow-list is absent, only discoverable credentials are selected.
+Unknown option names are ignored and absent `up`/`uv` options remain
 `None` for the execution layer to interpret. Decoding does not claim that the
 authenticator can perform user verification. User approval and signing remain
 follow-up work.
