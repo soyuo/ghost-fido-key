@@ -1385,7 +1385,7 @@ impl<'a> AuthenticatorService<'a> {
                 )?;
                 Ok(true)
             }
-            None if uv_required => Err(Ctap2Status::PinUvAuthTokenRequired),
+            None if uv_required => Err(Ctap2Status::InvalidOption),
             None => Ok(false),
         }
     }

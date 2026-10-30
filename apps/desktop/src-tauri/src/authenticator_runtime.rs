@@ -102,7 +102,6 @@ pub fn run(
             options: vec![
                 ("rk".into(), true),
                 ("up".into(), true),
-                ("uv".into(), false),
                 ("clientPin".into(), false),
                 ("plat".into(), false),
             ],
