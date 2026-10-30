@@ -6,7 +6,7 @@ use aes::{
 };
 use cbc::{Decryptor, Encryptor};
 use getrandom::SysRng;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit as HmacKeyInit, Mac};
 use p256::{
     PublicKey,
     ecdh::EphemeralSecret,
@@ -21,7 +21,7 @@ use crate::{
     credentials::CredentialStore,
 };
 
-type HmacSha256 = Hmac<Sha256>;
+type HmacSha256 = Hmac<sha2_client_pin::Sha256>;
 
 pub const PIN_UV_AUTH_PROTOCOL: u8 = 1;
 pub const PIN_UV_AUTH_PARAMETER_SIZE: usize = 16;
@@ -175,7 +175,7 @@ fn crypt<const ENCRYPT: bool>(key: &[u8; 32], data: &mut [u8]) -> Result<(), Pin
 pub fn authenticate(shared_secret: &[u8; 32], message: &[u8]) -> [u8; 16] {
     let mut mac = HmacSha256::new_from_slice(shared_secret).expect("HMAC accepts a 32-byte key");
     mac.update(message);
-    let full = mac.finalize().into_bytes();
+    let full = Zeroizing::new(<[u8; 32]>::from(mac.finalize().into_bytes()));
     full[..16].try_into().expect("fixed HMAC truncation length")
 }
 

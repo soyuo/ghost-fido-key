@@ -8,11 +8,12 @@ rust-version.workspace = true
 [dependencies]
 aes = { version = "0.8.4", features = ["zeroize"] }
 cbc = { version = "0.1.2", features = ["zeroize"] }
-hmac = "0.12.1"
+hmac = { version = "0.13.0", features = ["zeroize"] }
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdh", "std"] }
 getrandom = { version = "0.4.3", features = ["sys_rng"] }
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 sha2 = "0.10.9"
+sha2-client-pin = { package = "sha2", version = "0.11.1", default-features = false, features = ["zeroize"] }
 subtle = "2.6.1"
 zeroize = "1"
 

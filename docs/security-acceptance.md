@@ -5,6 +5,16 @@ OS session behavior, HID transport, or browser acceptance. Record the tested OS
 version and architecture, application build, result, and a reproducible
 evidence reference. Leave results as `Not run` until observed on the target.
 
+## Secret-memory handling
+
+ClientPIN and `hmac-secret` use HMAC-SHA256 with zeroization enabled for the
+SHA-256 digest state, and the application clears its full-length HMAC output
+buffers after use. This does not guarantee that every dependency-owned
+intermediate is erased: the current RustCrypto HMAC implementation creates a
+normalized key block and an inner digest temporary that are not zeroized by its
+zeroize feature. Treat this as a known memory-hygiene limitation; do not claim
+complete erasure of all HMAC intermediates.
+
 ## T-022: Login-session lock during authentication
 
 The desktop requires an explicit in-app approval followed by a native
