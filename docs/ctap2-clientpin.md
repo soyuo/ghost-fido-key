@@ -4,7 +4,11 @@ ClientPIN is advertised only when its protected state and request path are avail
 
 ## Protocol compatibility
 
-The authenticator accepts PIN/UV Auth Protocol 1 and 2 and advertises them in descending preference order (`[2, 1]`) when protected credential storage is available. An omitted protocol identifier selects Protocol 1 for compatibility. An explicitly malformed or unsupported identifier returns `InvalidParameter`; it never silently falls back to Protocol 1. Key-agreement exchanges and PIN/UV tokens are bound to the selected protocol, and command authorization rejects a protocol mismatch.
+The authenticator accepts PIN/UV Auth Protocol 1 and 2 and advertises them in descending preference order (`[2, 1]`) when protected credential storage is available. An omitted protocol identifier selects Protocol 1 for compatibility. An unsupported unsigned protocol identifier returns `InvalidParameter`; a protocol identifier with the wrong CBOR type returns `CborUnexpectedType` and never silently falls back to Protocol 1. Key-agreement exchanges and PIN/UV tokens are bound to the selected protocol, and command authorization rejects a protocol mismatch.
+
+## ClientPIN input errors
+
+The required `subCommand` parameter returns `MissingParameter` only when absent and `CborUnexpectedType` when it is not an unsigned integer. Numeric subcommands that are not implemented return `InvalidSubcommand` (`0x3e`), including unsigned values outside the implementation's internal integer range. Duplicate parameter keys remain `InvalidParameter`.
 
 Protocol 1 preserves the CTAP2.0 behavior:
 
