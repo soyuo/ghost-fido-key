@@ -2,10 +2,10 @@
 
 use std::collections::HashMap;
 
+use dbus_secret_service::{EncryptionType, SecretService};
 use ghost_fido_core::Es256PublicKey;
 use p256::ecdsa::{Signature, SigningKey, signature::hazmat::PrehashSigner};
 use p256::elliptic_curve::sec1::ToSec1Point;
-use secret_service::{EncryptionType, blocking::SecretService};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -89,7 +89,7 @@ impl LinuxKeyStore {
         Ok(Zeroizing::new(key))
     }
 
-    fn ensure_unlocked(service: &SecretService<'_>) -> Result<(), PlatformError> {
+    fn ensure_unlocked(service: &SecretService) -> Result<(), PlatformError> {
         let collection = service
             .get_default_collection()
             .map_err(|_| Self::fail("default Secret Service collection is unavailable"))?;
