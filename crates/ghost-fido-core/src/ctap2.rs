@@ -76,6 +76,7 @@ pub enum Ctap2Status {
     PinNotSet = 0x35,
     PinUvAuthTokenRequired = 0x36,
     PinPolicyViolation = 0x37,
+    InvalidSubcommand = 0x3e,
     UnauthorizedPermission = 0x40,
 }
 
