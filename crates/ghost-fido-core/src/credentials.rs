@@ -13,9 +13,9 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::cbor::{CborError, CborLimits, CborValue, decode_with_limits, encode as encode_cbor};
 
-const STORAGE_SCHEMA_VERSION: i64 = 14;
+const STORAGE_SCHEMA_VERSION: i64 = 15;
 const PIN_STATE_SCHEMA_VERSION: i64 = 8;
-const CREDENTIAL_RECORD_SCHEMA_VERSION: i64 = 8;
+const CREDENTIAL_RECORD_SCHEMA_VERSION: i64 = 9;
 const RESET_JOURNAL_SCHEMA_VERSION: i64 = 9;
 const RESET_METADATA_KEY_CLEANUP_SCHEMA_VERSION: i64 = 11;
 const PROVIDER_KEY_JOURNAL_SCHEMA_VERSION: i64 = 11;
@@ -39,6 +39,7 @@ const INITIAL_LARGE_BLOB_ARRAY: [u8; 17] = [
 ];
 const MAX_USER_LABEL_BYTES: usize = 256;
 const MAX_RP_ID_BYTES: usize = 253;
+pub const MAX_CREDENTIAL_BLOB_LENGTH: usize = 32;
 
 pub type RpIdHash = [u8; 32];
 
@@ -146,6 +147,8 @@ pub struct CredentialRecord {
     pub hmac_secret: Option<HmacSecretMaterial>,
     /// Per-credential CTAP `largeBlobKey`; protected with the credential record.
     pub large_blob_key: Option<LargeBlobKey>,
+    /// Opaque CTAP `credBlob` data; protected with the credential record.
+    pub cred_blob: Option<CredentialBlob>,
     /// CTAP `credProtect` level. Older records default to level 1.
     pub cred_protect: CredentialProtectionPolicy,
     pub key_metadata: CredentialKeyMetadata,
@@ -221,6 +224,28 @@ impl fmt::Debug for LargeBlobKey {
     }
 }
 
+/// Opaque credential-scoped CTAP `credBlob` bytes.
+#[derive(Clone, PartialEq, Eq)]
+pub struct CredentialBlob(Zeroizing<Vec<u8>>);
+
+impl CredentialBlob {
+    #[must_use]
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(Zeroizing::new(bytes))
+    }
+
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl fmt::Debug for CredentialBlob {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("CredentialBlob([REDACTED])")
+    }
+}
+
 /// Safe local-management projection of one credential record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedCredential {
@@ -250,6 +275,7 @@ impl fmt::Debug for CredentialRecord {
                 "large_blob_key",
                 &self.large_blob_key.as_ref().map(|_| "[REDACTED]"),
             )
+            .field("cred_blob", &self.cred_blob.as_ref().map(|_| "[REDACTED]"))
             .field("cred_protect", &self.cred_protect)
             .field("key_metadata", &self.key_metadata)
             .field("discoverable", &self.discoverable)
@@ -495,7 +521,7 @@ impl CredentialStore {
                         .map_err(|_| CredentialError::StorageFailure)?;
                     records
                 }
-                4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 => {
+                4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 => {
                     let protected = read_protected_payload(&connection)?;
                     let plaintext = protector
                         .unprotect(&protected, STORAGE_AAD_V4)
@@ -503,10 +529,11 @@ impl CredentialStore {
                     decode_records(
                         &plaintext,
                         match schema_version {
+                            15 => 9,
                             14 => 8,
                             11 | 12 | 13 => 7,
                             10 => 7,
-                            9 => 7,
+                            9 => 9,
                             8 => 8,
                             7 => 6,
                             6 => 5,
@@ -2699,6 +2726,13 @@ fn encode_records(
     if records.len() > MAX_PERSISTED_RECORDS {
         return Err(CredentialError::RecordLimitExceeded);
     }
+    if records.values().any(|record| {
+        record.cred_blob.as_ref().is_some_and(|blob| {
+            blob.as_bytes().len() > MAX_CREDENTIAL_BLOB_LENGTH || !record.discoverable
+        })
+    }) {
+        return Err(CredentialError::ProtectedDataInvalid);
+    }
     let values = records
         .values()
         .map(|record| {
@@ -2751,6 +2785,9 @@ fn encode_records(
                     .map_or(CborValue::Null, |key| {
                         CborValue::Bytes(key.as_bytes().to_vec())
                     }),
+                record.cred_blob.as_ref().map_or(CborValue::Null, |blob| {
+                    CborValue::Bytes(blob.as_bytes().to_vec())
+                }),
             ])
         })
         .collect::<Vec<_>>();
@@ -2798,11 +2835,20 @@ fn decode_records(
             5 => fields.len() == 13,
             6 => fields.len() == 13 || fields.len() == 14,
             7 => (13..=15).contains(&fields.len()),
-            8.. => (13..=16).contains(&fields.len()),
+            8 => (13..=16).contains(&fields.len()),
+            9.. => (13..=17).contains(&fields.len()),
             _ => false,
         };
         let record = if version >= 5 && recognized_record_shape {
             let fields = fields.as_slice();
+            let (cred_blob_value, fields) = if fields.len() == 17 && version >= 9 {
+                let (value, fields) = fields
+                    .split_last()
+                    .ok_or(CredentialError::ProtectedDataInvalid)?;
+                (Some(value), fields)
+            } else {
+                (None, fields)
+            };
             let (large_blob_key_value, fields) = if fields.len() == 16 && version >= 8 {
                 let (value, fields) = fields
                     .split_last()
@@ -2846,6 +2892,13 @@ fn decode_records(
                 .map(decode_large_blob_key)
                 .transpose()?
                 .flatten();
+            record.cred_blob = cred_blob_value
+                .map(decode_credential_blob)
+                .transpose()?
+                .flatten();
+            if record.cred_blob.is_some() && !record.discoverable {
+                return Err(CredentialError::ProtectedDataInvalid);
+            }
             record
         } else {
             decode_record_fields(fields, with_user_labels, with_creation_order, version >= 4)?
@@ -3034,6 +3087,7 @@ fn decode_record_fields(
         public_key: None,
         hmac_secret: None,
         large_blob_key: None,
+        cred_blob: None,
         cred_protect: CredentialProtectionPolicy::default(),
         key_metadata: CredentialKeyMetadata {
             protection: key_protection,
@@ -3092,6 +3146,16 @@ fn decode_large_blob_key(value: &CborValue) -> Result<Option<LargeBlobKey>, Cred
             let mut key = [0; 32];
             key.copy_from_slice(bytes);
             Ok(Some(LargeBlobKey::new(key)))
+        }
+        _ => Err(CredentialError::ProtectedDataInvalid),
+    }
+}
+
+fn decode_credential_blob(value: &CborValue) -> Result<Option<CredentialBlob>, CredentialError> {
+    match value {
+        CborValue::Null => Ok(None),
+        CborValue::Bytes(bytes) if bytes.len() <= MAX_CREDENTIAL_BLOB_LENGTH => {
+            Ok(Some(CredentialBlob::new(bytes.clone())))
         }
         _ => Err(CredentialError::ProtectedDataInvalid),
     }

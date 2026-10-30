@@ -11,6 +11,7 @@ use ghost_fido_core::{
     get_assertion_authenticator_data_with_presence_and_uv,
 };
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 use crate::{
     KeyReference, KeyStore, PlatformError, PlatformErrorKind, SigningAlgorithm, UserVerification,
@@ -295,7 +296,7 @@ fn sign_assertion_for_credential(
         .ok_or(CredentialError::CounterOverflow)?;
     let rp_id_hash = request.rp_id_hash();
     let reference = key_reference(&key_handle)?;
-    let extensions = if let Some(input) = request.hmac_secret.as_ref() {
+    let hmac_extensions = if let Some(input) = request.hmac_secret.as_ref() {
         let Some(shared_secret) = hmac_secret_shared_secret else {
             return Ok(Ctap2Response::error(Ctap2Status::PinAuthInvalid));
         };
@@ -332,23 +333,46 @@ fn sign_assertion_for_credential(
     } else {
         None
     };
+    let mut extension_values = match hmac_extensions {
+        Some(CborValue::Map(values)) => values,
+        None => Vec::new(),
+        Some(_) => return Err(GetAssertionExecutionError::ResponseEncoding),
+    };
+    if request.get_cred_blob {
+        extension_values.push((
+            CborValue::Text("credBlob".into()),
+            CborValue::Bytes(
+                record
+                    .cred_blob
+                    .as_ref()
+                    .map_or_else(Vec::new, |blob| blob.as_bytes().to_vec()),
+            ),
+        ));
+    }
+    let extensions =
+        (!extension_values.is_empty()).then(|| Zeroizing::new(CborValue::Map(extension_values)));
+    let response_extensions = extensions.as_ref().map(|value| (**value).clone());
     let user_present = request.options.user_presence != Some(false);
-    let mut authenticator_data = get_assertion_authenticator_data_with_presence_and_uv(
-        rp_id_hash,
-        next_sign_count,
-        user_present,
-        user_verified,
-    )
-    .to_vec();
+    let mut authenticator_data = Zeroizing::new(
+        get_assertion_authenticator_data_with_presence_and_uv(
+            rp_id_hash,
+            next_sign_count,
+            user_present,
+            user_verified,
+        )
+        .to_vec(),
+    );
     if let Some(ref extensions) = extensions {
         authenticator_data[32] |= 0x80;
-        authenticator_data.extend_from_slice(
-            &ghost_fido_core::encode_cbor(extensions)
+        let encoded_extensions = Zeroizing::new(
+            ghost_fido_core::encode_cbor(extensions)
                 .map_err(|_| GetAssertionExecutionError::ResponseEncoding)?,
         );
+        authenticator_data.extend_from_slice(&encoded_extensions);
     }
-    let mut signed_data =
-        Vec::with_capacity(authenticator_data.len() + request.client_data_hash.len());
+    let mut signed_data = Zeroizing::new(Vec::with_capacity(
+        authenticator_data.len() + request.client_data_hash.len(),
+    ));
     signed_data.extend_from_slice(&authenticator_data);
     signed_data.extend_from_slice(&request.client_data_hash);
     let digest = Sha256::digest(&signed_data);
@@ -365,7 +389,7 @@ fn sign_assertion_for_credential(
         number_of_credentials,
         user_present,
         user_verified,
-        extensions,
+        response_extensions,
         credential_large_blob_key,
     )
     .map_err(|_| GetAssertionExecutionError::ResponseEncoding)?;

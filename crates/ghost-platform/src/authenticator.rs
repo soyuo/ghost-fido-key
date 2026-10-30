@@ -938,11 +938,13 @@ impl<'a> AuthenticatorService<'a> {
                 profile.extensions.retain(|extension| {
                     extension != "hmac-secret"
                         && extension != "credProtect"
+                        && extension != "credBlob"
                         && extension != "largeBlobKey"
                 });
                 if protected_storage_available {
                     profile.extensions.push("hmac-secret".into());
                     profile.extensions.push("credProtect".into());
+                    profile.extensions.push("credBlob".into());
                 }
                 if large_blobs_available {
                     profile.extensions.push("largeBlobKey".into());
@@ -965,12 +967,15 @@ impl<'a> AuthenticatorService<'a> {
                     } else {
                         profile.options.push(("pinUvAuthToken".into(), true));
                     }
-                    let extensions_ready = ["hmac-secret", "credProtect"].iter().all(|required| {
-                        profile
-                            .extensions
+                    let extensions_ready =
+                        ["hmac-secret", "credProtect", "credBlob"]
                             .iter()
-                            .any(|extension| extension == required)
-                    });
+                            .all(|required| {
+                                profile
+                                    .extensions
+                                    .iter()
+                                    .any(|extension| extension == required)
+                            });
                     if credential_management_ready
                         && extensions_ready
                         && profile.pin_uv_auth_protocols.contains(&2)
@@ -997,6 +1002,9 @@ impl<'a> AuthenticatorService<'a> {
                     Err(error) => return Ok(Ctap2Response::error(error.status())),
                 };
                 if typed.large_blob_key && !self.store.supports_large_blobs() {
+                    return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
+                }
+                if typed.cred_blob.is_some() && !self.store.has_protected_storage() {
                     return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
                 }
                 let user_verified = match self.verify_pin_authorization(
@@ -1040,6 +1048,9 @@ impl<'a> AuthenticatorService<'a> {
                     Err(error) => return Ok(Ctap2Response::error(error.status())),
                 };
                 if typed.large_blob_key && !self.store.supports_large_blobs() {
+                    return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
+                }
+                if typed.get_cred_blob && !self.store.has_protected_storage() {
                     return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
                 }
                 let mut hmac_secret_shared_secret = if let Some(input) = typed.hmac_secret.as_ref()

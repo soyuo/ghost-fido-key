@@ -27,10 +27,11 @@ pub use client_pin::{
     validate_pin as client_pin_validate, verify_authentication as client_pin_verify_authentication,
 };
 pub use credentials::{
-    CredentialError, CredentialId, CredentialKeyMetadata, CredentialKeyProtection,
+    CredentialBlob, CredentialError, CredentialId, CredentialKeyMetadata, CredentialKeyProtection,
     CredentialProtectionError, CredentialProtectionPolicy, CredentialProtector, CredentialRecord,
     CredentialStore, Es256PublicKey, HmacSecretMaterial, KeyHandle, LargeBlobKey,
-    MAX_SERIALIZED_LARGE_BLOB_ARRAY, ManagedCredential, PinState, RpIdHash,
+    MAX_CREDENTIAL_BLOB_LENGTH, MAX_SERIALIZED_LARGE_BLOB_ARRAY, ManagedCredential, PinState,
+    RpIdHash,
 };
 pub use ctap2::{
     Ctap2Command, Ctap2Error, Ctap2Request, Ctap2Response, Ctap2Status, GetAssertionError,

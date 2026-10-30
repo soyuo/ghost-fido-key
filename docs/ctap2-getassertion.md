@@ -72,3 +72,11 @@ response includes the key as top-level integer field `0x07`. It is not encoded
 in authenticator data. Older credentials without a stored key remain usable
 and omit this response field. GetInfo advertises the extension only with
 protected LargeBlobs storage; see [CTAP2 largeBlobKey](ctap2-largeblob-key.md).
+
+## `credBlob`
+
+When requested with `credBlob: true`, a discoverable credential returns its
+stored opaque value as the signed `credBlob` authenticator-data extension. If
+the selected credential has no stored value, the extension returns an empty
+byte string. The value is not returned unless requested. See
+[CTAP2 credBlob](ctap2-credblob.md).
