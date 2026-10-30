@@ -61,7 +61,8 @@ impl<T: Read + Write> UHIDDevice<T> {
     /// This destroys the internal HID device. No further I/O will be accepted. There may still be pending output events that you can receive but no further input events can be sent to the kernel.
     pub fn destroy(&mut self) -> io::Result<usize> {
         let event: [u8; UHID_EVENT_SIZE] = InputEvent::Destroy.into();
-        self.handle.write(&event)
+        self.handle.write_all(&event)?;
+        Ok(event.len())
     }
 }
 
