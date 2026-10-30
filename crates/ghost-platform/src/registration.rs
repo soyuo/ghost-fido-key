@@ -188,6 +188,15 @@ pub(crate) fn register_make_credential_with_uv_and_presence_callback(
     } else {
         None
     };
+    let cred_blob = request
+        .cred_blob
+        .as_ref()
+        .filter(|blob| {
+            blob.as_bytes().len() <= ghost_fido_core::MAX_CREDENTIAL_BLOB_LENGTH
+                && request.options.resident_key == Some(true)
+                && store.has_protected_storage()
+        })
+        .cloned();
 
     let (created, key_handle) =
         match create_journaled_signing_key(store, key_store, key_policy, software_key_consent) {
@@ -248,6 +257,12 @@ pub(crate) fn register_make_credential_with_uv_and_presence_callback(
             CborValue::Unsigned(u64::from(policy as u8)),
         ));
     }
+    if request.cred_blob.is_some() {
+        extension_values.push((
+            CborValue::Text("credBlob".into()),
+            CborValue::Bool(cred_blob.is_some()),
+        ));
+    }
     let extensions = (!extension_values.is_empty()).then_some(CborValue::Map(extension_values));
     let response = match encode_make_credential_response_with_extensions_and_large_blob_key(
         request.rp_id_hash(),
@@ -280,6 +295,7 @@ pub(crate) fn register_make_credential_with_uv_and_presence_callback(
         public_key: Some(created.public_key.clone()),
         hmac_secret,
         large_blob_key,
+        cred_blob,
         cred_protect: request
             .cred_protect
             .unwrap_or(CredentialProtectionPolicy::UserVerificationOptional),

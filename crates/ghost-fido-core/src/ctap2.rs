@@ -3,8 +3,8 @@
 use crate::{
     cbor::{CborError, CborValue, decode, encode},
     credentials::{
-        CredentialProtectionPolicy, CredentialRecord, CredentialStore, Es256PublicKey,
-        LargeBlobKey, RpIdHash,
+        CredentialBlob, CredentialProtectionPolicy, CredentialRecord, CredentialStore,
+        Es256PublicKey, LargeBlobKey, MAX_CREDENTIAL_BLOB_LENGTH, RpIdHash,
     },
 };
 use zeroize::Zeroizing;
@@ -472,16 +472,19 @@ pub fn encode_get_assertion_response_with_count_and_presence_and_uv_and_extensio
         return Err(GetAssertionResponseError::InvalidNumberOfCredentials);
     }
 
-    let mut authenticator_data = get_assertion_authenticator_data_with_presence_and_uv(
-        rp_id_hash,
-        sign_count,
-        user_present,
-        user_verified,
-    )
-    .to_vec();
+    let mut authenticator_data = Zeroizing::new(
+        get_assertion_authenticator_data_with_presence_and_uv(
+            rp_id_hash,
+            sign_count,
+            user_present,
+            user_verified,
+        )
+        .to_vec(),
+    );
     if let Some(extensions) = extensions {
         authenticator_data[32] |= 0x80;
-        authenticator_data.extend_from_slice(&encode(&extensions)?);
+        let encoded_extensions = Zeroizing::new(encode(&Zeroizing::new(extensions))?);
+        authenticator_data.extend_from_slice(&encoded_extensions);
     }
 
     let credential = CborValue::Map(vec![
@@ -496,7 +499,10 @@ pub fn encode_get_assertion_response_with_count_and_presence_and_uv_and_extensio
     ]);
     let mut response = vec![
         (CborValue::Unsigned(1), credential),
-        (CborValue::Unsigned(2), CborValue::Bytes(authenticator_data)),
+        (
+            CborValue::Unsigned(2),
+            CborValue::Bytes(authenticator_data.to_vec()),
+        ),
         (CborValue::Unsigned(3), CborValue::Bytes(signature.to_vec())),
     ];
     if let Some(count) = number_of_credentials {
@@ -519,9 +525,10 @@ pub fn encode_get_assertion_response_with_count_and_presence_and_uv_and_extensio
     }
 
     let response = Zeroizing::new(CborValue::Map(response));
+    let payload = Zeroizing::new(encode(&response)?);
     Ok(Ctap2Response {
         status: Ctap2Status::Success,
-        payload: encode(&response)?,
+        payload: payload.to_vec(),
     })
 }
 
@@ -560,6 +567,7 @@ pub struct GetAssertionRequest {
     pub options: GetAssertionOptions,
     pub hmac_secret: Option<HmacSecretInput>,
     pub large_blob_key: bool,
+    pub get_cred_blob: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -601,7 +609,7 @@ pub struct MakeCredentialOptions {
     pub user_presence: Option<bool>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct MakeCredentialRequest {
     pub client_data_hash: [u8; 32],
     pub rp: MakeCredentialRp,
@@ -613,6 +621,32 @@ pub struct MakeCredentialRequest {
     pub cred_protect: Option<CredentialProtectionPolicy>,
     pub enforce_credential_protection_policy: bool,
     pub large_blob_key: bool,
+    pub cred_blob: Option<CredentialBlob>,
+}
+
+impl fmt::Debug for MakeCredentialRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MakeCredentialRequest")
+            .field("client_data_hash", &"[REDACTED]")
+            .field("rp", &self.rp)
+            .field("user", &self.user)
+            .field(
+                "public_key_credential_parameters",
+                &self.public_key_credential_parameters,
+            )
+            .field("exclude_list", &self.exclude_list)
+            .field("options", &self.options)
+            .field("hmac_secret", &self.hmac_secret)
+            .field("cred_protect", &self.cred_protect)
+            .field(
+                "enforce_credential_protection_policy",
+                &self.enforce_credential_protection_policy,
+            )
+            .field("large_blob_key", &self.large_blob_key)
+            .field("cred_blob", &self.cred_blob.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -731,7 +765,7 @@ impl MakeCredentialRequest {
             return Err(MakeCredentialError::InvalidParameter(4));
         }
         let options = options.unwrap_or_default();
-        let extensions = extensions.unwrap_or((false, None, false, false));
+        let extensions = extensions.unwrap_or((false, None, false, false, None));
         if extensions.3 && options.resident_key != Some(true) {
             return Err(MakeCredentialError::InvalidOption);
         }
@@ -746,6 +780,7 @@ impl MakeCredentialRequest {
             cred_protect: extensions.1,
             enforce_credential_protection_policy: extensions.2,
             large_blob_key: extensions.3,
+            cred_blob: extensions.4,
         })
     }
 
@@ -954,7 +989,16 @@ fn parse_make_credential_options(
 
 fn parse_make_credential_extensions(
     value: CborValue,
-) -> Result<(bool, Option<CredentialProtectionPolicy>, bool, bool), MakeCredentialError> {
+) -> Result<
+    (
+        bool,
+        Option<CredentialProtectionPolicy>,
+        bool,
+        bool,
+        Option<CredentialBlob>,
+    ),
+    MakeCredentialError,
+> {
     let CborValue::Map(entries) = value else {
         return Err(MakeCredentialError::UnexpectedType(6));
     };
@@ -962,6 +1006,7 @@ fn parse_make_credential_extensions(
     let mut cred_protect = None;
     let mut enforce_policy = None;
     let mut large_blob_key = None;
+    let mut cred_blob = None;
     for (key, value) in entries {
         let CborValue::Text(key) = key else {
             continue;
@@ -1008,6 +1053,15 @@ fn parse_make_credential_extensions(
                 }
                 large_blob_key = Some(true);
             }
+            "credBlob" => {
+                if cred_blob.is_some() {
+                    return Err(MakeCredentialError::InvalidParameter(6));
+                }
+                let CborValue::Bytes(bytes) = value else {
+                    return Err(MakeCredentialError::UnexpectedType(6));
+                };
+                cred_blob = Some(CredentialBlob::new(bytes));
+            }
             _ => {}
         }
     }
@@ -1016,6 +1070,7 @@ fn parse_make_credential_extensions(
         cred_protect,
         enforce_policy.unwrap_or(false),
         large_blob_key.unwrap_or(false),
+        cred_blob,
     ))
 }
 
@@ -1057,6 +1112,7 @@ impl GetAssertionRequest {
         let mut options = None;
         let mut hmac_secret = None;
         let mut large_blob_key = false;
+        let mut get_cred_blob = false;
         let mut extensions_seen = false;
         for (key, value) in entries {
             let CborValue::Unsigned(key) = key else {
@@ -1104,6 +1160,7 @@ impl GetAssertionRequest {
                     let parsed = parse_hmac_secret_assertion(value)?;
                     hmac_secret = parsed.0;
                     large_blob_key = parsed.1;
+                    get_cred_blob = parsed.2;
                 }
                 5 => {
                     if options.is_some() {
@@ -1121,6 +1178,7 @@ impl GetAssertionRequest {
             options: options.unwrap_or_default(),
             hmac_secret,
             large_blob_key,
+            get_cred_blob,
         })
     }
 
@@ -1137,12 +1195,14 @@ impl GetAssertionRequest {
 
 fn parse_hmac_secret_assertion(
     value: CborValue,
-) -> Result<(Option<HmacSecretInput>, bool), GetAssertionError> {
+) -> Result<(Option<HmacSecretInput>, bool, bool), GetAssertionError> {
     let CborValue::Map(entries) = value else {
         return Err(GetAssertionError::UnexpectedType(4));
     };
     let mut secret_value = None;
     let mut large_blob_key = false;
+    let mut get_cred_blob = false;
+    let mut cred_blob_seen = false;
     for (key, value) in entries {
         if key == CborValue::Text("hmac-secret".into()) {
             if secret_value.is_some() {
@@ -1154,10 +1214,19 @@ fn parse_hmac_secret_assertion(
                 return Err(GetAssertionError::InvalidOption);
             }
             large_blob_key = true;
+        } else if key == CborValue::Text("credBlob".into()) {
+            if cred_blob_seen {
+                return Err(GetAssertionError::InvalidParameter(4));
+            }
+            let CborValue::Bool(requested) = value else {
+                return Err(GetAssertionError::UnexpectedType(4));
+            };
+            cred_blob_seen = true;
+            get_cred_blob = requested;
         }
     }
     let Some(secret_value) = secret_value else {
-        return Ok((None, large_blob_key));
+        return Ok((None, large_blob_key, get_cred_blob));
     };
     let CborValue::Map(fields) = secret_value else {
         return Err(GetAssertionError::UnexpectedType(4));
@@ -1215,6 +1284,7 @@ fn parse_hmac_secret_assertion(
             pin_uv_auth_protocol: protocol,
         }),
         large_blob_key,
+        get_cred_blob,
     ))
 }
 
@@ -1409,6 +1479,16 @@ pub fn encode_get_info(profile: &GetInfoProfile) -> Result<Vec<u8>, GetInfoError
         fields.push((
             CborValue::Unsigned(0x0b),
             CborValue::Unsigned(crate::credentials::MAX_SERIALIZED_LARGE_BLOB_ARRAY as u64),
+        ));
+    }
+    if profile
+        .extensions
+        .iter()
+        .any(|extension| extension == "credBlob")
+    {
+        fields.push((
+            CborValue::Unsigned(0x0f),
+            CborValue::Unsigned(MAX_CREDENTIAL_BLOB_LENGTH as u64),
         ));
     }
     Ok(encode(&CborValue::Map(fields))?)
