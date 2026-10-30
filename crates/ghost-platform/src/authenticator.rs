@@ -249,10 +249,14 @@ impl ClientPinHandler {
         {
             return Ctap2Response::error(Ctap2Status::InvalidParameter);
         }
-        let Some(subcommand) = uint_field(&fields, 2).and_then(|number| u8::try_from(number).ok())
-        else {
-            return Ctap2Response::error(Ctap2Status::MissingParameter);
+        let subcommand = match field(&fields, 2) {
+            None => return Ctap2Response::error(Ctap2Status::MissingParameter),
+            Some(CborValue::Unsigned(number)) => *number,
+            Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
         };
+        if !matches!(subcommand, 1 | 2 | 3 | 4 | 5 | 9) {
+            return Ctap2Response::error(Ctap2Status::InvalidSubcommand);
+        }
         if self.power_cycle_required && subcommand != 1 {
             return Ctap2Response::error(Ctap2Status::PinAuthBlocked);
         }
@@ -264,7 +268,7 @@ impl ClientPinHandler {
                 };
                 protocol
             }
-            Some(_) => return Ctap2Response::error(Ctap2Status::InvalidParameter),
+            Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
         };
         if subcommand > 2 && uint_field(&fields, 1).is_none() {
             return Ctap2Response::error(Ctap2Status::InvalidParameter);
@@ -329,7 +333,7 @@ impl ClientPinHandler {
             4 => self.change_pin(channel, &fields, store),
             5 => self.get_pin_token(channel, &fields, store),
             9 => self.get_pin_token_with_permissions(channel, &fields, store),
-            _ => Ctap2Response::error(Ctap2Status::InvalidParameter),
+            _ => Ctap2Response::error(Ctap2Status::InvalidSubcommand),
         }
     }
 
@@ -377,7 +381,7 @@ impl ClientPinHandler {
             Some(CborValue::Unsigned(id)) => {
                 PinUvAuthProtocol::from_id(*id).ok_or(Ctap2Status::InvalidParameter)?
             }
-            Some(_) => return Err(Ctap2Status::InvalidParameter),
+            Some(_) => return Err(Ctap2Status::CborUnexpectedType),
         };
         if protocol != agreement.protocol {
             return Err(Ctap2Status::PinAuthInvalid);
