@@ -9,6 +9,7 @@ rust-version.workspace = true
 aes = { version = "0.8.4", features = ["zeroize"] }
 cbc = { version = "0.1.2", features = ["zeroize"] }
 hmac = { version = "0.13.0", features = ["zeroize"] }
+hkdf = "0.12.4"
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdh", "std"] }
 getrandom = { version = "0.4.3", features = ["sys_rng"] }
 rusqlite = { version = "0.32.1", features = ["bundled"] }

@@ -22,13 +22,138 @@ use crate::{
 };
 
 type HmacSha256 = Hmac<sha2_client_pin::Sha256>;
+type HkdfSha256 = hkdf::Hkdf<sha2::Sha256>;
 
 pub const PIN_UV_AUTH_PROTOCOL: u8 = 1;
+pub const PIN_UV_AUTH_PROTOCOL_TWO: u8 = 2;
 pub const PIN_UV_AUTH_PARAMETER_SIZE: usize = 16;
 pub const PIN_HASH_SIZE: usize = 16;
 pub const PIN_ENCRYPTED_SIZE: usize = 64;
 pub const PIN_MIN_CODEPOINTS: usize = 4;
 pub const PIN_MAX_UTF8_BYTES: usize = 63;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PinUvAuthProtocol {
+    One,
+    Two,
+}
+
+impl PinUvAuthProtocol {
+    #[must_use]
+    pub const fn from_id(id: u64) -> Option<Self> {
+        match id {
+            1 => Some(Self::One),
+            2 => Some(Self::Two),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn id(self) -> u8 {
+        match self {
+            Self::One => PIN_UV_AUTH_PROTOCOL,
+            Self::Two => PIN_UV_AUTH_PROTOCOL_TWO,
+        }
+    }
+
+    #[must_use]
+    pub const fn auth_parameter_size(self) -> usize {
+        match self {
+            Self::One => PIN_UV_AUTH_PARAMETER_SIZE,
+            Self::Two => 32,
+        }
+    }
+}
+
+/// Protocol-selected key material. Protocol 1 uses the first 32 bytes; Protocol 2
+/// uses the first half for HMAC and the second half for AES.
+#[derive(Clone)]
+pub struct PinUvAuthSharedSecret {
+    protocol: PinUvAuthProtocol,
+    key: Zeroizing<[u8; 64]>,
+}
+
+impl PinUvAuthSharedSecret {
+    #[must_use]
+    pub const fn protocol(&self) -> PinUvAuthProtocol {
+        self.protocol
+    }
+
+    #[must_use]
+    pub fn authenticate(&self, message: &[u8]) -> Vec<u8> {
+        let hmac_key = &self.key[..32];
+        let mut mac = HmacSha256::new_from_slice(hmac_key).expect("HMAC accepts a 32-byte key");
+        mac.update(message);
+        let full = Zeroizing::new(<[u8; 32]>::from(mac.finalize().into_bytes()));
+        match self.protocol {
+            PinUvAuthProtocol::One => full[..16].to_vec(),
+            PinUvAuthProtocol::Two => full.to_vec(),
+        }
+    }
+
+    #[must_use]
+    pub fn verify(&self, message: &[u8], auth: &[u8]) -> bool {
+        if auth.len() != self.protocol.auth_parameter_size() {
+            return false;
+        }
+        self.authenticate(message).ct_eq(auth).into()
+    }
+
+    pub fn encrypt(&self, plaintext: &[u8]) -> Result<Zeroizing<Vec<u8>>, PinCryptoError> {
+        if plaintext.is_empty() || plaintext.len() % 16 != 0 {
+            return Err(PinCryptoError::InvalidCiphertext);
+        }
+        let (key, iv, prefix_iv) = match self.protocol {
+            PinUvAuthProtocol::One => (&self.key[..32], [0_u8; 16], false),
+            PinUvAuthProtocol::Two => {
+                let mut iv = [0_u8; 16];
+                getrandom::fill(&mut iv).map_err(|_| PinCryptoError::RandomGenerationFailed)?;
+                (&self.key[32..], iv, true)
+            }
+        };
+        let mut ciphertext = Zeroizing::new(Vec::with_capacity(
+            plaintext.len() + if prefix_iv { iv.len() } else { 0 },
+        ));
+        if prefix_iv {
+            ciphertext.extend_from_slice(&iv);
+        }
+        ciphertext.extend_from_slice(plaintext);
+        let data = if prefix_iv {
+            &mut ciphertext[16..]
+        } else {
+            ciphertext.as_mut_slice()
+        };
+        Encryptor::<Aes256>::new(key.into(), (&iv).into())
+            .encrypt_padded_mut::<NoPadding>(data, plaintext.len())
+            .map_err(|_| PinCryptoError::InvalidCiphertext)?;
+        Ok(ciphertext)
+    }
+
+    pub fn decrypt(&self, ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>, PinCryptoError> {
+        let (key, iv, encrypted) = match self.protocol {
+            PinUvAuthProtocol::One => {
+                if ciphertext.is_empty() || ciphertext.len() % 16 != 0 {
+                    return Err(PinCryptoError::InvalidCiphertext);
+                }
+                (&self.key[..32], [0_u8; 16], ciphertext)
+            }
+            PinUvAuthProtocol::Two => {
+                if ciphertext.len() < 32 || (ciphertext.len() - 16) % 16 != 0 {
+                    return Err(PinCryptoError::InvalidCiphertext);
+                }
+                let iv: [u8; 16] = ciphertext[..16]
+                    .try_into()
+                    .map_err(|_| PinCryptoError::InvalidCiphertext)?;
+                (&self.key[32..], iv, &ciphertext[16..])
+            }
+        };
+        let mut plaintext = Zeroizing::new(encrypted.to_vec());
+        Decryptor::<Aes256>::new(key.into(), (&iv).into())
+            .decrypt_padded_mut::<NoPadding>(&mut plaintext)
+            .map_err(|_| PinCryptoError::InvalidCiphertext)?;
+        Ok(plaintext)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PinManagementError {
@@ -136,6 +261,31 @@ impl PinKeyAgreement {
             Sha256::digest(raw.raw_secret_bytes()).into(),
         ))
     }
+
+    pub fn derive_shared_secret_for_protocol(
+        &self,
+        peer_cose_key: &CborValue,
+        protocol: PinUvAuthProtocol,
+    ) -> Result<PinUvAuthSharedSecret, PinCryptoError> {
+        let peer = parse_peer_key(peer_cose_key)?;
+        let raw = self.secret.diffie_hellman(&peer);
+        let mut key = Zeroizing::new([0_u8; 64]);
+        match protocol {
+            PinUvAuthProtocol::One => {
+                key[..32].copy_from_slice(&Sha256::digest(raw.raw_secret_bytes()));
+            }
+            PinUvAuthProtocol::Two => {
+                let salt = [0_u8; 32];
+                HkdfSha256::new(Some(&salt), raw.raw_secret_bytes())
+                    .expand(b"CTAP2 HMAC key", &mut key[..32])
+                    .map_err(|_| PinCryptoError::InvalidPeerKey)?;
+                HkdfSha256::new(Some(&salt), raw.raw_secret_bytes())
+                    .expand(b"CTAP2 AES key", &mut key[32..])
+                    .map_err(|_| PinCryptoError::InvalidPeerKey)?;
+            }
+        }
+        Ok(PinUvAuthSharedSecret { protocol, key })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,15 +345,36 @@ pub fn process_hmac_secret(
     salt_auth: &[u8],
     credential_secret: &[u8; 32],
 ) -> Result<Vec<u8>, PinCryptoError> {
+    let mut key = Zeroizing::new([0_u8; 64]);
+    key[..32].copy_from_slice(shared_secret);
+    process_hmac_secret_with_protocol(
+        &PinUvAuthSharedSecret {
+            protocol: PinUvAuthProtocol::One,
+            key,
+        },
+        encrypted_salts,
+        salt_auth,
+        credential_secret,
+    )
+    .map(|output| output.to_vec())
+}
+
+pub fn process_hmac_secret_with_protocol(
+    shared_secret: &PinUvAuthSharedSecret,
+    encrypted_salts: &mut [u8],
+    salt_auth: &[u8],
+    credential_secret: &[u8; 32],
+) -> Result<Zeroizing<Vec<u8>>, PinCryptoError> {
     use hmac::Mac;
-    use zeroize::Zeroizing;
-    if !matches!(encrypted_salts.len(), 32 | 64)
-        || !verify_authentication(shared_secret, encrypted_salts, salt_auth)
+    if !matches!(encrypted_salts.len(), 32 | 48 | 64 | 80)
+        || !shared_secret.verify(encrypted_salts, salt_auth)
     {
         return Err(PinCryptoError::InvalidCiphertext);
     }
-    let mut salts = Zeroizing::new(encrypted_salts.to_vec());
-    decrypt(shared_secret, &mut salts)?;
+    let salts = shared_secret.decrypt(encrypted_salts)?;
+    if !matches!(salts.len(), 32 | 64) {
+        return Err(PinCryptoError::InvalidCiphertext);
+    }
     let mut output = Zeroizing::new(Vec::with_capacity(salts.len()));
     for salt in salts.chunks_exact(32) {
         let mut mac =
@@ -212,8 +383,7 @@ pub fn process_hmac_secret(
         let digest = Zeroizing::new(<[u8; 32]>::from(mac.finalize().into_bytes()));
         output.extend_from_slice(&*digest);
     }
-    encrypt(shared_secret, output.as_mut_slice())?;
-    Ok(core::mem::take(&mut *output))
+    shared_secret.encrypt(&output)
 }
 
 #[must_use]
@@ -257,6 +427,30 @@ pub fn decrypt_pin(
         return Err(PinCryptoError::InvalidPin);
     }
     Ok(pin)
+}
+
+pub fn decrypt_pin_with_protocol(
+    shared_secret: &PinUvAuthSharedSecret,
+    encrypted: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, PinCryptoError> {
+    let mut plaintext = shared_secret.decrypt(encrypted)?;
+    if plaintext.len() != PIN_ENCRYPTED_SIZE {
+        return Err(PinCryptoError::InvalidCiphertext);
+    }
+    let end = plaintext
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(plaintext.len());
+    if plaintext[end..].iter().any(|byte| *byte != 0) {
+        plaintext.zeroize();
+        return Err(PinCryptoError::InvalidPin);
+    }
+    plaintext.truncate(end);
+    if validate_pin(&plaintext).is_err() {
+        plaintext.zeroize();
+        return Err(PinCryptoError::InvalidPin);
+    }
+    Ok(plaintext)
 }
 
 fn parse_peer_key(value: &CborValue) -> Result<PublicKey, PinCryptoError> {
