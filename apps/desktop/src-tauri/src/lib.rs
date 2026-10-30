@@ -41,6 +41,7 @@ struct DesktopState {
     credential_store_available: bool,
     credential_store_status: String,
     client_pin_configured: Arc<AtomicBool>,
+    reset_pending: Arc<AtomicBool>,
     verification: Arc<DesktopVerificationProvider>,
     virtual_hid: Arc<Mutex<RuntimeStatus>>,
     runtime: Mutex<Option<RuntimeHandle>>,
@@ -111,6 +112,7 @@ struct PlatformStatus {
     native_user_verification_status: &'static str,
     credential_store_available: bool,
     credential_store_status: String,
+    authenticator_reset_pending: bool,
     status_message: String,
     authenticator_running: bool,
 }
@@ -815,7 +817,10 @@ fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
         .as_ref()
         .map(|status| status.key_storage_status.clone())
         .unwrap_or_default();
-    let client_pin_status = if !state.credential_store_available {
+    let authenticator_reset_pending = state.reset_pending.load(Ordering::Acquire);
+    let client_pin_status = if authenticator_reset_pending {
+        "Reset pending"
+    } else if !state.credential_store_available {
         "Unavailable"
     } else {
         match state.credential_store.lock() {
@@ -879,6 +884,7 @@ fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
             runtime_message
         },
         authenticator_running,
+        authenticator_reset_pending,
     }
 }
 
@@ -942,6 +948,7 @@ fn start_authenticator(
     let (stop_tx, stop_rx) = mpsc::sync_channel(1);
     let store = Arc::clone(&state.credential_store);
     let client_pin_configured = Arc::clone(&state.client_pin_configured);
+    let reset_pending = Arc::clone(&state.reset_pending);
     let verification: Arc<dyn UserVerification> = state.verification.clone();
     let status = Arc::clone(&state.virtual_hid);
     let key_storage_status = match key_creation_policy {
@@ -963,6 +970,7 @@ fn start_authenticator(
                 key_creation_policy,
                 software_key_consent,
                 client_pin_configured,
+                reset_pending,
             );
         })
         .map_err(|error| {
@@ -1198,11 +1206,19 @@ fn reset_credentials(
     state: tauri::State<'_, DesktopState>,
 ) -> Result<usize, String> {
     let result = with_stopped_credential_store(&state, |store| {
-        confirm_native_action(
-            &app,
-            "Reset authenticator",
-            "Delete all credentials and signing keys from this computer? This cannot be undone.",
-        )?;
+        if store.reset_is_pending() {
+            confirm_native_action(
+                &app,
+                "Resume authenticator reset",
+                "Continue cleanup from the incomplete reset? Credentials and signing keys remain unavailable until cleanup finishes.",
+            )?;
+        } else {
+            confirm_native_action(
+                &app,
+                "Reset authenticator",
+                "Delete all credentials and signing keys from this computer? This cannot be undone.",
+            )?;
+        }
         let credential_count = store.len();
         let handles = store.provider_key_handles();
         for handle in &handles {
@@ -1215,6 +1231,7 @@ fn reset_credentials(
         let begin_result = store.begin_reset();
         if store.reset_is_pending() {
             state.client_pin_configured.store(false, Ordering::Release);
+            state.reset_pending.store(true, Ordering::Release);
         }
         begin_result
             .map_err(|_| "Could not persist reset progress; no keys were deleted.".to_owned())?;
@@ -1243,6 +1260,7 @@ fn reset_credentials(
         store.finish_reset().map_err(|_| {
             "All signing keys were deleted, but reset metadata could not be committed. Retry reset to finish cleanup.".to_owned()
         })?;
+        state.reset_pending.store(false, Ordering::Release);
         Ok(credential_count)
     });
     audit::record(
@@ -1284,6 +1302,11 @@ pub fn run() {
             let client_pin_configured = store
                 .as_ref()
                 .is_some_and(|store| store.pin_state().verifier().is_some());
+            let reset_pending = Arc::new(AtomicBool::new(
+                store
+                    .as_ref()
+                    .is_some_and(CredentialStore::reset_is_pending),
+            ));
             audit::record(
                 audit::Event::CredentialStoreInitialization,
                 if store_available {
@@ -1329,6 +1352,7 @@ pub fn run() {
                 credential_store_available: store_available,
                 credential_store_status: status,
                 client_pin_configured: Arc::new(AtomicBool::new(client_pin_configured)),
+                reset_pending,
                 verification: Arc::new(DesktopVerificationProvider {
                     app: app.handle().clone(),
                     pending: Arc::new(Mutex::new(HashMap::new())),
