@@ -20,7 +20,7 @@ Protocol 2 follows CTAP2.1/2.2 §6.5.7:
 - Prefix encrypted data with a fresh random 16-byte IV; do not add padding. Reject malformed ciphertext lengths.
 - Use the full 32-byte HMAC-SHA-256 result and a 32-byte `pinUvAuthToken`.
 
-Both protocols keep the PIN verifier as the first 16 bytes of SHA-256(PIN); plaintext PINs and tokens are never persisted. PIN input is the decrypted 64-byte right-zero-padded value. Remove trailing zero bytes, require valid UTF-8, at least four Unicode code points, and at most 63 UTF-8 bytes. Retry state must be durable and protected with the same OS-backed credential protector. Invalid PIN attempts update that state before returning an error.
+Both protocols keep the PIN verifier as the first 16 bytes of SHA-256(PIN); plaintext PINs and tokens are never persisted. PIN input is the decrypted 64-byte right-zero-padded value. Remove trailing zero bytes, require valid UTF-8, at least four Unicode code points, and at most 63 UTF-8 bytes. Retry state must be durable and protected with the same OS-backed credential protector. Invalid current-PIN attempts consume a retry before returning an error; a correct current PIN during `changePIN` restores the retry count before the replacement PIN is decrypted and validated.
 
 ## Token and request authorization
 
