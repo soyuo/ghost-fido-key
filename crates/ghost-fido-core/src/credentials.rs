@@ -240,7 +240,9 @@ pub enum CredentialProtectionError {
 ///
 /// Implementations must authenticate ciphertext and associated data, and must
 /// return an error if either is invalid. The plaintext contains credential IDs,
-/// RP identifiers and hashes, user handles, and opaque provider key references.
+/// RP identifiers and hashes, user handles, opaque provider key references, and
+/// credential-scoped `hmac-secret` material.
+/// Decrypted bytes are returned in a zeroizing buffer that clears them on drop.
 pub trait CredentialProtector: Send + Sync {
     fn protect(
         &self,
@@ -251,7 +253,7 @@ pub trait CredentialProtector: Send + Sync {
         &self,
         ciphertext: &[u8],
         associated_data: &[u8],
-    ) -> Result<Vec<u8>, CredentialProtectionError>;
+    ) -> Result<Zeroizing<Vec<u8>>, CredentialProtectionError>;
 }
 
 #[derive(Default)]
@@ -396,7 +398,7 @@ impl CredentialStore {
                     .map_err(|_| CredentialError::ProtectedDataInvalid)?;
                 let mut records = decode_records(&plaintext, old_version as u8)?;
                 assign_legacy_creation_order(&mut records)?;
-                let migrated_plaintext = encode_records(&records)?;
+                let migrated_plaintext = Zeroizing::new(encode_records(&records)?);
                 let migrated_protected = protector
                     .protect(&migrated_plaintext, STORAGE_AAD_V4)
                     .map_err(|_| CredentialError::ProtectedDataInvalid)?;
@@ -762,7 +764,7 @@ impl CredentialStore {
         let Some(backend) = self.sqlite.as_mut() else {
             return Ok(());
         };
-        let plaintext = encode_records(records)?;
+        let plaintext = Zeroizing::new(encode_records(records)?);
         let protected = backend
             .protector
             .protect(&plaintext, STORAGE_AAD_V4)
@@ -879,11 +881,9 @@ fn initialize_pin_state(
     let state = match payload {
         Some(protected) => {
             validate_protected_payload(&protected)?;
-            let plaintext = Zeroizing::new(
-                protector
-                    .unprotect(&protected, PIN_STATE_AAD_V1)
-                    .map_err(|_| CredentialError::ProtectedDataInvalid)?,
-            );
+            let plaintext = protector
+                .unprotect(&protected, PIN_STATE_AAD_V1)
+                .map_err(|_| CredentialError::ProtectedDataInvalid)?;
             decode_pin_state(&plaintext)?
         }
         None if schema_version < STORAGE_SCHEMA_VERSION => {

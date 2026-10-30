@@ -68,7 +68,7 @@ impl<K: MetadataKeyStore> CredentialProtector for AesGcmCredentialProtector<K> {
         &self,
         ciphertext: &[u8],
         associated_data: &[u8],
-    ) -> Result<Vec<u8>, CredentialProtectionError> {
+    ) -> Result<Zeroizing<Vec<u8>>, CredentialProtectionError> {
         if ciphertext.len() < 1 + NONCE_SIZE + TAG_SIZE
             || ciphertext.len() > MAX_PROTECTED_BYTES
             || ciphertext[0] != ENVELOPE_VERSION
@@ -81,15 +81,17 @@ impl<K: MetadataKeyStore> CredentialProtector for AesGcmCredentialProtector<K> {
             .map_err(|_| CredentialProtectionError::Failed)?;
         let nonce = Nonce::from_slice(&ciphertext[1..1 + NONCE_SIZE]);
         let aad = self.make_aad(associated_data);
-        let plaintext = cipher
-            .decrypt(
-                nonce,
-                aes_gcm::aead::Payload {
-                    msg: &ciphertext[1 + NONCE_SIZE..],
-                    aad: &aad,
-                },
-            )
-            .map_err(|_| CredentialProtectionError::Failed)?;
+        let plaintext = Zeroizing::new(
+            cipher
+                .decrypt(
+                    nonce,
+                    aes_gcm::aead::Payload {
+                        msg: &ciphertext[1 + NONCE_SIZE..],
+                        aad: &aad,
+                    },
+                )
+                .map_err(|_| CredentialProtectionError::Failed)?,
+        );
         if plaintext.len() > MAX_METADATA_BYTES {
             return Err(CredentialProtectionError::Failed);
         }
