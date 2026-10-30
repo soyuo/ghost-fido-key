@@ -44,8 +44,17 @@ procedure in [`security-acceptance.md`](security-acceptance.md), retain the
 relying-party result, and leave each platform row unverified until its required
 cases pass. This documentation does not establish OS or browser support.
 
-This is the desktop approval boundary only. The Tauri app still has no live HID
-request source, so it does not receive browser authentication requests.
+## HID runtime boundary and validation
+
+The desktop Tauri runtime is connected to the host virtual HID backend in code.
+`start_authenticator` selects the host backend and starts
+`authenticator_runtime::run`; the worker attaches the backend, reads reports,
+routes complete CTAPHID requests through the authenticator service, and writes
+response reports. This describes the implemented runtime path only. It does
+not prove device enumeration, report exchange, browser discovery, or WebAuthn
+registration and assertion on any target OS, architecture, or browser. Keep
+platform status tied to the evidence in [`support-matrix.md`](support-matrix.md)
+and the T-022 procedure in [`security-acceptance.md`](security-acceptance.md).
 
 ## Authenticator runtime ownership
 
