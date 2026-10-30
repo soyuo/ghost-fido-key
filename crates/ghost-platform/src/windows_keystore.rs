@@ -88,6 +88,40 @@ impl WindowsKeyStore {
         )
     }
 
+    fn discard_incomplete_key(
+        key: NCRYPT_KEY_HANDLE,
+        provider: NCRYPT_PROV_HANDLE,
+    ) -> windows::core::Result<()> {
+        // Deleting a persisted key also releases its key handle. If deletion fails,
+        // release the handle explicitly, but do not permit software fallback: the
+        // incomplete protected key may still remain in the provider.
+        let deletion = unsafe { NCryptDeleteKey(key, 0) };
+        let key_release = if deletion.is_err() {
+            unsafe { NCryptFreeObject(key.into()) }
+        } else {
+            Ok(())
+        };
+        let provider_release = unsafe { NCryptFreeObject(provider.into()) };
+        deletion.and(key_release).and(provider_release)
+    }
+
+    fn key_setup_failure(
+        error: windows::core::Error,
+        classify_protection_unavailable: bool,
+        cleanup: windows::core::Result<()>,
+    ) -> PlatformError {
+        if let Err(cleanup_error) = cleanup {
+            return Self::fail(format!(
+                "{error}; failed to clean up the incomplete CNG key: {cleanup_error}"
+            ));
+        }
+        if classify_protection_unavailable && Self::is_device_not_ready(&error) {
+            Self::protection_unavailable(error)
+        } else {
+            Self::fail(error)
+        }
+    }
+
     fn provider_for_key(reference: &KeyReference) -> Result<&'static str, PlatformError> {
         if reference.as_provider_reference().starts_with("cng:tpm:") {
             Ok(Self::preferred_provider())
@@ -249,15 +283,21 @@ impl KeyStore for WindowsKeyStore {
             )
         });
         if let Err(error) = configured {
-            let _ = unsafe { NCryptDeleteKey(key, 0) };
-            let _ = unsafe { NCryptFreeObject(provider.into()) };
-            return Err(Self::fail(error));
+            let cleanup = Self::discard_incomplete_key(key, provider);
+            return Err(Self::key_setup_failure(
+                error,
+                classify_unavailable,
+                cleanup,
+            ));
         }
         // SAFETY: key is a valid persisted CNG key handle.
         if let Err(error) = unsafe { NCryptFinalizeKey(key, NCRYPT_FLAGS(0)) } {
-            let _ = unsafe { NCryptDeleteKey(key, 0) };
-            let _ = unsafe { NCryptFreeObject(provider.into()) };
-            return Err(Self::fail(error));
+            let cleanup = Self::discard_incomplete_key(key, provider);
+            return Err(Self::key_setup_failure(
+                error,
+                classify_unavailable,
+                cleanup,
+            ));
         }
         let public_key = match Self::export_public_key(key) {
             Ok(public_key) => public_key,
