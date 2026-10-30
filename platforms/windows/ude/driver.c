@@ -25,6 +25,7 @@
 typedef struct _GHOST_FIDO_DEVICE_CONTEXT {
     PUDECXUSBDEVICE_INIT DeviceInit;
     UDECXUSBDEVICE UsbDevice;
+    BOOLEAN VirtualDevicePluggedIn;
     UDECXUSBENDPOINT ControlEndpoint;
     UDECXUSBENDPOINT InputEndpoint;
     UDECXUSBENDPOINT OutputEndpoint;
@@ -43,6 +44,8 @@ typedef struct _GHOST_FIDO_DEVICE_CONTEXT {
 
 WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(GHOST_FIDO_DEVICE_CONTEXT,
                                    GhostFidoGetDeviceContext)
+
+static NTSTATUS GhostFidoDestroyVirtualDevice(_In_ WDFDEVICE Device);
 
 typedef struct _GHOST_FIDO_ENDPOINT_QUEUE_CONTEXT {
     UCHAR EndpointAddress;
@@ -393,7 +396,8 @@ GhostFidoCreateEndpoint(_In_ WDFDEVICE Device,
     queueConfig.EvtIoCanceledOnQueue = GhostFidoEndpointIoctlCanceled;
     WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(
         &queueAttributes, GHOST_FIDO_ENDPOINT_QUEUE_CONTEXT);
-    queueAttributes.ParentObject = Device;
+    /* Endpoint teardown also releases the endpoint-specific queue. */
+    queueAttributes.ParentObject = *Endpoint;
     status = WdfIoQueueCreate(Device, &queueConfig, &queueAttributes, &queue);
     if (!NT_SUCCESS(status)) {
         return status;
@@ -416,7 +420,16 @@ GhostFidoCreateAndPlugInVirtualDevice(_In_ WDFDEVICE Device)
 
     context = GhostFidoGetDeviceContext(Device);
     if (context->UsbDevice != WDF_NO_HANDLE) {
-        return STATUS_SUCCESS;
+        if (context->VirtualDevicePluggedIn) {
+            return STATUS_SUCCESS;
+        }
+        // A failed plug-in can leave a handle if cleanup also failed. Retry
+        // cleanup before creating a fresh device; handle presence is not proof
+        // that UdeCx attached it.
+        status = GhostFidoDestroyVirtualDevice(Device);
+        if (!NT_SUCCESS(status)) {
+            return status;
+        }
     }
     if (!GhostFidoHasConfiguredIdentity()) {
         // A build without explicitly assigned VID/PID keeps the controller only.
@@ -477,6 +490,9 @@ GhostFidoCreateAndPlugInVirtualDevice(_In_ WDFDEVICE Device)
     WdfIoQueueStart(context->InputPendingQueue);
     UDECX_USB_DEVICE_PLUG_IN_OPTIONS_INIT(&plugInOptions);
     status = UdecxUsbDevicePlugIn(context->UsbDevice, &plugInOptions);
+    if (NT_SUCCESS(status)) {
+        context->VirtualDevicePluggedIn = TRUE;
+    }
     return status;
 }
 
@@ -495,6 +511,9 @@ GhostFidoDestroyVirtualDevice(_In_ WDFDEVICE Device)
     if (context->UsbDevice != WDF_NO_HANDLE) {
         status = UdecxUsbDevicePlugOutAndDelete(context->UsbDevice);
         if (!NT_SUCCESS(status)) {
+            // The failed call leaves the attachment state uncertain. Force a
+            // cleanup attempt before any later attach can report success.
+            context->VirtualDevicePluggedIn = FALSE;
             return status;
         }
         context->UsbDevice = WDF_NO_HANDLE;
@@ -502,6 +521,7 @@ GhostFidoDestroyVirtualDevice(_In_ WDFDEVICE Device)
         context->InputEndpoint = WDF_NO_HANDLE;
         context->OutputEndpoint = WDF_NO_HANDLE;
     }
+    context->VirtualDevicePluggedIn = FALSE;
 
     if (context->DeviceInit != NULL) {
         UdecxUsbDeviceInitFree(context->DeviceInit);
@@ -654,6 +674,7 @@ GhostFidoHandleAttach(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request,
                       _In_ size_t OutputBufferLength)
 {
     NTSTATUS status;
+    NTSTATUS cleanupStatus;
     GHOST_FIDO_UDE_OPERATION_REQUEST *operationRequest;
 
     if (OutputBufferLength != 0) {
@@ -678,7 +699,10 @@ GhostFidoHandleAttach(_In_ WDFDEVICE Device, _In_ WDFREQUEST Request,
 
     status = GhostFidoCreateAndPlugInVirtualDevice(Device);
     if (!NT_SUCCESS(status)) {
-        (VOID)GhostFidoDestroyVirtualDevice(Device);
+        cleanupStatus = GhostFidoDestroyVirtualDevice(Device);
+        if (!NT_SUCCESS(cleanupStatus)) {
+            return cleanupStatus;
+        }
     }
     return status;
 }
