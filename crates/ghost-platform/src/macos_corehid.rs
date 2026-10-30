@@ -53,9 +53,8 @@ impl MacOsCoreHidBackend {
     pub fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
             virtual_hid: self.availability(),
-            protected_key_storage: CapabilityStatus::unavailable(
-                CapabilityState::NotImplemented,
-                "macOS protected key provider is not implemented",
+            protected_key_storage: CapabilityStatus::implemented(
+                "macOS Secure Enclave key storage is implemented; device readiness is checked during key creation",
             ),
             user_verification: CapabilityStatus::unavailable(
                 CapabilityState::NotImplemented,

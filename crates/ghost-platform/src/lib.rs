@@ -146,6 +146,16 @@ impl CapabilityStatus {
         }
     }
 
+    /// The provider implementation exists; runtime readiness is checked when
+    /// the provider is used.
+    #[must_use]
+    pub fn implemented(detail: impl Into<String>) -> Self {
+        Self {
+            state: CapabilityState::Implemented,
+            detail: Some(detail.into()),
+        }
+    }
+
     /// Whether prerequisites are sufficient to attempt starting the backend.
     /// `Configured` permits a runtime attempt but does not prove transport or
     /// browser interoperability.
@@ -165,6 +175,9 @@ pub enum CapabilityState {
     /// Configuration is complete enough to attempt startup, but runtime
     /// transport validation has not established availability.
     Configured,
+    /// The provider implementation exists, but runtime readiness has not been
+    /// checked. This state does not mean that the provider is available.
+    Implemented,
     PermissionRequired,
     DriverMissing,
     EntitlementUnavailable,
