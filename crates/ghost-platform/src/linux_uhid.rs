@@ -122,6 +122,26 @@ impl LinuxUhidBackend {
         PlatformError::new(kind, HostPlatform::Linux, detail)
     }
 
+    fn fail_startup(&mut self, error: PlatformError) -> PlatformError {
+        self.state = DeviceState::Failed;
+        let Some(mut device) = self.device.take() else {
+            return error;
+        };
+
+        if let Err(cleanup_error) = device.destroy() {
+            self.device = Some(device);
+            return Self::error(
+                PlatformErrorKind::Io,
+                format!(
+                    "{}; failed to destroy partially created UHID device: {cleanup_error}",
+                    error.detail
+                ),
+            );
+        }
+
+        error
+    }
+
     fn read_until(&mut self, timeout: Duration) -> Result<OutputEvent, PlatformError> {
         let deadline = Instant::now() + timeout;
         let device = self.device.as_mut().ok_or_else(|| {
@@ -172,8 +192,27 @@ impl VirtualHidBackend for LinuxUhidBackend {
     }
 
     fn attach(&mut self) -> Result<(), PlatformError> {
-        if self.device.is_some() {
-            return Ok(());
+        if self.state == DeviceState::Attached {
+            return if self.device.is_some() {
+                Ok(())
+            } else {
+                self.state = DeviceState::Failed;
+                Err(Self::error(
+                    PlatformErrorKind::Io,
+                    "UHID backend is marked attached but its device handle is missing",
+                ))
+            };
+        }
+        if let Some(mut device) = self.device.take() {
+            self.state = DeviceState::Stopping;
+            if let Err(error) = device.destroy() {
+                self.device = Some(device);
+                self.state = DeviceState::Failed;
+                return Err(Self::error(
+                    PlatformErrorKind::Io,
+                    format!("failed to clean up a previous UHID attach attempt: {error}"),
+                ));
+            }
         }
         let Some((vendor, product)) = self.product_identity else {
             self.state = DeviceState::Failed;
@@ -209,18 +248,16 @@ impl VirtualHidBackend for LinuxUhidBackend {
             })?,
         );
 
-        match self.read_until(Duration::from_secs(2))? {
-            OutputEvent::Start { .. } => {
+        match self.read_until(Duration::from_secs(2)) {
+            Err(error) => Err(self.fail_startup(error)),
+            Ok(OutputEvent::Start { .. }) => {
                 self.state = DeviceState::Attached;
                 Ok(())
             }
-            _ => {
-                self.state = DeviceState::Failed;
-                Err(Self::error(
-                    PlatformErrorKind::Io,
-                    "UHID did not acknowledge device creation with UHID_START",
-                ))
-            }
+            Ok(_) => Err(self.fail_startup(Self::error(
+                PlatformErrorKind::Io,
+                "UHID did not acknowledge device creation with UHID_START",
+            ))),
         }
     }
 
@@ -230,11 +267,17 @@ impl VirtualHidBackend for LinuxUhidBackend {
             return Ok(());
         };
         self.state = DeviceState::Stopping;
-        device
-            .destroy()
-            .map_err(|error| Self::error(PlatformErrorKind::Io, error.to_string()))?;
-        self.state = DeviceState::Detached;
-        Ok(())
+        match device.destroy() {
+            Ok(_) => {
+                self.state = DeviceState::Detached;
+                Ok(())
+            }
+            Err(error) => {
+                self.device = Some(device);
+                self.state = DeviceState::Failed;
+                Err(Self::error(PlatformErrorKind::Io, error.to_string()))
+            }
+        }
     }
 
     fn state(&self) -> DeviceState {
