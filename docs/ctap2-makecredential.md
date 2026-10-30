@@ -13,6 +13,11 @@ attestation, or signing. The algorithm list is preserved in platform order and
 duplicate entries are rejected; deciding which algorithms this authenticator
 can actually create belongs to the cryptographic provider.
 
+Unknown keys in the MakeCredential parameter map and nested RP/user entities,
+credential parameters, descriptors, options, and extension maps are ignored as
+required by CTAP2 §8. Required fields, duplicate recognized fields, and
+malformed values for recognized fields remain errors.
+
 The platform's `check_credential_exclusion` checks excludeList IDs against the
 requested RP hash. If an existing credential matches, it asks the local
 `UserVerification` provider for a distinct `CredentialExclusionCheck` presence

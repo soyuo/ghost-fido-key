@@ -1503,6 +1503,7 @@ ClientPIN은 PIN/UV Auth Protocol 1의 기존 암호 동작을 유지하면서 P
 `GetAssertionRequest`는 CBOR 필수 필드, 32-byte `clientDataHash`, optional `public-key` allow-list descriptor와 `up`/`uv` boolean 옵션을 검증한다. RP ID의 SHA-256 hash를 사용해 allow-list 또는 discoverable credential을 RP별로 조회한다. allow-list가 없고 여러 discoverable credential이 일치하면 생성 순서 역순으로 첫 응답과 `numberOfCredentials`를 반환하고, 나머지는 channel별 `GetNextAssertion` sequence로 이어진다. 승인과 key provider 서명은 최초 요청에서 한 번 수행하며, 각 응답의 counter를 저장한 뒤 반환한다. UV 없이 user handle 외 이름 정보는 노출하지 않는다. [`docs/ctap2-getassertion.md`](../docs/ctap2-getassertion.md)
 
 `hmac-secret` 입력 맵은 CTAP2 §8에 따라 알 수 없는 키를 무시하고, 지원하는 필수 필드와 `pinUvAuthProtocol`의 값/길이만 검증한다. [`docs/ctap2-clientpin.md`](../docs/ctap2-clientpin.md)
+MakeCredential과 GetAssertion request parser는 CTAP2 §8에 따라 처리기가 이해하지 못하는 map key를 무시한다. 이는 최상위 parameter map과 RP/user entity, credential parameter/descriptor, options, 일반 extension map에 적용한다. 지원하는 필드의 중복이나 잘못된 값, 필수 필드 누락은 계속 거부한다. `hmac-secret` input map은 별도 문서화된 parser 규칙을 따른다.
 
 `MakeCredentialRequest`는 CBOR 필수 필드, RP/user entity, ordered public-key algorithm, excludeList 및 등록 옵션을 검증한다. excludeList는 RP hash로만 조회하고 일치 시 local presence interaction 후 `CredentialExcluded`를 응답한다. 등록 흐름은 승인 후 보호 키를 만들고 key reference, 보호 정보, user handle 및 선택적 user labels를 credential store에 넣는다. 암호화된 SQLite 저장소는 v1/v2 payload를 v3으로 원자적으로 마이그레이션하고 credential 생성 순서를 저장한다. 재시작 후 사용하려면 아직 OS 기반 `CredentialProtector` provider가 필요하다. [`docs/ctap2-makecredential.md`](../docs/ctap2-makecredential.md)
 

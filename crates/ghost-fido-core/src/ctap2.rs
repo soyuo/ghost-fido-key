@@ -597,7 +597,7 @@ impl MakeCredentialRequest {
         let mut extensions = None;
         for (key, value) in entries {
             let CborValue::Unsigned(key) = key else {
-                return Err(MakeCredentialError::UnexpectedType(0));
+                continue;
             };
             match key {
                 1 => {
@@ -705,7 +705,7 @@ fn parse_make_credential_rp(value: CborValue) -> Result<MakeCredentialRp, MakeCr
     let mut name = None;
     for (key, value) in fields {
         let CborValue::Text(key) = key else {
-            return Err(MakeCredentialError::UnexpectedType(2));
+            continue;
         };
         match key.as_str() {
             "id" => {
@@ -747,7 +747,7 @@ fn parse_make_credential_user(value: CborValue) -> Result<MakeCredentialUser, Ma
     let mut display_name = None;
     for (key, value) in fields {
         let CborValue::Text(key) = key else {
-            return Err(MakeCredentialError::UnexpectedType(3));
+            continue;
         };
         match key.as_str() {
             "id" => {
@@ -805,7 +805,7 @@ fn parse_public_key_parameters(
         let mut algorithm = None;
         for (key, value) in fields {
             let CborValue::Text(key) = key else {
-                return Err(MakeCredentialError::UnexpectedType(4));
+                continue;
             };
             match key.as_str() {
                 "type" => {
@@ -856,7 +856,7 @@ fn parse_make_credential_options(
     let mut options = MakeCredentialOptions::default();
     for (key, value) in entries {
         let CborValue::Text(key) = key else {
-            return Err(MakeCredentialError::UnexpectedType(7));
+            continue;
         };
         let slot = match key.as_str() {
             "rk" => &mut options.resident_key,
@@ -886,7 +886,7 @@ fn parse_make_credential_extensions(
     let mut enforce_policy = None;
     for (key, value) in entries {
         let CborValue::Text(key) = key else {
-            return Err(MakeCredentialError::UnexpectedType(6));
+            continue;
         };
         match key.as_str() {
             "hmac-secret" => {
@@ -969,7 +969,7 @@ impl GetAssertionRequest {
         let mut extensions_seen = false;
         for (key, value) in entries {
             let CborValue::Unsigned(key) = key else {
-                return Err(GetAssertionError::UnexpectedType(0));
+                continue;
             };
             match key {
                 1 => {
@@ -1119,7 +1119,7 @@ fn parse_get_assertion_options(value: CborValue) -> Result<GetAssertionOptions, 
     let mut options = GetAssertionOptions::default();
     for (key, value) in entries {
         let CborValue::Text(key) = key else {
-            return Err(GetAssertionError::UnexpectedType(5));
+            continue;
         };
         let slot = match key.as_str() {
             "up" => &mut options.user_presence,
@@ -1151,7 +1151,7 @@ fn parse_credential_descriptors(
             let mut id = None;
             for (key, value) in fields {
                 let CborValue::Text(key) = key else {
-                    return Err(GetAssertionError::UnexpectedType(parameter));
+                    continue;
                 };
                 match key.as_str() {
                     "type" => {

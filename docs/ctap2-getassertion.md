@@ -12,6 +12,11 @@ selected. Unknown option names are ignored and absent `up`/`uv` options remain
 authenticator can perform user verification. User approval and signing remain
 follow-up work.
 
+Unknown keys in the GetAssertion parameter and nested option/descriptor maps
+are ignored as required by CTAP2 §8. Required fields, duplicate recognized
+fields, and malformed values for recognized fields remain errors. The nested
+`hmac-secret` input map is handled separately.
+
 Schema failures expose a CTAP2 status through `GetAssertionError::status`:
 malformed CBOR maps to `InvalidCbor`, missing fields to `MissingParameter`,
 wrong types to `CborUnexpectedType`, and invalid values to `InvalidParameter`.
