@@ -436,6 +436,10 @@ impl ClientPinHandler {
                 Ctap2Status::PinInvalid
             });
         }
+        if store.set_pin_retries(8).is_err() {
+            secret.zeroize();
+            return Ctap2Response::error(Ctap2Status::Other);
+        }
         let decrypted =
             ghost_fido_core::client_pin_decrypt_pin_with_protocol(&secret, new_encrypted);
         secret.zeroize();
