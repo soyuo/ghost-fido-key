@@ -11,10 +11,9 @@ use zeroize::{Zeroize, Zeroizing};
 use ghost_fido_core::{
     CborValue, CredentialId, CredentialStore, Ctap2Command, Ctap2Request, Ctap2Response,
     Ctap2Status, GetAssertionRequest, GetInfoError, GetInfoHandler, GetInfoProfile,
-    MakeCredentialRequest, PIN_ENCRYPTED_SIZE, PIN_HASH_SIZE, PIN_UV_AUTH_PARAMETER_SIZE,
-    PIN_UV_AUTH_PROTOCOL, PinKeyAgreement, client_pin_decrypt, client_pin_decrypt_pin,
-    client_pin_encrypt, client_pin_hash, client_pin_verify_authentication, decode_cbor,
-    encode_cbor,
+    MakeCredentialRequest, PIN_ENCRYPTED_SIZE, PIN_HASH_SIZE, PIN_UV_AUTH_PROTOCOL,
+    PIN_UV_AUTH_PROTOCOL_TWO, PinKeyAgreement, PinUvAuthProtocol, PinUvAuthSharedSecret,
+    client_pin_hash, decode_cbor, encode_cbor,
 };
 
 const PIN_PROTOCOL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -37,14 +36,12 @@ struct AssertionContinuation {
     credentials: VecDeque<CredentialId>,
     expires_at: Instant,
     user_verified: bool,
-    hmac_secret_shared_secret: Option<[u8; 32]>,
+    hmac_secret_shared_secret: Option<PinUvAuthSharedSecret>,
 }
 
 impl Drop for AssertionContinuation {
     fn drop(&mut self) {
-        if let Some(secret) = &mut self.hmac_secret_shared_secret {
-            secret.zeroize();
-        }
+        self.hmac_secret_shared_secret = None;
     }
 }
 
@@ -97,11 +94,13 @@ struct ClientPinHandler {
 
 struct PinAgreementEntry {
     key: PinKeyAgreement,
+    protocol: PinUvAuthProtocol,
     expires_at: Instant,
 }
 
 struct PinTokenEntry {
     value: [u8; 32],
+    protocol: PinUvAuthProtocol,
     expires_at: Instant,
     permissions: u8,
     relying_party_hash: Option<[u8; 32]>,
@@ -130,12 +129,20 @@ impl ClientPinHandler {
         channel: u32,
         message: &[u8],
         auth: &[u8],
+        protocol: PinUvAuthProtocol,
         permission: u8,
         relying_party_id: Option<&str>,
     ) -> Result<(), Ctap2Status> {
         let relying_party_hash =
             relying_party_id.map(|rp_id| Sha256::digest(rp_id.as_bytes()).into());
-        self.authorize_rp_hash(channel, message, auth, permission, relying_party_hash)
+        self.authorize_rp_hash(
+            channel,
+            message,
+            auth,
+            protocol,
+            permission,
+            relying_party_hash,
+        )
     }
 
     fn authorize_rp_hash(
@@ -143,6 +150,7 @@ impl ClientPinHandler {
         channel: u32,
         message: &[u8],
         auth: &[u8],
+        protocol: PinUvAuthProtocol,
         permission: u8,
         relying_party_hash: Option<[u8; 32]>,
     ) -> Result<(), Ctap2Status> {
@@ -159,7 +167,9 @@ impl ClientPinHandler {
             .tokens
             .get_mut(&channel)
             .ok_or(Ctap2Status::PinUvAuthTokenRequired)?;
-        if !client_pin_verify_authentication(&token.value, message, auth) {
+        if token.protocol != protocol
+            || !protocol.verify_token_authentication(&token.value, message, auth)
+        {
             return Err(Ctap2Status::PinAuthInvalid);
         }
         if token.permissions & permission == 0 {
@@ -185,6 +195,7 @@ impl ClientPinHandler {
         channel: u32,
         message: &[u8],
         auth: &[u8],
+        protocol: PinUvAuthProtocol,
         permission: u8,
     ) -> Result<(), Ctap2Status> {
         self.expire();
@@ -196,7 +207,9 @@ impl ClientPinHandler {
             self.tokens.remove(&channel);
             return Err(Ctap2Status::PinUvAuthTokenRequired);
         }
-        if !client_pin_verify_authentication(&token.value, message, auth) {
+        if token.protocol != protocol
+            || !protocol.verify_token_authentication(&token.value, message, auth)
+        {
             return Err(Ctap2Status::PinAuthInvalid);
         }
         if token.permissions & permission == 0 {
@@ -230,10 +243,17 @@ impl ClientPinHandler {
         else {
             return Ctap2Response::error(Ctap2Status::MissingParameter);
         };
-        let protocol = uint_field(&fields, 1);
-        if protocol.is_some_and(|value| value != u64::from(PIN_UV_AUTH_PROTOCOL))
-            || (subcommand > 2 && protocol.is_none())
-        {
+        let protocol = match field(&fields, 1) {
+            None => PinUvAuthProtocol::One,
+            Some(CborValue::Unsigned(id)) => {
+                let Some(protocol) = PinUvAuthProtocol::from_id(*id) else {
+                    return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                };
+                protocol
+            }
+            Some(_) => return Ctap2Response::error(Ctap2Status::InvalidParameter),
+        };
+        if subcommand > 2 && uint_field(&fields, 1).is_none() {
             return Ctap2Response::error(Ctap2Status::InvalidParameter);
         }
         if !store.has_protected_storage() {
@@ -262,6 +282,7 @@ impl ClientPinHandler {
                     channel,
                     PinAgreementEntry {
                         key: agreement,
+                        protocol,
                         expires_at: Instant::now() + PIN_PROTOCOL_TIMEOUT,
                     },
                 );
@@ -279,15 +300,25 @@ impl ClientPinHandler {
         &mut self,
         channel: u32,
         fields: &[(CborValue, CborValue)],
-    ) -> Result<Zeroizing<[u8; 32]>, Ctap2Status> {
+    ) -> Result<PinUvAuthSharedSecret, Ctap2Status> {
         let peer = field(fields, 3).ok_or(Ctap2Status::MissingParameter)?;
         let agreement = self
             .agreements
             .remove(&channel)
             .ok_or(Ctap2Status::PinAuthInvalid)?;
+        let protocol = match field(fields, 1) {
+            None => PinUvAuthProtocol::One,
+            Some(CborValue::Unsigned(id)) => {
+                PinUvAuthProtocol::from_id(*id).ok_or(Ctap2Status::InvalidParameter)?
+            }
+            Some(_) => return Err(Ctap2Status::InvalidParameter),
+        };
+        if protocol != agreement.protocol {
+            return Err(Ctap2Status::PinAuthInvalid);
+        }
         agreement
             .key
-            .derive_shared_secret(peer)
+            .derive_shared_secret_for_protocol(peer, protocol)
             .map_err(|_| Ctap2Status::InvalidParameter)
     }
 
@@ -295,14 +326,18 @@ impl ClientPinHandler {
         &mut self,
         channel: u32,
         peer: &CborValue,
-    ) -> Result<Zeroizing<[u8; 32]>, Ctap2Status> {
+        protocol: PinUvAuthProtocol,
+    ) -> Result<PinUvAuthSharedSecret, Ctap2Status> {
         let agreement = self
             .agreements
             .remove(&channel)
             .ok_or(Ctap2Status::PinAuthInvalid)?;
+        if agreement.protocol != protocol {
+            return Err(Ctap2Status::PinAuthInvalid);
+        }
         agreement
             .key
-            .derive_shared_secret(peer)
+            .derive_shared_secret_for_protocol(peer, protocol)
             .map_err(|_| Ctap2Status::PinAuthInvalid)
     }
 
@@ -323,15 +358,13 @@ impl ClientPinHandler {
             secret.zeroize();
             return Ctap2Response::error(Ctap2Status::MissingParameter);
         };
-        if encrypted.len() != PIN_ENCRYPTED_SIZE
-            || auth.len() != PIN_UV_AUTH_PARAMETER_SIZE
-            || !client_pin_verify_authentication(&secret, encrypted, auth)
+        if encrypted.len() != encrypted_size(PIN_ENCRYPTED_SIZE, secret.protocol())
+            || !secret.verify(encrypted, auth)
         {
             secret.zeroize();
             return Ctap2Response::error(Ctap2Status::PinAuthInvalid);
         }
-        let mut encrypted_pin = encrypted.to_vec();
-        let pin = client_pin_decrypt_pin(&secret, &mut encrypted_pin);
+        let pin = ghost_fido_core::client_pin_decrypt_pin_with_protocol(&secret, encrypted);
         secret.zeroize();
         let Ok(pin) = pin else {
             return Ctap2Response::error(Ctap2Status::PinPolicyViolation);
@@ -367,21 +400,25 @@ impl ClientPinHandler {
             secret.zeroize();
             return Ctap2Response::error(Ctap2Status::MissingParameter);
         };
-        if new_encrypted.len() != PIN_ENCRYPTED_SIZE || hash_encrypted.len() != PIN_HASH_SIZE {
+        if new_encrypted.len() != encrypted_size(PIN_ENCRYPTED_SIZE, secret.protocol())
+            || hash_encrypted.len() != encrypted_size(PIN_HASH_SIZE, secret.protocol())
+        {
             secret.zeroize();
             return Ctap2Response::error(Ctap2Status::InvalidParameter);
         }
         let mut authenticated = new_encrypted.to_vec();
         authenticated.extend_from_slice(hash_encrypted);
-        if !client_pin_verify_authentication(&secret, &authenticated, auth) {
+        if !secret.verify(&authenticated, auth) {
             secret.zeroize();
             return Ctap2Response::error(Ctap2Status::PinAuthInvalid);
         }
-        let mut encrypted_hash = Zeroizing::new(hash_encrypted.to_vec());
-        if client_pin_decrypt(&secret, &mut encrypted_hash).is_err() {
-            secret.zeroize();
-            return Ctap2Response::error(Ctap2Status::PinAuthInvalid);
-        }
+        let encrypted_hash = match secret.decrypt(hash_encrypted) {
+            Ok(value) if value.len() == PIN_HASH_SIZE => value,
+            _ => {
+                secret.zeroize();
+                return Ctap2Response::error(Ctap2Status::PinAuthInvalid);
+            }
+        };
         if encrypted_hash
             .as_slice()
             .ct_eq(verifier.as_slice())
@@ -399,8 +436,8 @@ impl ClientPinHandler {
                 Ctap2Status::PinInvalid
             });
         }
-        let mut encrypted_pin = new_encrypted.to_vec();
-        let decrypted = client_pin_decrypt_pin(&secret, &mut encrypted_pin);
+        let decrypted =
+            ghost_fido_core::client_pin_decrypt_pin_with_protocol(&secret, new_encrypted);
         secret.zeroize();
         let Ok(pin) = decrypted else {
             return Ctap2Response::error(Ctap2Status::PinPolicyViolation);
@@ -475,18 +512,19 @@ impl ClientPinHandler {
             secret.zeroize();
             return Ctap2Response::error(Ctap2Status::MissingParameter);
         };
-        if encrypted.len() != PIN_HASH_SIZE
-            || auth.len() != PIN_UV_AUTH_PARAMETER_SIZE
-            || !client_pin_verify_authentication(&secret, encrypted, auth)
+        if encrypted.len() != encrypted_size(PIN_HASH_SIZE, secret.protocol())
+            || !secret.verify(encrypted, auth)
         {
             secret.zeroize();
             return Ctap2Response::error(Ctap2Status::PinAuthInvalid);
         }
-        let mut decrypted_hash = Zeroizing::new(encrypted.to_vec());
-        if client_pin_decrypt(&secret, &mut decrypted_hash).is_err() {
-            secret.zeroize();
-            return Ctap2Response::error(Ctap2Status::PinAuthInvalid);
-        }
+        let decrypted_hash = match secret.decrypt(encrypted) {
+            Ok(value) if value.len() == PIN_HASH_SIZE => value,
+            _ => {
+                secret.zeroize();
+                return Ctap2Response::error(Ctap2Status::PinAuthInvalid);
+            }
+        };
         if decrypted_hash
             .as_slice()
             .ct_eq(verifier.as_slice())
@@ -513,27 +551,28 @@ impl ClientPinHandler {
             secret.zeroize();
             return Ctap2Response::error(Ctap2Status::Other);
         }
-        let mut encrypted_token = Zeroizing::new(token.to_vec());
-        if client_pin_encrypt(&secret, &mut encrypted_token).is_err() {
-            secret.zeroize();
-            return Ctap2Response::error(Ctap2Status::Other);
-        }
+        let protocol = secret.protocol();
+        let encrypted_token = match secret.encrypt(&token[..]) {
+            Ok(value) => value,
+            Err(_) => {
+                secret.zeroize();
+                return Ctap2Response::error(Ctap2Status::Other);
+            }
+        };
         secret.zeroize();
         // Keep a token copy only in the channel owner, which zeroizes it on drop.
         self.tokens.insert(
             channel,
             PinTokenEntry {
                 value: *token,
+                protocol,
                 expires_at: Instant::now() + PIN_PROTOCOL_TIMEOUT,
                 permissions,
                 relying_party_hash: relying_party_id
                     .map(|rp_id| Sha256::digest(rp_id.as_bytes()).into()),
             },
         );
-        response_map(vec![(
-            2,
-            CborValue::Bytes(core::mem::take(&mut *encrypted_token)),
-        )])
+        response_map(vec![(2, CborValue::Bytes(encrypted_token.to_vec()))])
     }
 }
 
@@ -709,8 +748,10 @@ impl<'a> AuthenticatorService<'a> {
                 }
                 let mut profile = self.config.get_info.clone();
                 let pin_is_set = self.store.pin_state().verifier().is_some();
+                let protected_storage_available = self.store.has_protected_storage();
                 let credential_management_ready =
                     pin_is_set && self.ensure_credential_management_metadata();
+                profile.versions.retain(|version| version != "FIDO_2_1");
                 let mut client_pin_option_present = false;
                 for (name, value) in &mut profile.options {
                     if name == "clientPin" {
@@ -720,6 +761,11 @@ impl<'a> AuthenticatorService<'a> {
                 }
                 if !client_pin_option_present {
                     profile.options.push(("clientPin".into(), pin_is_set));
+                }
+                for (name, value) in &mut profile.options {
+                    if name == "pinUvAuthToken" {
+                        *value = false;
+                    }
                 }
                 if let Some((_, value)) = profile
                     .options
@@ -735,15 +781,42 @@ impl<'a> AuthenticatorService<'a> {
                 profile
                     .extensions
                     .retain(|extension| extension != "hmac-secret" && extension != "credProtect");
-                if self.store.has_protected_storage() {
+                if protected_storage_available {
                     profile.extensions.push("hmac-secret".into());
                     profile.extensions.push("credProtect".into());
                 }
-                profile.pin_uv_auth_protocols = if self.store.has_protected_storage() {
-                    vec![u64::from(PIN_UV_AUTH_PROTOCOL)]
+                profile.pin_uv_auth_protocols = if protected_storage_available {
+                    vec![
+                        u64::from(PIN_UV_AUTH_PROTOCOL_TWO),
+                        u64::from(PIN_UV_AUTH_PROTOCOL),
+                    ]
                 } else {
                     Vec::new()
                 };
+                if protected_storage_available {
+                    if let Some((_, value)) = profile
+                        .options
+                        .iter_mut()
+                        .find(|(name, _)| name == "pinUvAuthToken")
+                    {
+                        *value = true;
+                    } else {
+                        profile.options.push(("pinUvAuthToken".into(), true));
+                    }
+                    let extensions_ready = ["hmac-secret", "credProtect"].iter().all(|required| {
+                        profile
+                            .extensions
+                            .iter()
+                            .any(|extension| extension == required)
+                    });
+                    if credential_management_ready
+                        && extensions_ready
+                        && profile.pin_uv_auth_protocols.contains(&2)
+                        && !profile.versions.iter().any(|version| version == "FIDO_2_1")
+                    {
+                        profile.versions.push("FIDO_2_1".into());
+                    }
+                }
                 match GetInfoHandler::new(&profile) {
                     Ok(handler) => Ok(handler.handle(&payload)),
                     Err(_) => Ok(Ctap2Response::error(Ctap2Status::Other)),
@@ -799,10 +872,15 @@ impl<'a> AuthenticatorService<'a> {
                 };
                 let mut hmac_secret_shared_secret = if let Some(input) = typed.hmac_secret.as_ref()
                 {
-                    match self
-                        .client_pin
-                        .hmac_secret_shared_secret(channel, &input.key_agreement)
-                    {
+                    let Some(protocol) = PinUvAuthProtocol::from_id(input.pin_uv_auth_protocol)
+                    else {
+                        return Ok(Ctap2Response::error(Ctap2Status::InvalidParameter));
+                    };
+                    match self.client_pin.hmac_secret_shared_secret(
+                        channel,
+                        &input.key_agreement,
+                        protocol,
+                    ) {
                         Ok(secret) => Some(secret),
                         Err(status) => return Ok(Ctap2Response::error(status)),
                     }
@@ -832,7 +910,7 @@ impl<'a> AuthenticatorService<'a> {
                     self.verification,
                     self.config.request_timeout,
                     user_verified,
-                    hmac_secret_shared_secret.as_deref(),
+                    hmac_secret_shared_secret.as_ref(),
                 )
                 .map_err(AuthenticatorServiceError::GetAssertion)?;
                 if !execution.remaining_credentials.is_empty() {
@@ -843,9 +921,7 @@ impl<'a> AuthenticatorService<'a> {
                             credentials: execution.remaining_credentials.into(),
                             expires_at: Instant::now() + ASSERTION_CONTINUATION_TIMEOUT,
                             user_verified,
-                            hmac_secret_shared_secret: hmac_secret_shared_secret
-                                .as_ref()
-                                .map(|secret| **secret),
+                            hmac_secret_shared_secret: hmac_secret_shared_secret.as_ref().cloned(),
                         },
                     );
                 } else if let Some(secret) = &mut hmac_secret_shared_secret {
@@ -1076,13 +1152,14 @@ impl<'a> AuthenticatorService<'a> {
             return Ctap2Response::error(Ctap2Status::MissingParameter);
         };
         let params = field(&fields, 2);
-        let protocol = uint_field(&fields, 3);
+        let protocol = uint_field(&fields, 3).and_then(PinUvAuthProtocol::from_id);
         let Some(auth) = byte_field(&fields, 4) else {
             return Ctap2Response::error(Ctap2Status::PinUvAuthTokenRequired);
         };
-        if protocol != Some(u64::from(PIN_UV_AUTH_PROTOCOL))
-            || auth.len() != PIN_UV_AUTH_PARAMETER_SIZE
-        {
+        let Some(protocol) = protocol else {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        };
+        if auth.len() != protocol.auth_parameter_size() {
             return Ctap2Response::error(Ctap2Status::InvalidParameter);
         }
         let parameter_value = params.cloned().unwrap_or(CborValue::Map(Vec::new()));
@@ -1107,11 +1184,6 @@ impl<'a> AuthenticatorService<'a> {
                 Err(_) => return Ctap2Response::error(Ctap2Status::Other),
             }
         }
-        let auth: &[u8; PIN_UV_AUTH_PARAMETER_SIZE] = match auth.try_into() {
-            Ok(auth) => auth,
-            Err(_) => return Ctap2Response::error(Ctap2Status::InvalidParameter),
-        };
-
         match subcommand {
             1 => {
                 if params.is_some() {
@@ -1119,7 +1191,7 @@ impl<'a> AuthenticatorService<'a> {
                 }
                 if let Err(status) =
                     self.client_pin
-                        .authorize(channel, &auth_message, auth, 0x04, None)
+                        .authorize(channel, &auth_message, auth, protocol, 0x04, None)
                 {
                     return Ctap2Response::error(status);
                 }
@@ -1142,7 +1214,7 @@ impl<'a> AuthenticatorService<'a> {
                 }
                 if let Err(status) =
                     self.client_pin
-                        .authorize(channel, &auth_message, auth, 0x04, None)
+                        .authorize(channel, &auth_message, auth, protocol, 0x04, None)
                 {
                     return Ctap2Response::error(status);
                 }
@@ -1185,7 +1257,7 @@ impl<'a> AuthenticatorService<'a> {
                 }
                 if let Err(status) =
                     self.client_pin
-                        .authorize(channel, &auth_message, auth, 0x04, None)
+                        .authorize(channel, &auth_message, auth, protocol, 0x04, None)
                 {
                     return Ctap2Response::error(status);
                 }
@@ -1205,6 +1277,7 @@ impl<'a> AuthenticatorService<'a> {
                     channel,
                     &auth_message,
                     auth,
+                    protocol,
                     0x04,
                     Some(rp_hash),
                 ) {
@@ -1264,10 +1337,14 @@ impl<'a> AuthenticatorService<'a> {
                 if params.is_some() {
                     return Ctap2Response::error(Ctap2Status::InvalidParameter);
                 }
-                if let Err(status) =
-                    self.client_pin
-                        .authorize(channel, &auth_message, auth, 0x04, Some(&rp_id))
-                {
+                if let Err(status) = self.client_pin.authorize(
+                    channel,
+                    &auth_message,
+                    auth,
+                    protocol,
+                    0x04,
+                    Some(&rp_id),
+                ) {
                     return Ctap2Response::error(status);
                 }
                 self.next_credential_management_credential(channel)
@@ -1298,10 +1375,13 @@ impl<'a> AuthenticatorService<'a> {
                 let Ok(id) = CredentialId::new(id_bytes.to_vec()) else {
                     return Ctap2Response::error(Ctap2Status::InvalidParameter);
                 };
-                if let Err(status) =
-                    self.client_pin
-                        .authorize_permission(channel, &auth_message, auth, 0x04)
-                {
+                if let Err(status) = self.client_pin.authorize_permission(
+                    channel,
+                    &auth_message,
+                    auth,
+                    protocol,
+                    0x04,
+                ) {
                     return Ctap2Response::error(status);
                 }
                 let Some(record) = self
@@ -1315,10 +1395,14 @@ impl<'a> AuthenticatorService<'a> {
                 let Some(rp_id) = record.relying_party_id.as_deref() else {
                     return Ctap2Response::error(Ctap2Status::Other);
                 };
-                if let Err(status) =
-                    self.client_pin
-                        .authorize(channel, &auth_message, auth, 0x04, Some(rp_id))
-                {
+                if let Err(status) = self.client_pin.authorize(
+                    channel,
+                    &auth_message,
+                    auth,
+                    protocol,
+                    0x04,
+                    Some(rp_id),
+                ) {
                     return Ctap2Response::error(status);
                 }
                 if subcommand == 6 {
@@ -1487,17 +1571,18 @@ impl<'a> AuthenticatorService<'a> {
         &mut self,
         channel: u32,
         client_data_hash: &[u8; 32],
-        auth: Option<[u8; PIN_UV_AUTH_PARAMETER_SIZE]>,
+        auth: Option<(Vec<u8>, PinUvAuthProtocol)>,
         uv_required: bool,
         permission: u8,
         relying_party_id: &str,
     ) -> Result<bool, Ctap2Status> {
         match auth {
-            Some(auth) => {
+            Some((auth, protocol)) => {
                 self.client_pin.authorize(
                     channel,
                     client_data_hash,
                     &auth,
+                    protocol,
                     permission,
                     Some(relying_party_id),
                 )?;
@@ -1513,7 +1598,7 @@ fn parse_pin_auth(
     value: Option<&CborValue>,
     auth_key: u64,
     protocol_key: u64,
-) -> Result<Option<[u8; PIN_UV_AUTH_PARAMETER_SIZE]>, Ctap2Status> {
+) -> Result<Option<(Vec<u8>, PinUvAuthProtocol)>, Ctap2Status> {
     let Some(CborValue::Map(fields)) = value else {
         return Ok(None);
     };
@@ -1522,13 +1607,18 @@ fn parse_pin_auth(
     }
     match (field(fields, auth_key), field(fields, protocol_key)) {
         (None, None) => Ok(None),
-        (Some(CborValue::Bytes(auth)), Some(CborValue::Unsigned(protocol)))
-            if *protocol == u64::from(PIN_UV_AUTH_PROTOCOL) =>
-        {
-            auth.as_slice()
-                .try_into()
-                .map(Some)
-                .map_err(|_| Ctap2Status::InvalidParameter)
+        (Some(CborValue::Bytes(auth)), protocol_value) => {
+            let protocol = match protocol_value {
+                None => PinUvAuthProtocol::One,
+                Some(CborValue::Unsigned(id)) => {
+                    PinUvAuthProtocol::from_id(*id).ok_or(Ctap2Status::InvalidParameter)?
+                }
+                Some(_) => return Err(Ctap2Status::InvalidParameter),
+            };
+            if auth.len() != protocol.auth_parameter_size() {
+                return Err(Ctap2Status::InvalidParameter);
+            }
+            Ok(Some((auth.clone(), protocol)))
         }
         (Some(_), Some(_)) => Err(Ctap2Status::InvalidParameter),
         _ => Err(Ctap2Status::MissingParameter),
@@ -1541,4 +1631,8 @@ fn has_duplicate_field(fields: &[(CborValue, CborValue)], key: u64) -> bool {
         .filter(|(candidate, _)| *candidate == CborValue::Unsigned(key))
         .count()
         > 1
+}
+
+fn encrypted_size(plaintext_size: usize, protocol: PinUvAuthProtocol) -> usize {
+    plaintext_size + usize::from(protocol == PinUvAuthProtocol::Two) * 16
 }

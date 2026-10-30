@@ -499,6 +499,7 @@ pub struct HmacSecretInput {
     pub key_agreement: CborValue,
     pub salt_enc: Vec<u8>,
     pub salt_auth: Vec<u8>,
+    pub pin_uv_auth_protocol: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1066,6 +1067,7 @@ fn parse_hmac_secret_assertion(
     let mut key_agreement = None;
     let mut salt_enc = None;
     let mut salt_auth = None;
+    let mut pin_uv_auth_protocol = None;
     for (key, value) in fields {
         let CborValue::Unsigned(key) = key else {
             return Err(GetAssertionError::UnexpectedType(4));
@@ -1074,6 +1076,7 @@ fn parse_hmac_secret_assertion(
             1 => &mut key_agreement,
             2 => &mut salt_enc,
             3 => &mut salt_auth,
+            4 => &mut pin_uv_auth_protocol,
             _ => return Err(GetAssertionError::InvalidParameter(4)),
         };
         if slot.is_some() {
@@ -1088,13 +1091,23 @@ fn parse_hmac_secret_assertion(
     else {
         return Err(GetAssertionError::UnexpectedType(4));
     };
-    if !matches!(salt_enc.len(), 32 | 64) || salt_auth.len() != 16 {
+    let protocol = match pin_uv_auth_protocol {
+        None => 1,
+        Some(CborValue::Unsigned(value @ (1 | 2))) => value,
+        Some(_) => return Err(GetAssertionError::InvalidParameter(4)),
+    };
+    let block_iv = if protocol == 2 { 16 } else { 0 };
+    let auth_size = if protocol == 2 { 32 } else { 16 };
+    if !matches!(salt_enc.len(), value if value == 32 + block_iv || value == 64 + block_iv)
+        || salt_auth.len() != auth_size
+    {
         return Err(GetAssertionError::InvalidParameter(4));
     }
     Ok(Some(HmacSecretInput {
         key_agreement: key_agreement.ok_or(GetAssertionError::MissingParameter(4))?,
         salt_enc,
         salt_auth,
+        pin_uv_auth_protocol: protocol,
     }))
 }
 

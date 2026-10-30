@@ -1393,6 +1393,7 @@ dependencies = [
  "aes",
  "cbc",
  "getrandom 0.4.3",
+ "hkdf 0.12.4",
  "hmac 0.13.0",
  "p256",
  "rusqlite",
