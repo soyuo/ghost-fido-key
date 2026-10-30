@@ -53,6 +53,16 @@ not part of authenticator data or its signature. GetInfo advertises this
 extension only while protected LargeBlobs storage is available. See
 [CTAP2 largeBlobKey](ctap2-largeblob-key.md).
 
+## `credBlob`
+
+The authenticator accepts `credBlob` as an opaque byte string of at most 32
+bytes. It persists the value only for a discoverable credential in the protected
+credential record. The signed authenticator-data extension reports
+`credBlob: true` when stored and `false` when the value is too large or the
+credential is not discoverable. GetInfo advertises `credBlob` together with
+`credProtect` and `maxCredBlobLength: 32`. See
+[CTAP2 credBlob](ctap2-credblob.md).
+
 `ghost-platform::register_make_credential` checks for an offered ES256
 algorithm, runs the RP-scoped exclusion check, waits for explicit local
 registration approval, then creates the protected key and stores its opaque
