@@ -1,4 +1,4 @@
-# Virtual FIDO2 Security Key
+﻿# Virtual FIDO2 Security Key
 
 > 물리 USB 없이 동작하는 소프트웨어 기반 가상 USB 보안 키 시스템 설계 명세서
 
@@ -1502,6 +1502,7 @@ CTAP2 입력 CBOR는 definite-length 값만 허용하며 기본 16 depth, 128 co
 ClientPIN은 PIN/UV Auth Protocol 1의 기존 암호 동작을 유지하면서 Protocol 2의 분리된 HKDF 키, random-IV AES-CBC, 32-byte HMAC을 지원한다. agreement, token 및 요청 검증은 선택한 protocol에 묶고, 명시적 비지원 protocol ID는 거부한다. 명시적 COSE `keyAgreement`의 `kid`, `key_ops`, `base IV` optional label은 허용하지 않고, 알 수 없는 map key는 CTAP §8에 따라 무시한다. `subCommand` 누락, 잘못된 CBOR type, 미지원 숫자 subcommand는 각각 `MissingParameter`, `CborUnexpectedType`, `InvalidSubcommand`로 구분한다. GetInfo는 `[2, 1]` 순서로 프로토콜을 노출하며 CTAP2.1 필수 기능 조건이 모두 성립할 때만 `FIDO_2_1`과 `pinUvAuthToken`을 광고한다. MakeCredential 또는 `up=true` GetAssertion에서 user presence 승인이 끝나면 token의 모든 permission을 `lbw` 외에는 제거하고, silent GetAssertion preflight (`up=false`)에서는 permission을 유지한다. 3회 연속 잘못된 PIN 검증은 `PIN_AUTH_BLOCKED`를 반환하고 현재 authenticator runtime이 종료·재시작될 때까지 PIN subcommand를 잠근다. 이 상태에서 GetPINRetries는 `powerCycleState=true`를 반환하며, 올바른 PIN 검증은 새 PIN 검증이 실패하더라도 연속 실패 횟수를 초기화한다. [`docs/ctap2-clientpin.md`](../docs/ctap2-clientpin.md)
 `GetAssertionRequest`는 CBOR 필수 필드, 32-byte `clientDataHash`, optional `public-key` allow-list descriptor와 `up`/`uv` boolean 옵션을 검증한다. RP ID의 SHA-256 hash를 사용해 allow-list 또는 discoverable credential을 RP별로 조회한다. allow-list가 없고 여러 discoverable credential이 일치하면 생성 순서 역순으로 첫 응답과 `numberOfCredentials`를 반환하고, 나머지는 channel별 `GetNextAssertion` sequence로 이어진다. 승인과 key provider 서명은 최초 요청에서 한 번 수행하며, 각 응답의 counter를 저장한 뒤 반환한다. UV 없이 user handle 외 이름 정보는 노출하지 않는다. [`docs/ctap2-getassertion.md`](../docs/ctap2-getassertion.md)
 
+`hmac-secret` 입력 맵은 CTAP2 §8에 따라 알 수 없는 키를 무시하고, 지원하는 필수 필드와 `pinUvAuthProtocol`의 값/길이만 검증한다. `keyAgreement`는 map이어야 하며, 제공된 `pinUvAuthProtocol`은 unsigned integer여야 한다. 지원하지 않는 unsigned protocol ID는 `InvalidParameter`로 처리한다. [`docs/ctap2-clientpin.md`](../docs/ctap2-clientpin.md), [`docs/ctap2-getassertion.md`](../docs/ctap2-getassertion.md)
 MakeCredential과 GetAssertion request parser는 CTAP2 §8에 따라 처리기가 이해하지 못하는 map key를 무시한다. 이는 최상위 parameter map과 RP/user entity, credential parameter/descriptor, options, 일반 extension map에 적용한다. 지원하는 필드의 중복이나 잘못된 값, 필수 필드 누락은 계속 거부한다. `hmac-secret` input map은 별도 문서화된 parser 규칙을 따른다.
 `hmac-secret` 입력 맵은 CTAP2 §8에 따라 알 수 없는 키를 무시하고, 지원하는 필수 필드와 `pinUvAuthProtocol`의 값/길이만 검증한다. 선택된 credential에 `CredRandom`이 없으면 hmac-secret 요청의 인증·복호화 검증은 계속 수행한 뒤 extension 출력을 생략하고 assertion을 성공시킨다(CTAP2 §12.7). 잘못된 인증 정보는 계속 실패한다. [`docs/ctap2-clientpin.md`](../docs/ctap2-clientpin.md)
 
