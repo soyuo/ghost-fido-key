@@ -13,9 +13,12 @@ it through `AuthenticatorService` and passes the response to
 packet arrives and holds it through the response or abort. If a different
 channel starts a request while that transaction is active, the session returns
 `CTAPHID_ERROR(ERR_CHANNEL_BUSY)` on the requesting channel without dispatching
-or queuing the request. The active transaction continues normally. The desktop
-runtime keeps the report loop available during user approval while serializing
-authenticator service execution.
+or queuing the request. If a same-channel INIT has aborted the HID transaction
+but its serialized service call is still unwinding, the desktop runtime also
+rejects completed requests from other channels instead of queueing them. The
+active transaction continues normally. The desktop runtime keeps the report
+loop available during user approval while serializing authenticator service
+execution.
 
 A valid CTAPHID CANCEL completes the original CBOR transaction with
 `KEEPALIVE_CANCEL`; the CANCEL command itself receives no response. A queued

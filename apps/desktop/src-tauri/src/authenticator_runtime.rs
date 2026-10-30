@@ -281,34 +281,53 @@ pub fn run(
                             }
                         }
                         SessionEvent::Ctap2Request { channel, request } => {
-                            if pending_requests.len() >= CTAPHID_CHANNELS {
-                                runtime_error = Some("CTAPHID request queue is full.".into());
-                                break;
-                            }
-                            let request_id =
-                                allocate_request_id(&mut next_request_id, &pending_requests);
-                            pending_requests.insert(
-                                request_id,
-                                PendingRequest {
-                                    channel,
-                                    disposition: None,
-                                    last_keepalive: Instant::now(),
-                                },
-                            );
-                            latest_request_by_channel.insert(channel, request_id);
-                            queued_requests.push_back((request_id, channel, request));
-                            if active_service_request.is_none() {
-                                if let Err(error) = dispatch_next_request(
-                                    &service_tx,
-                                    &mut queued_requests,
-                                    &mut pending_requests,
-                                    &mut latest_request_by_channel,
-                                    &mut active_service_request,
-                                    &mut session,
-                                    backend.as_mut(),
-                                ) {
-                                    runtime_error = Some(error);
+                            let service_busy_on_other_channel = active_service_request
+                                .and_then(|request_id| pending_requests.get(&request_id))
+                                .is_some_and(|active| active.channel != channel);
+                            if service_busy_on_other_channel {
+                                match session.reject_channel_busy(channel) {
+                                    Ok(reports) => {
+                                        if let Err(error) = send_reports(backend.as_mut(), &reports)
+                                        {
+                                            runtime_error = Some(error.detail);
+                                            break;
+                                        }
+                                    }
+                                    Err(error) => {
+                                        runtime_error = Some(error.to_string());
+                                        break;
+                                    }
+                                }
+                            } else {
+                                if pending_requests.len() >= CTAPHID_CHANNELS {
+                                    runtime_error = Some("CTAPHID request queue is full.".into());
                                     break;
+                                }
+                                let request_id =
+                                    allocate_request_id(&mut next_request_id, &pending_requests);
+                                pending_requests.insert(
+                                    request_id,
+                                    PendingRequest {
+                                        channel,
+                                        disposition: None,
+                                        last_keepalive: Instant::now(),
+                                    },
+                                );
+                                latest_request_by_channel.insert(channel, request_id);
+                                queued_requests.push_back((request_id, channel, request));
+                                if active_service_request.is_none() {
+                                    if let Err(error) = dispatch_next_request(
+                                        &service_tx,
+                                        &mut queued_requests,
+                                        &mut pending_requests,
+                                        &mut latest_request_by_channel,
+                                        &mut active_service_request,
+                                        &mut session,
+                                        backend.as_mut(),
+                                    ) {
+                                        runtime_error = Some(error);
+                                        break;
+                                    }
                                 }
                             }
                         }

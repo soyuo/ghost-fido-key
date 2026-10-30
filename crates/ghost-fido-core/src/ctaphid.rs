@@ -532,6 +532,22 @@ impl CtapHidSession {
     ) -> Result<Vec<[u8; HID_REPORT_SIZE]>, FrameError> {
         self.respond_ctap2(channel, response.status, &response.payload)
     }
+
+    /// Frames a CTAPHID error for a completed request on its active channel.
+    pub fn respond_error(
+        &mut self,
+        channel: u32,
+        code: CtapHidErrorCode,
+    ) -> Result<[u8; HID_REPORT_SIZE], FrameError> {
+        if !self.channels.is_active(channel) {
+            return Err(FrameError::InvalidChannel);
+        }
+        let report = encode_error(channel, code)?;
+        if self.transaction_channel == Some(channel) {
+            self.transaction_channel = None;
+        }
+        Ok(report)
+    }
 }
 
 /// Adds the CTAP2 status byte and frames a response as CTAPHID CBOR reports.
