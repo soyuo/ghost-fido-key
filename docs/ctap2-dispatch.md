@@ -14,6 +14,7 @@ Selected status wire values follow the FIDO CTAP 2.1 error table:
 | --- | --- |
 | `UserActionPending` | `0x23` |
 | `UnsupportedOption` | `0x2B` |
+| `InvalidOption` | `0x2C` |
 | `NoCredentials` | `0x2E` |
 
 See the [FIDO CTAP 2.1 status table](https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-errata-20220621.html#ctap2-error-codes).
