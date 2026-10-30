@@ -407,7 +407,12 @@ impl ClientPinHandler {
         };
         let new_verifier = client_pin_hash(&pin);
         match store.set_pin_verifier(Some(*new_verifier)) {
-            Ok(()) => Ctap2Response::error(Ctap2Status::Success),
+            Ok(()) => {
+                // CTAP requires a successful changePIN to revoke tokens on every channel.
+                // Clearing drops each entry, whose Drop implementation zeroizes its token.
+                self.tokens.clear();
+                Ctap2Response::error(Ctap2Status::Success)
+            }
             Err(_) => Ctap2Response::error(Ctap2Status::Other),
         }
     }
