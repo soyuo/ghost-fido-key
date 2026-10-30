@@ -32,7 +32,7 @@ opening the device to every user. The rule does not change the device mode or
 grant access to background/headless sessions.
 
 For a development installation on Ubuntu LTS, an administrator can install and
-reload the rule with:
+reload a manual override with:
 
 ```sh
 sudo install -m 0644 platforms/linux/udev/70-ghost-fido-key.rules \
@@ -51,7 +51,11 @@ udevadm info --query=all --name=/dev/uhid
 ls -l /dev/hidraw*
 ```
 
-Remove the development rule and refresh udev when uninstalling it:
+The Debian package installs the rule under `/usr/lib/udev/rules.d/` and runs its
+udev refresh hook on install, upgrade, and removal. Package removal owns cleanup
+of that packaged file; do not remove it manually. For AppImage, other
+non-Debian formats, or a manual development override, remove the `/etc` rule
+and refresh udev when uninstalling that setup:
 
 ```sh
 sudo rm /etc/udev/rules.d/70-ghost-fido-key.rules
@@ -59,12 +63,10 @@ sudo udevadm control --reload-rules
 sudo udevadm trigger --action=change --subsystem-match=misc --sysname-match=uhid
 ```
 
-The rule is a packaging input; no installer currently deploys it automatically.
-The installed package must own cleanup during uninstall. Ubuntu releases without
-systemd-logind seat ACL handling need a separately reviewed access policy and
-must not silently fall back to world-writable permissions. Real-host ownership,
-mode, ACL, fresh-login, and uninstall checks are still required before claiming
-Linux runtime support.
+Ubuntu releases without systemd-logind seat ACL handling need a separately
+reviewed access policy and must not silently fall back to world-writable
+permissions. Real-host ownership, mode, ACL, fresh-login, and uninstall checks
+are still required before claiming Linux runtime support.
 
 Do not mark Linux support complete from a Windows cross-build. The release gate
 requires an Ubuntu LTS x64 and ARM64 device test, HID enumeration, CTAPHID
