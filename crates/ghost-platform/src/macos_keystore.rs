@@ -137,7 +137,7 @@ impl KeyStore for MacOsKeyStore {
         options
             .set_key_type(KeyType::ec())
             .set_size_in_bits(256)
-            .set_label(&label)
+            .set_label(label)
             .set_location(Location::DataProtectionKeychain)
             .set_token(token);
         let key = SecKey::new(&options).map_err(Self::fail)?;
