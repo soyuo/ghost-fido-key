@@ -22,7 +22,12 @@ use std::collections::HashMap;
 use std::time::Instant;
 use std::{
     fs,
-    sync::{Arc, Mutex, mpsc, mpsc::SyncSender},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+        mpsc::SyncSender,
+    },
     thread::JoinHandle,
     time::Duration,
 };
@@ -35,6 +40,7 @@ struct DesktopState {
     credential_store: Arc<Mutex<Option<CredentialStore>>>,
     credential_store_available: bool,
     credential_store_status: String,
+    client_pin_configured: AtomicBool,
     verification: Arc<DesktopVerificationProvider>,
     virtual_hid: Arc<Mutex<RuntimeStatus>>,
     runtime: Mutex<Option<RuntimeHandle>>,
@@ -810,6 +816,13 @@ fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
             Ok(store) => match store.as_ref() {
                 Some(store) if store.pin_state().verifier().is_some() => "Configured",
                 Some(_) => "Not configured",
+                None if runtime_owns_store => {
+                    if state.client_pin_configured.load(Ordering::Acquire) {
+                        "Configured"
+                    } else {
+                        "Not configured"
+                    }
+                }
                 None => "Unavailable",
             },
             Err(_) => "Unavailable",
@@ -1086,6 +1099,9 @@ fn set_client_pin(
             audit::Outcome::Failure
         },
     );
+    if result.is_ok() {
+        state.client_pin_configured.store(true, Ordering::Release);
+    }
     result
 }
 
@@ -1209,6 +1225,9 @@ fn reset_credentials(
             audit::Outcome::Failure
         },
     );
+    if result.is_ok() {
+        state.client_pin_configured.store(false, Ordering::Release);
+    }
     result
 }
 
@@ -1234,6 +1253,9 @@ pub fn run() {
             audit::init(app.path().app_log_dir().ok());
             let (store, status) = initialize_credential_store(app.handle());
             let store_available = store.is_some();
+            let client_pin_configured = store
+                .as_ref()
+                .is_some_and(|store| store.pin_state().verifier().is_some());
             audit::record(
                 audit::Event::CredentialStoreInitialization,
                 if store_available {
@@ -1274,6 +1296,7 @@ pub fn run() {
                 credential_store: Arc::new(Mutex::new(store)),
                 credential_store_available: store_available,
                 credential_store_status: status,
+                client_pin_configured: AtomicBool::new(client_pin_configured),
                 verification: Arc::new(DesktopVerificationProvider {
                     app: app.handle().clone(),
                     pending: Arc::new(Mutex::new(HashMap::new())),
