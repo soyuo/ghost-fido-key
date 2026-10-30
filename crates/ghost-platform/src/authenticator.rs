@@ -17,12 +17,13 @@ use ghost_fido_core::{
 };
 
 const PIN_PROTOCOL_TIMEOUT: Duration = Duration::from_secs(30);
+const PIN_UV_PERMISSION_LARGE_BLOB_WRITE: u8 = 0x10;
 
 use crate::{
     GetAssertionExecutionError, KeyCreationPolicy, KeyReference, KeyStore,
     MakeCredentialExecutionError, PlatformErrorKind, SoftwareKeyConsent, UserVerification,
     VerificationAction, VerificationDecision, VerificationRequest,
-    execute_get_assertion_with_uv_and_hmac_secret, execute_next_assertion_with_uv_and_hmac_secret,
+    execute_next_assertion_with_uv_and_hmac_secret,
 };
 
 const ASSERTION_CONTINUATION_TIMEOUT: Duration = Duration::from_secs(30);
@@ -116,6 +117,12 @@ impl ClientPinHandler {
     fn clear_all(&mut self) {
         self.agreements.clear();
         self.tokens.clear();
+    }
+
+    fn clear_user_presence_permissions(&mut self, channel: u32) {
+        if let Some(token) = self.tokens.get_mut(&channel) {
+            token.permissions &= PIN_UV_PERMISSION_LARGE_BLOB_WRITE;
+        }
     }
 
     fn expire(&mut self) {
@@ -857,7 +864,10 @@ impl<'a> AuthenticatorService<'a> {
                     Ok(value) => value,
                     Err(status) => return Ok(Ctap2Response::error(status)),
                 };
-                crate::register_make_credential_with_uv(
+                let mut on_user_presence = || {
+                    self.client_pin.clear_user_presence_permissions(channel);
+                };
+                crate::registration::register_make_credential_with_uv_and_presence_callback(
                     &typed,
                     self.store,
                     self.key_store,
@@ -867,6 +877,7 @@ impl<'a> AuthenticatorService<'a> {
                     self.config.aaguid,
                     self.config.request_timeout,
                     user_verified,
+                    &mut on_user_presence,
                 )
                 .map_err(AuthenticatorServiceError::MakeCredential)
             }
@@ -915,7 +926,10 @@ impl<'a> AuthenticatorService<'a> {
                         return Ok(Ctap2Response::error(status));
                     }
                 };
-                let execution = execute_get_assertion_with_uv_and_hmac_secret(
+                let mut on_user_presence = || {
+                    self.client_pin.clear_user_presence_permissions(channel);
+                };
+                let execution = crate::assertion::execute_get_assertion_with_uv_and_hmac_secret_and_presence_callback(
                     &typed,
                     self.store,
                     self.key_store,
@@ -923,6 +937,7 @@ impl<'a> AuthenticatorService<'a> {
                     self.config.request_timeout,
                     user_verified,
                     hmac_secret_shared_secret.as_ref(),
+                    &mut on_user_presence,
                 )
                 .map_err(AuthenticatorServiceError::GetAssertion)?;
                 if !execution.remaining_credentials.is_empty() {

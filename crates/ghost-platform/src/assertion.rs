@@ -90,6 +90,28 @@ pub fn execute_get_assertion_with_uv_and_hmac_secret(
     user_verified: bool,
     hmac_secret_shared_secret: Option<&PinUvAuthSharedSecret>,
 ) -> Result<GetAssertionExecution, GetAssertionExecutionError> {
+    execute_get_assertion_with_uv_and_hmac_secret_and_presence_callback(
+        request,
+        store,
+        key_store,
+        verification,
+        timeout,
+        user_verified,
+        hmac_secret_shared_secret,
+        &mut || {},
+    )
+}
+
+pub(crate) fn execute_get_assertion_with_uv_and_hmac_secret_and_presence_callback(
+    request: &GetAssertionRequest,
+    store: &mut CredentialStore,
+    key_store: &dyn KeyStore,
+    verification: &dyn UserVerification,
+    timeout: Duration,
+    user_verified: bool,
+    hmac_secret_shared_secret: Option<&PinUvAuthSharedSecret>,
+    on_user_presence: &mut dyn FnMut(),
+) -> Result<GetAssertionExecution, GetAssertionExecutionError> {
     if request.options.user_verification == Some(true) && !user_verified {
         return Ok(single_response(Ctap2Response::error(
             Ctap2Status::PinUvAuthTokenRequired,
@@ -152,7 +174,7 @@ pub fn execute_get_assertion_with_uv_and_hmac_secret(
     let user_present = request.options.user_presence != Some(false);
     if user_present {
         match verification.request_confirmation(&confirmation, timeout) {
-            Ok(VerificationDecision::Approved) => {}
+            Ok(VerificationDecision::Approved) => on_user_presence(),
             Ok(VerificationDecision::Rejected) => {
                 return Ok(single_response(Ctap2Response::error(
                     Ctap2Status::OperationDenied,
