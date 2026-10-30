@@ -72,10 +72,7 @@ pub fn run(
         return;
     };
     reset_pending.store(store.reset_is_pending(), Ordering::Release);
-    provider_key_cleanup_pending.store(
-        store.pending_provider_key_handle().is_some(),
-        Ordering::Release,
-    );
+    provider_key_cleanup_pending.store(store.provider_key_cleanup_pending(), Ordering::Release);
 
     if let Err(error) = backend.attach() {
         let availability = backend.availability();

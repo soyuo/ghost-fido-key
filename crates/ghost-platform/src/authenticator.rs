@@ -665,7 +665,7 @@ impl<'a> AuthenticatorService<'a> {
     /// Returns whether provider-key cleanup is pending in the credential store.
     #[must_use]
     pub fn provider_key_cleanup_is_pending(&self) -> bool {
-        self.store.pending_provider_key_handle().is_some()
+        self.store.provider_key_cleanup_pending()
     }
 
     /// Handles one CTAP2 request and scopes any GetNextAssertion state to its CTAPHID channel.
@@ -675,7 +675,7 @@ impl<'a> AuthenticatorService<'a> {
         request: Ctap2Request,
     ) -> Result<Ctap2Response, AuthenticatorServiceError> {
         let (command, payload, decoded_payload) = request.into_parts();
-        let resumed_provider_cleanup = self.store.pending_provider_key_handle().is_some();
+        let resumed_provider_cleanup = self.store.provider_key_cleanup_pending();
         if resumed_provider_cleanup && self.recover_pending_provider_key().is_err() {
             return Ok(Ctap2Response::error(Ctap2Status::Other));
         }
@@ -991,6 +991,16 @@ impl<'a> AuthenticatorService<'a> {
     }
 
     fn recover_pending_provider_key(&mut self) -> Result<(), ()> {
+        if let Some((id, handle)) = self.store.pending_credential_deletion() {
+            let reference = std::str::from_utf8(handle.as_bytes()).map_err(|_| ())?;
+            self.key_store
+                .delete_key(&crate::KeyReference::new(reference))
+                .map_err(|_| ())?;
+            return self
+                .store
+                .finish_credential_deletion(&id, &handle)
+                .map_err(|_| ());
+        }
         let handle = self
             .store
             .pending_provider_key_handle()
@@ -1306,6 +1316,10 @@ impl<'a> AuthenticatorService<'a> {
                     let Ok(reference) = std::str::from_utf8(record.key_handle.as_bytes()) else {
                         return Ctap2Response::error(Ctap2Status::Other);
                     };
+                    let handle = match self.store.begin_credential_deletion(&id) {
+                        Ok(handle) => handle,
+                        Err(_) => return Ctap2Response::error(Ctap2Status::Other),
+                    };
                     if self
                         .key_store
                         .delete_key(&KeyReference::new(reference))
@@ -1313,8 +1327,8 @@ impl<'a> AuthenticatorService<'a> {
                     {
                         return Ctap2Response::error(Ctap2Status::Other);
                     }
-                    match self.store.remove_by_id(&id) {
-                        Ok(_) => Ctap2Response::error(Ctap2Status::Success),
+                    match self.store.finish_credential_deletion(&id, &handle) {
+                        Ok(()) => Ctap2Response::error(Ctap2Status::Success),
                         Err(_) => Ctap2Response::error(Ctap2Status::Other),
                     }
                 } else {
