@@ -1438,8 +1438,6 @@ impl<'a> AuthenticatorService<'a> {
                         return Ctap2Response::error(Ctap2Status::MissingParameter);
                     };
                     if user.is_empty()
-                        || (text_map_field(user, "name").is_none()
-                            && text_map_field(user, "displayName").is_none())
                         || user.iter().any(|(key, _)| {
                             !matches!(key, CborValue::Text(name) if ["id", "name", "displayName"].contains(&name.as_str()))
                         })
@@ -1457,6 +1455,8 @@ impl<'a> AuthenticatorService<'a> {
                     let (Ok(name), Ok(display_name)) = (name, display_name) else {
                         return Ctap2Response::error(Ctap2Status::InvalidParameter);
                     };
+                    let name = name.filter(|value| !value.is_empty());
+                    let display_name = display_name.filter(|value| !value.is_empty());
                     match self
                         .store
                         .update_user_labels(&id, user_id, name, display_name)

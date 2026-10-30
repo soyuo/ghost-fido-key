@@ -12,7 +12,7 @@ Every command requires a valid PIN/UV auth token with the Credential Management 
 
 Credential deletion persists an authenticated intent before deleting the platform key. If key deletion fails, keep the credential and intent. After key deletion succeeds, remove the credential and intent in one SQLite transaction. Resume pending deletion before CTAP commands and desktop credential-management operations; keep the authenticator fail-closed if recovery cannot complete. The intent stores only protected credential and provider references and is never exposed to protocol responses or UI.
 
-Deletion removes the provider key before committing metadata removal. A failed key deletion must leave metadata intact. User information updates may change only `name` and `displayName`; the supplied `id` must equal the stored handle and is immutable.
+Deletion removes the provider key before committing metadata removal. A failed key deletion must leave metadata intact. User information updates may change only `name` and `displayName`; the supplied `id` must equal the stored handle and is immutable. A missing or empty label removes that stored field, so an update containing only `id` clears both labels.
 
 ## Protected metadata and migration
 
