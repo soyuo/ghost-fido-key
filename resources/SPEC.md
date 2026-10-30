@@ -619,6 +619,8 @@ PIN은 평문으로 저장하지 않는다.
 단, Windows 앱에서 직접 수행하는 관리 기능과 CTAP 표준을 통해 제공하는 Credential Management 기능을 별도로
 구현하고 검증한다.
 
+CTAP `updateUserInformation`은 기존 `user.id`를 변경하지 않으며, 생략되거나 빈 `name`/`displayName` 필드는 해당 저장 필드를 삭제한다.
+
 ## 9. 패스키 및 자격 증명 관리
 
 ### 9.1 자격 증명 구조
