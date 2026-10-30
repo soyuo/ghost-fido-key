@@ -8,11 +8,12 @@ use std::{
 };
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::cbor::{CborError, CborLimits, CborValue, decode_with_limits, encode as encode_cbor};
 
-const STORAGE_SCHEMA_VERSION: i64 = 12;
+const STORAGE_SCHEMA_VERSION: i64 = 13;
 const PIN_STATE_SCHEMA_VERSION: i64 = 8;
 const CREDENTIAL_RECORD_SCHEMA_VERSION: i64 = 7;
 const RESET_JOURNAL_SCHEMA_VERSION: i64 = 9;
@@ -25,11 +26,17 @@ const STORAGE_AAD_V2: &[u8] = b"ghost-fido/credential-store/v2";
 const STORAGE_AAD_V3: &[u8] = b"ghost-fido/credential-store/v3";
 const STORAGE_AAD_V4: &[u8] = b"ghost-fido/credential-store/v4";
 const PIN_STATE_AAD_V1: &[u8] = b"ghost-fido/pin-state/v1";
+const LARGE_BLOB_ARRAY_AAD_V1: &[u8] = b"ghost-fido/large-blob-array/v1";
 const RESET_JOURNAL_AAD_V1: &[u8] = b"ghost-fido/reset-journal/v1";
 const PIN_RETRY_LIMIT: u8 = 8;
 const MAX_PERSISTED_RECORDS: usize = 4096;
 const MAX_PERSISTED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PROTECTED_BYTES: usize = MAX_PERSISTED_BYTES + 4096;
+pub const MAX_SERIALIZED_LARGE_BLOB_ARRAY: usize = 64 * 1024;
+const INITIAL_LARGE_BLOB_ARRAY: [u8; 17] = [
+    0x80, 0x76, 0xbe, 0x8b, 0x52, 0x8d, 0x00, 0x75, 0xf7, 0xaa, 0xe9, 0x8d, 0x6f, 0xa5, 0x7a, 0x6d,
+    0x3c,
+];
 const MAX_USER_LABEL_BYTES: usize = 256;
 const MAX_RP_ID_BYTES: usize = 253;
 
@@ -268,16 +275,32 @@ pub trait CredentialProtector: Send + Sync {
     fn erase_key(&self) -> Result<(), CredentialProtectionError>;
 }
 
-#[derive(Default)]
 pub struct CredentialStore {
     records: BTreeMap<CredentialId, CredentialRecord>,
     pin_state: PinState,
+    large_blob_array: Zeroizing<Vec<u8>>,
     pending_reset_keys: Option<Vec<KeyHandle>>,
     metadata_key_cleanup_pending: bool,
     pending_provider_key: Option<KeyHandle>,
     pending_credential_deletion: Option<(CredentialId, KeyHandle)>,
     sqlite: Option<SqliteBackend>,
     next_creation_order: u64,
+}
+
+impl Default for CredentialStore {
+    fn default() -> Self {
+        Self {
+            records: BTreeMap::new(),
+            pin_state: PinState::default(),
+            large_blob_array: Zeroizing::new(INITIAL_LARGE_BLOB_ARRAY.to_vec()),
+            pending_reset_keys: None,
+            metadata_key_cleanup_pending: false,
+            pending_provider_key: None,
+            pending_credential_deletion: None,
+            sqlite: None,
+            next_creation_order: 0,
+        }
+    }
 }
 
 /// Protected authenticator PIN state. Debug output intentionally omits the verifier.
@@ -439,7 +462,7 @@ impl CredentialStore {
                         .map_err(|_| CredentialError::StorageFailure)?;
                     records
                 }
-                4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 => {
+                4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 => {
                     let protected = read_protected_payload(&connection)?;
                     let plaintext = protector
                         .unprotect(&protected, STORAGE_AAD_V4)
@@ -447,7 +470,7 @@ impl CredentialStore {
                     decode_records(
                         &plaintext,
                         match schema_version {
-                            11 | 12 => 7,
+                            11 | 12 | 13 => 7,
                             10 => 7,
                             9 => 7,
                             8 => 7,
@@ -465,6 +488,12 @@ impl CredentialStore {
             metadata_key_cleanup_pending =
                 prepare_reset_journal_schema(&mut connection, schema_version)?;
         }
+        let large_blob_array = initialize_large_blob_array(
+            &mut connection,
+            protector.as_ref(),
+            schema_version,
+            metadata_key_cleanup_pending,
+        )?;
         prepare_credential_deletion_schema(&mut connection, schema_version)?;
         let pending_reset_keys = if metadata_key_cleanup_pending {
             None
@@ -491,6 +520,11 @@ impl CredentialStore {
         } else {
             initialize_pin_state(&mut connection, protector.as_ref(), schema_version)?
         };
+        let large_blob_array = if pending_reset_keys.is_some() || metadata_key_cleanup_pending {
+            Zeroizing::new(INITIAL_LARGE_BLOB_ARRAY.to_vec())
+        } else {
+            Zeroizing::new(large_blob_array)
+        };
         if pending_reset_keys.is_some() {
             records.clear();
             pin_state = PinState::default();
@@ -504,6 +538,7 @@ impl CredentialStore {
         Ok(Self {
             records,
             pin_state,
+            large_blob_array,
             pending_reset_keys,
             metadata_key_cleanup_pending,
             pending_provider_key,
@@ -1052,6 +1087,7 @@ impl CredentialStore {
         self.pending_reset_keys = Some(handles.clone());
         self.records.clear();
         self.pin_state = PinState::default();
+        self.large_blob_array = Zeroizing::new(INITIAL_LARGE_BLOB_ARRAY.to_vec());
         self.next_creation_order = 0;
         if self.sqlite.is_none() {
             self.persist_reset_journal(&handles)?;
@@ -1120,6 +1156,7 @@ impl CredentialStore {
             .execute_batch(
                 "DROP TABLE credential_store;
                  DROP TABLE pin_state;
+                 DROP TABLE IF EXISTS large_blob_state;
                  DROP TABLE reset_journal;
                  DROP TABLE provider_key_journal;",
             )
@@ -1145,12 +1182,74 @@ impl CredentialStore {
         self.persist_reset()?;
         self.records.clear();
         self.pin_state = PinState::default();
+        self.large_blob_array = Zeroizing::new(INITIAL_LARGE_BLOB_ARRAY.to_vec());
         Ok(count)
     }
 
     #[must_use]
     pub fn pin_state(&self) -> &PinState {
         &self.pin_state
+    }
+
+    #[must_use]
+    pub fn large_blob_array(&self) -> &[u8] {
+        &self.large_blob_array
+    }
+
+    #[must_use]
+    pub fn supports_large_blobs(&self) -> bool {
+        self.sqlite
+            .as_ref()
+            .is_some_and(|backend| backend.initialized)
+            && !self.reset_is_pending()
+            && !self.metadata_key_cleanup_pending
+    }
+
+    /// Replaces the protected LargeBlobs array after the caller validates its digest.
+    pub fn replace_large_blob_array(&mut self, array: &[u8]) -> Result<(), CredentialError> {
+        if !(17..=MAX_SERIALIZED_LARGE_BLOB_ARRAY).contains(&array.len()) {
+            return Err(CredentialError::ProtectedDataInvalid);
+        }
+        if !valid_serialized_large_blob_array(array) {
+            return Err(CredentialError::ProtectedDataInvalid);
+        }
+        if self.reset_is_pending() || self.metadata_key_cleanup_pending {
+            return Err(CredentialError::ResetInProgress);
+        }
+        self.ensure_sqlite_initialized()?;
+        let Some(backend) = self.sqlite.as_mut() else {
+            return Err(CredentialError::StorageFailure);
+        };
+        let protected = backend
+            .protector
+            .protect(array, LARGE_BLOB_ARRAY_AAD_V1)
+            .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+        validate_protected_payload(&protected)?;
+        let transaction = backend
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| CredentialError::StorageFailure)?;
+        let reset_pending: bool = transaction
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM reset_journal WHERE singleton = 1)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| CredentialError::StorageFailure)?;
+        if reset_pending {
+            return Err(CredentialError::ResetInProgress);
+        }
+        let current = read_large_blob_array(&transaction, backend.protector.as_ref())?;
+        if current.as_slice() != self.large_blob_array.as_slice() {
+            self.large_blob_array = Zeroizing::new(current);
+            return Err(CredentialError::StorageFailure);
+        }
+        write_large_blob_array(&transaction, &protected)?;
+        transaction
+            .commit()
+            .map_err(|_| CredentialError::StorageFailure)?;
+        self.large_blob_array = Zeroizing::new(array.to_vec());
+        Ok(())
     }
 
     /// Refreshes credential and PIN state from the shared protected store.
@@ -1227,27 +1326,34 @@ impl CredentialStore {
                 return Err(CredentialError::ProtectedDataInvalid);
             }
 
-            let (records, pin_state, pending_provider_key, pending_credential_deletion) =
-                if metadata_key_cleanup_pending || pending_reset_keys.is_some() {
-                    (None, None, None, None)
-                } else {
-                    let records =
-                        read_credential_records(&transaction, backend.protector.as_ref())?;
-                    let pin_state = read_pin_state(&transaction, backend.protector.as_ref())?;
-                    let pending_provider_key =
-                        read_provider_key_journal(&transaction, backend.protector.as_ref())?;
-                    let pending_credential_deletion = read_credential_deletion_journal(
-                        &transaction,
-                        backend.protector.as_ref(),
-                        &records,
-                    )?;
-                    (
-                        Some(records),
-                        Some(pin_state),
-                        pending_provider_key,
-                        pending_credential_deletion,
-                    )
-                };
+            let (
+                records,
+                pin_state,
+                large_blob_array,
+                pending_provider_key,
+                pending_credential_deletion,
+            ) = if metadata_key_cleanup_pending || pending_reset_keys.is_some() {
+                (None, None, None, None, None)
+            } else {
+                let records = read_credential_records(&transaction, backend.protector.as_ref())?;
+                let pin_state = read_pin_state(&transaction, backend.protector.as_ref())?;
+                let large_blob_array =
+                    read_large_blob_array(&transaction, backend.protector.as_ref())?;
+                let pending_provider_key =
+                    read_provider_key_journal(&transaction, backend.protector.as_ref())?;
+                let pending_credential_deletion = read_credential_deletion_journal(
+                    &transaction,
+                    backend.protector.as_ref(),
+                    &records,
+                )?;
+                (
+                    Some(records),
+                    Some(pin_state),
+                    Some(large_blob_array),
+                    pending_provider_key,
+                    pending_credential_deletion,
+                )
+            };
             if pending_provider_key.is_some() && pending_credential_deletion.is_some() {
                 return Err(CredentialError::ProtectedDataInvalid);
             }
@@ -1260,6 +1366,7 @@ impl CredentialStore {
                 pending_reset_keys,
                 records,
                 pin_state,
+                large_blob_array,
                 pending_provider_key,
                 pending_credential_deletion,
             )
@@ -1270,6 +1377,7 @@ impl CredentialStore {
             pending_reset_keys,
             records,
             pin_state,
+            large_blob_array,
             pending_provider_key,
             pending_credential_deletion,
         ) = snapshot;
@@ -1297,8 +1405,10 @@ impl CredentialStore {
 
         let records = records.ok_or(CredentialError::StorageFailure)?;
         let pin_state = pin_state.ok_or(CredentialError::StorageFailure)?;
+        let large_blob_array = large_blob_array.ok_or(CredentialError::StorageFailure)?;
         let changed = self.records != records
             || self.pin_state != pin_state
+            || self.large_blob_array.as_slice() != large_blob_array.as_slice()
             || self.pending_reset_keys.is_some()
             || self.metadata_key_cleanup_pending
             || self.pending_provider_key.is_some()
@@ -1310,6 +1420,7 @@ impl CredentialStore {
             .unwrap_or(0);
         self.records = records;
         self.pin_state = pin_state;
+        self.large_blob_array = Zeroizing::new(large_blob_array);
         self.pending_reset_keys = None;
         self.metadata_key_cleanup_pending = false;
         self.pending_provider_key = None;
@@ -1432,6 +1543,11 @@ impl CredentialStore {
             .protect(&encode_pin_state(&PinState::default())?, PIN_STATE_AAD_V1)
             .map_err(|_| CredentialError::ProtectedDataInvalid)?;
         validate_protected_payload(&protected_pin_state)?;
+        let protected_large_blob_array = backend
+            .protector
+            .protect(&INITIAL_LARGE_BLOB_ARRAY, LARGE_BLOB_ARRAY_AAD_V1)
+            .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+        validate_protected_payload(&protected_large_blob_array)?;
         let transaction = backend
             .connection
             .transaction()
@@ -1443,6 +1559,10 @@ impl CredentialStore {
                     payload BLOB NOT NULL
                 );
                 CREATE TABLE pin_state (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    payload BLOB NOT NULL
+                );
+                CREATE TABLE large_blob_state (
                     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                     payload BLOB NOT NULL
                 );
@@ -1468,6 +1588,12 @@ impl CredentialStore {
             .execute(
                 "INSERT INTO pin_state (singleton, payload) VALUES (1, ?1)",
                 params![protected_pin_state],
+            )
+            .map_err(|_| CredentialError::StorageFailure)?;
+        transaction
+            .execute(
+                "INSERT INTO large_blob_state (singleton, payload) VALUES (1, ?1)",
+                params![protected_large_blob_array],
             )
             .map_err(|_| CredentialError::StorageFailure)?;
         transaction
@@ -1721,12 +1847,18 @@ impl CredentialStore {
             .protect(&pin_state, PIN_STATE_AAD_V1)
             .map_err(|_| CredentialError::ProtectedDataInvalid)?;
         validate_protected_payload(&protected_pin_state)?;
+        let protected_large_blob_array = backend
+            .protector
+            .protect(&INITIAL_LARGE_BLOB_ARRAY, LARGE_BLOB_ARRAY_AAD_V1)
+            .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+        validate_protected_payload(&protected_large_blob_array)?;
         let transaction = backend
             .connection
             .transaction()
             .map_err(|_| CredentialError::StorageFailure)?;
         write_payload(&transaction, &protected_records)?;
         write_pin_payload(&transaction, &protected_pin_state)?;
+        write_large_blob_array(&transaction, &protected_large_blob_array)?;
         transaction
             .execute("DELETE FROM reset_journal WHERE singleton = 1", [])
             .map_err(|_| CredentialError::StorageFailure)?;
@@ -1752,12 +1884,18 @@ impl CredentialStore {
             .protect(&pin_state, PIN_STATE_AAD_V1)
             .map_err(|_| CredentialError::ProtectedDataInvalid)?;
         validate_protected_payload(&protected_pin_state)?;
+        let protected_large_blob_array = backend
+            .protector
+            .protect(&INITIAL_LARGE_BLOB_ARRAY, LARGE_BLOB_ARRAY_AAD_V1)
+            .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+        validate_protected_payload(&protected_large_blob_array)?;
         let transaction = backend
             .connection
             .transaction()
             .map_err(|_| CredentialError::StorageFailure)?;
         write_payload(&transaction, &protected_records)?;
         write_pin_payload(&transaction, &protected_pin_state)?;
+        write_large_blob_array(&transaction, &protected_large_blob_array)?;
         transaction
             .execute(
                 "INSERT INTO reset_journal (singleton, payload, metadata_key_cleanup)
@@ -1814,6 +1952,138 @@ fn read_pin_state(
         .unprotect(&protected, PIN_STATE_AAD_V1)
         .map_err(|_| CredentialError::ProtectedDataInvalid)?;
     decode_pin_state(&plaintext)
+}
+
+fn read_large_blob_array(
+    transaction: &Transaction<'_>,
+    protector: &dyn CredentialProtector,
+) -> Result<Vec<u8>, CredentialError> {
+    let protected: Vec<u8> = transaction
+        .query_row(
+            "SELECT payload FROM large_blob_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+    validate_protected_payload(&protected)?;
+    let plaintext = Zeroizing::new(
+        protector
+            .unprotect(&protected, LARGE_BLOB_ARRAY_AAD_V1)
+            .map_err(|_| CredentialError::ProtectedDataInvalid)?,
+    );
+    if !(17..=MAX_SERIALIZED_LARGE_BLOB_ARRAY).contains(&plaintext.len())
+        || !valid_serialized_large_blob_array(&plaintext)
+    {
+        return Ok(INITIAL_LARGE_BLOB_ARRAY.to_vec());
+    }
+    Ok(plaintext.to_vec())
+}
+
+fn valid_serialized_large_blob_array(array: &[u8]) -> bool {
+    if array.len() < 17 || array.len() > MAX_SERIALIZED_LARGE_BLOB_ARRAY {
+        return false;
+    }
+    let content_length = array.len() - 16;
+    let hash = Sha256::digest(&array[..content_length]);
+    array[content_length..] == hash[..16]
+}
+
+fn write_large_blob_array(
+    transaction: &Transaction<'_>,
+    payload: &[u8],
+) -> Result<(), CredentialError> {
+    let updated = transaction
+        .execute(
+            "UPDATE large_blob_state SET payload = ?1 WHERE singleton = 1",
+            params![payload],
+        )
+        .map_err(|_| CredentialError::StorageFailure)?;
+    if updated != 1 {
+        return Err(CredentialError::ProtectedDataInvalid);
+    }
+    Ok(())
+}
+
+fn initialize_large_blob_array(
+    connection: &mut Connection,
+    protector: &dyn CredentialProtector,
+    schema_version: i64,
+    metadata_key_cleanup_pending: bool,
+) -> Result<Vec<u8>, CredentialError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| CredentialError::StorageFailure)?;
+    let table_exists: bool = transaction
+        .query_row(
+            "SELECT EXISTS (
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'large_blob_state'
+            )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| CredentialError::StorageFailure)?;
+    if !table_exists && schema_version >= STORAGE_SCHEMA_VERSION {
+        return Err(CredentialError::ProtectedDataInvalid);
+    }
+    if !table_exists {
+        transaction
+            .execute_batch(
+                "CREATE TABLE large_blob_state (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    payload BLOB NOT NULL
+                );",
+            )
+            .map_err(|_| CredentialError::StorageFailure)?;
+    }
+
+    let payload: Option<Vec<u8>> = transaction
+        .query_row(
+            "SELECT payload FROM large_blob_state WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| CredentialError::StorageFailure)?;
+    let array = match payload {
+        Some(_payload) if metadata_key_cleanup_pending => INITIAL_LARGE_BLOB_ARRAY.to_vec(),
+        Some(payload) => {
+            validate_protected_payload(&payload)?;
+            let plaintext = Zeroizing::new(
+                protector
+                    .unprotect(&payload, LARGE_BLOB_ARRAY_AAD_V1)
+                    .map_err(|_| CredentialError::ProtectedDataInvalid)?,
+            );
+            if !(17..=MAX_SERIALIZED_LARGE_BLOB_ARRAY).contains(&plaintext.len())
+                || !valid_serialized_large_blob_array(&plaintext)
+            {
+                return Ok(INITIAL_LARGE_BLOB_ARRAY.to_vec());
+            }
+            plaintext.to_vec()
+        }
+        None if metadata_key_cleanup_pending => INITIAL_LARGE_BLOB_ARRAY.to_vec(),
+        None if schema_version < STORAGE_SCHEMA_VERSION => {
+            let protected = protector
+                .protect(&INITIAL_LARGE_BLOB_ARRAY, LARGE_BLOB_ARRAY_AAD_V1)
+                .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+            validate_protected_payload(&protected)?;
+            transaction
+                .execute(
+                    "INSERT INTO large_blob_state (singleton, payload) VALUES (1, ?1)",
+                    params![protected],
+                )
+                .map_err(|_| CredentialError::StorageFailure)?;
+            INITIAL_LARGE_BLOB_ARRAY.to_vec()
+        }
+        None => return Err(CredentialError::ProtectedDataInvalid),
+    };
+    transaction
+        .pragma_update(None, "user_version", STORAGE_SCHEMA_VERSION)
+        .map_err(|_| CredentialError::StorageFailure)?;
+    transaction
+        .commit()
+        .map_err(|_| CredentialError::StorageFailure)?;
+    Ok(array)
 }
 
 fn read_provider_key_journal(

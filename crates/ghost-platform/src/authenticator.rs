@@ -11,9 +11,9 @@ use zeroize::{Zeroize, Zeroizing};
 use ghost_fido_core::{
     CborValue, CredentialId, CredentialStore, Ctap2Command, Ctap2Request, Ctap2Response,
     Ctap2Status, GetAssertionRequest, GetInfoError, GetInfoHandler, GetInfoProfile,
-    MakeCredentialRequest, PIN_ENCRYPTED_SIZE, PIN_HASH_SIZE, PIN_UV_AUTH_PROTOCOL,
-    PIN_UV_AUTH_PROTOCOL_TWO, PinKeyAgreement, PinUvAuthProtocol, PinUvAuthSharedSecret,
-    client_pin_hash, decode_cbor, encode_cbor,
+    MAX_SERIALIZED_LARGE_BLOB_ARRAY, MakeCredentialRequest, PIN_ENCRYPTED_SIZE, PIN_HASH_SIZE,
+    PIN_UV_AUTH_PROTOCOL, PIN_UV_AUTH_PROTOCOL_TWO, PinKeyAgreement, PinUvAuthProtocol,
+    PinUvAuthSharedSecret, client_pin_hash, decode_cbor, encode_cbor,
 };
 
 const PIN_PROTOCOL_TIMEOUT: Duration = Duration::from_secs(30);
@@ -28,6 +28,7 @@ use crate::{
 
 const ASSERTION_CONTINUATION_TIMEOUT: Duration = Duration::from_secs(30);
 const CREDENTIAL_MANAGEMENT_TIMEOUT: Duration = Duration::from_secs(30);
+const LARGE_BLOB_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CREDENTIAL_MANAGEMENT_CHANNELS: usize = 8;
 const RESET_POWER_UP_WINDOW: Duration = Duration::from_secs(10);
 const LEGACY_CHANNEL: u32 = u32::MAX;
@@ -50,6 +51,18 @@ struct CredentialManagementContinuation {
     expires_at: Instant,
     position: usize,
     entries: CredentialManagementEntries,
+}
+
+struct LargeBlobWriteState {
+    expected_length: usize,
+    bytes: Zeroizing<Vec<u8>>,
+    expires_at: Instant,
+}
+
+impl Drop for LargeBlobWriteState {
+    fn drop(&mut self) {
+        self.bytes.zeroize();
+    }
 }
 
 enum CredentialManagementEntries {
@@ -83,6 +96,7 @@ pub struct AuthenticatorService<'a> {
     config: AuthenticatorServiceConfig,
     assertion_continuations: BTreeMap<u32, AssertionContinuation>,
     credential_management: BTreeMap<u32, CredentialManagementContinuation>,
+    large_blob_writes: BTreeMap<u32, LargeBlobWriteState>,
     client_pin: ClientPinHandler,
     started_at: Instant,
 }
@@ -553,7 +567,7 @@ impl ClientPinHandler {
         // CTAP ignores undefined permission bits, while defined but unsupported
         // permissions must still be rejected below.
         let permissions = (requested_permissions & 0x7f) as u8;
-        if permissions & !0x07 != 0 {
+        if permissions & !(0x07 | PIN_UV_PERMISSION_LARGE_BLOB_WRITE) != 0 {
             return Ctap2Response::error(Ctap2Status::UnauthorizedPermission);
         }
         let relying_party_id = match field(fields, 10) {
@@ -804,6 +818,7 @@ impl<'a> AuthenticatorService<'a> {
             config,
             assertion_continuations: BTreeMap::new(),
             credential_management: BTreeMap::new(),
+            large_blob_writes: BTreeMap::new(),
             client_pin: ClientPinHandler::default(),
             started_at: Instant::now(),
         })
@@ -848,6 +863,7 @@ impl<'a> AuthenticatorService<'a> {
         if refreshed_shared_state {
             self.assertion_continuations.clear();
             self.credential_management.clear();
+            self.large_blob_writes.clear();
             self.client_pin.clear_all();
         }
         let resumed_provider_cleanup = self.store.provider_key_cleanup_pending();
@@ -855,6 +871,9 @@ impl<'a> AuthenticatorService<'a> {
             return Ok(Ctap2Response::error(Ctap2Status::Other));
         }
         let resumed_reset = self.store.reset_is_pending();
+        if resumed_reset {
+            self.large_blob_writes.clear();
+        }
         if resumed_reset && self.recover_pending_reset().is_err() {
             return Ok(Ctap2Response::error(Ctap2Status::Other));
         }
@@ -867,6 +886,11 @@ impl<'a> AuthenticatorService<'a> {
         if command != Ctap2Command::CredentialManagement {
             self.credential_management.remove(&channel);
         }
+        self.large_blob_writes
+            .retain(|_, state| Instant::now() < state.expires_at);
+        if command != Ctap2Command::LargeBlobs {
+            self.large_blob_writes.remove(&channel);
+        }
         self.client_pin.expire();
         match command {
             Ctap2Command::GetInfo => {
@@ -876,6 +900,8 @@ impl<'a> AuthenticatorService<'a> {
                 let mut profile = self.config.get_info.clone();
                 let pin_is_set = self.store.pin_state().verifier().is_some();
                 let protected_storage_available = self.store.has_protected_storage();
+                let large_blobs_available =
+                    self.store.supports_large_blobs() && profile.max_msg_size > 64;
                 let credential_management_ready =
                     pin_is_set && self.ensure_credential_management_metadata();
                 profile.versions.retain(|version| version != "FIDO_2_1");
@@ -889,6 +915,10 @@ impl<'a> AuthenticatorService<'a> {
                 if !client_pin_option_present {
                     profile.options.push(("clientPin".into(), pin_is_set));
                 }
+                profile.options.retain(|(name, _)| name != "largeBlobs");
+                profile
+                    .options
+                    .push(("largeBlobs".into(), large_blobs_available));
                 for (name, value) in &mut profile.options {
                     if name == "pinUvAuthToken" {
                         *value = false;
@@ -1100,6 +1130,7 @@ impl<'a> AuthenticatorService<'a> {
             Ctap2Command::CredentialManagement => {
                 Ok(self.handle_credential_management(channel, decoded_payload))
             }
+            Ctap2Command::LargeBlobs => Ok(self.handle_large_blobs(channel, decoded_payload)),
             Ctap2Command::Selection => {
                 if !payload.is_empty() {
                     return Ok(Ctap2Response::error(Ctap2Status::InvalidLength));
@@ -1177,9 +1208,11 @@ impl<'a> AuthenticatorService<'a> {
     pub(crate) fn clear_channel(&mut self, channel: u32) {
         self.assertion_continuations.remove(&channel);
         self.credential_management.remove(&channel);
+        self.large_blob_writes.remove(&channel);
     }
 
     fn recover_pending_reset(&mut self) -> Result<(), ()> {
+        self.large_blob_writes.clear();
         if self.store.metadata_key_cleanup_pending() {
             self.store.complete_metadata_key_cleanup().map_err(|_| ())?;
             self.assertion_continuations.clear();
@@ -1262,6 +1295,209 @@ impl<'a> AuthenticatorService<'a> {
             }
         }
         true
+    }
+
+    fn handle_large_blobs(&mut self, channel: u32, value: Option<CborValue>) -> Ctap2Response {
+        if !self.store.supports_large_blobs() || self.config.get_info.max_msg_size <= 64 {
+            return Ctap2Response::error(Ctap2Status::InvalidCommand);
+        }
+        let Some(CborValue::Map(fields)) = value else {
+            return Ctap2Response::error(Ctap2Status::CborUnexpectedType);
+        };
+        if fields
+            .iter()
+            .enumerate()
+            .any(|(index, (key, _))| fields[..index].iter().any(|(previous, _)| previous == key))
+        {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        }
+
+        let get = match field(&fields, 1) {
+            Some(CborValue::Unsigned(value)) => Some(*value),
+            Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
+            None => None,
+        };
+        let set = match field(&fields, 2) {
+            Some(CborValue::Bytes(value)) => Some(value.as_slice()),
+            Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
+            None => None,
+        };
+        let offset = match field(&fields, 3) {
+            Some(CborValue::Unsigned(value)) => *value,
+            Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
+            None => return Ctap2Response::error(Ctap2Status::InvalidParameter),
+        };
+        let length = match field(&fields, 4) {
+            Some(CborValue::Unsigned(value)) => Some(*value),
+            Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
+            None => None,
+        };
+        let pin_auth = match field(&fields, 5) {
+            Some(CborValue::Bytes(value)) => Some(value.as_slice()),
+            Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
+            None => None,
+        };
+        let pin_protocol_id = match field(&fields, 6) {
+            Some(CborValue::Unsigned(value)) => Some(*value),
+            Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
+            None => None,
+        };
+        if get.is_some() == set.is_some() {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        }
+
+        let max_fragment = self
+            .config
+            .get_info
+            .max_msg_size
+            .saturating_sub(64)
+            .min(usize::MAX as u64) as usize;
+        if let Some(requested) = get {
+            if length.is_some() || pin_auth.is_some() || pin_protocol_id.is_some() {
+                return Ctap2Response::error(Ctap2Status::InvalidParameter);
+            }
+            if requested > max_fragment as u64 {
+                return Ctap2Response::error(Ctap2Status::InvalidLength);
+            }
+            let Ok(offset) = usize::try_from(offset) else {
+                return Ctap2Response::error(Ctap2Status::InvalidParameter);
+            };
+            let array = self.store.large_blob_array();
+            if offset > array.len() {
+                return Ctap2Response::error(Ctap2Status::InvalidParameter);
+            }
+            let end = offset.saturating_add(requested as usize).min(array.len());
+            return response_map(vec![(1, CborValue::Bytes(array[offset..end].to_vec()))]);
+        }
+
+        let Some(set) = set else {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        };
+        if set.len() > max_fragment {
+            return Ctap2Response::error(Ctap2Status::InvalidLength);
+        }
+        if offset > u64::from(u32::MAX) {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        }
+        let expected_length = if offset == 0 {
+            let Some(length) = length else {
+                return Ctap2Response::error(Ctap2Status::InvalidParameter);
+            };
+            if length < 17 {
+                return Ctap2Response::error(Ctap2Status::InvalidParameter);
+            }
+            if length > MAX_SERIALIZED_LARGE_BLOB_ARRAY as u64 && length > 1024 {
+                return Ctap2Response::error(Ctap2Status::LargeBlobStorageFull);
+            }
+            match usize::try_from(length) {
+                Ok(length) if length <= MAX_SERIALIZED_LARGE_BLOB_ARRAY => length,
+                _ => return Ctap2Response::error(Ctap2Status::LargeBlobStorageFull),
+            }
+        } else {
+            if length.is_some() {
+                return Ctap2Response::error(Ctap2Status::InvalidParameter);
+            }
+            let Some(state) = self.large_blob_writes.get(&channel) else {
+                return Ctap2Response::error(Ctap2Status::InvalidSequence);
+            };
+            if offset != state.bytes.len() as u64 {
+                return Ctap2Response::error(Ctap2Status::InvalidSequence);
+            }
+            state.expected_length
+        };
+        if offset == 0 && length.is_none() {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        }
+
+        let pin_configured = self.store.pin_state().verifier().is_some();
+        let always_uv = self
+            .config
+            .get_info
+            .options
+            .iter()
+            .any(|(name, enabled)| name == "alwaysUv" && *enabled);
+        if (pin_configured || always_uv) && pin_auth.is_none() {
+            return Ctap2Response::error(Ctap2Status::PinUvAuthTokenRequired);
+        }
+        if let Some(auth) = pin_auth {
+            let Some(protocol_id) = pin_protocol_id else {
+                return Ctap2Response::error(Ctap2Status::MissingParameter);
+            };
+            let Some(protocol) = PinUvAuthProtocol::from_id(protocol_id) else {
+                return Ctap2Response::error(Ctap2Status::InvalidParameter);
+            };
+            let mut auth_message = Vec::with_capacity(70);
+            auth_message.extend_from_slice(&[0xff; 32]);
+            auth_message.extend_from_slice(&[0x0c, 0x00]);
+            auth_message.extend_from_slice(&(offset as u32).to_le_bytes());
+            auth_message.extend_from_slice(&Sha256::digest(set));
+            let authorized = self.client_pin.authorize_permission(
+                channel,
+                &auth_message,
+                auth,
+                protocol,
+                PIN_UV_PERMISSION_LARGE_BLOB_WRITE,
+            );
+            if let Err(status) = authorized {
+                return Ctap2Response::error(if status == Ctap2Status::UnauthorizedPermission {
+                    Ctap2Status::PinAuthInvalid
+                } else {
+                    status
+                });
+            }
+        } else if pin_protocol_id.is_some() {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        }
+
+        let offset = offset as usize;
+        let current_length = if offset == 0 {
+            0
+        } else {
+            self.large_blob_writes
+                .get(&channel)
+                .map_or(0, |state| state.bytes.len())
+        };
+        let Some(next_length) = current_length.checked_add(set.len()) else {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        };
+        if next_length > expected_length {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        }
+
+        if offset == 0 {
+            self.large_blob_writes.insert(
+                channel,
+                LargeBlobWriteState {
+                    expected_length,
+                    bytes: Zeroizing::new(Vec::with_capacity(expected_length)),
+                    expires_at: Instant::now() + LARGE_BLOB_WRITE_TIMEOUT,
+                },
+            );
+        }
+        let Some(state) = self.large_blob_writes.get_mut(&channel) else {
+            return Ctap2Response::error(Ctap2Status::InvalidSequence);
+        };
+        state.bytes.extend_from_slice(set);
+        state.expires_at = Instant::now() + LARGE_BLOB_WRITE_TIMEOUT;
+        if state.bytes.len() == state.expected_length {
+            let complete = Zeroizing::new(state.bytes.to_vec());
+            self.large_blob_writes.remove(&channel);
+            let content_length = complete.len() - 16;
+            if complete[content_length..] != Sha256::digest(&complete[..content_length])[..16] {
+                return Ctap2Response::error(Ctap2Status::IntegrityFailure);
+            }
+            if self
+                .store
+                .replace_large_blob_array(complete.as_slice())
+                .is_err()
+            {
+                return Ctap2Response::error(Ctap2Status::Other);
+            }
+        }
+        Ctap2Response {
+            status: Ctap2Status::Success,
+            payload: Vec::new(),
+        }
     }
 
     fn handle_credential_management(
