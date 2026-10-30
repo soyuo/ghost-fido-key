@@ -63,3 +63,12 @@ performed; stored name and display-name hints are not returned. The service's
 `handle_on_channel` entry point must receive the originating CTAPHID channel for
 independent concurrent continuation sequences. The legacy `handle` entry point
 uses one reserved channel for callers without transport channel context.
+
+## `largeBlobKey`
+
+The request may include `largeBlobKey: true`; false or another value returns
+`InvalidOption`. For a discoverable credential with a stored key, the CTAP
+response includes the key as top-level integer field `0x07`. It is not encoded
+in authenticator data. Older credentials without a stored key remain usable
+and omit this response field. GetInfo advertises the extension only with
+protected LargeBlobs storage; see [CTAP2 largeBlobKey](ctap2-largeblob-key.md).
