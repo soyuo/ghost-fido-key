@@ -29,6 +29,8 @@ For the `hmac-secret` extension, `keyAgreement` must be a map. If the optional
 continues to select protocol 1, while an unsupported unsigned value is an
 `InvalidParameter`. Wrong-type values are rejected before key-agreement or
 extension cryptography runs.
+Absent top-level command parameters map to `MissingParameter`; missing required
+descriptor members and wrong types map to `CborUnexpectedType`.
 
 The required fields and allow-list shape follow the
 [FIDO CTAP 2.1 authenticatorGetAssertion request](https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-20210615.html#authenticatorgetassertion-0x02).

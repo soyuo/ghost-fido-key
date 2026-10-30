@@ -18,6 +18,11 @@ credential parameters, descriptors, options, and extension maps are ignored as
 required by CTAP2 §8. Required fields, duplicate recognized fields, and
 malformed values for recognized fields remain errors.
 
+Absent top-level command parameters return `MissingParameter`. A required member
+missing from an RP/user entity, public-key credential parameter, or credential
+descriptor returns `CborUnexpectedType`, following the CTAP2 §8 guidance for
+incomplete structures.
+
 The platform's `check_credential_exclusion` checks excludeList IDs against the
 requested RP hash. If an existing credential matches, it asks the local
 `UserVerification` provider for a distinct `CredentialExclusionCheck` presence
