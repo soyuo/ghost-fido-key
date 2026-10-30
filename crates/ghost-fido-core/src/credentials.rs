@@ -806,14 +806,15 @@ impl CredentialStore {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| CredentialError::StorageFailure)?;
-        let provider_creation_pending: bool = transaction
+        let conflicting_cleanup_pending: bool = transaction
             .query_row(
-                "SELECT EXISTS (SELECT 1 FROM provider_key_journal WHERE singleton = 1)",
+                "SELECT EXISTS (SELECT 1 FROM provider_key_journal WHERE singleton = 1)
+                    OR EXISTS (SELECT 1 FROM reset_journal WHERE singleton = 1)",
                 [],
                 |row| row.get(0),
             )
             .map_err(|_| CredentialError::StorageFailure)?;
-        if provider_creation_pending {
+        if conflicting_cleanup_pending {
             return Err(CredentialError::ProviderKeyCleanupPending);
         }
         transaction
@@ -893,16 +894,16 @@ impl CredentialStore {
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| CredentialError::StorageFailure)?;
-        let credential_deletion_pending: bool = transaction
+        let conflicting_cleanup_pending: bool = transaction
             .query_row(
                 "SELECT EXISTS (
                     SELECT 1 FROM credential_deletion_journal WHERE singleton = 1
-                )",
+                ) OR EXISTS (SELECT 1 FROM reset_journal WHERE singleton = 1)",
                 [],
                 |row| row.get(0),
             )
             .map_err(|_| CredentialError::StorageFailure)?;
-        if credential_deletion_pending {
+        if conflicting_cleanup_pending {
             return Err(CredentialError::ProviderKeyCleanupPending);
         }
         transaction
@@ -1324,8 +1325,20 @@ impl CredentialStore {
         validate_protected_payload(&protected)?;
         let transaction = backend
             .connection
-            .transaction()
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|_| CredentialError::StorageFailure)?;
+        let conflicting_cleanup_pending: bool = transaction
+            .query_row(
+                "SELECT EXISTS (
+                    SELECT 1 FROM credential_deletion_journal WHERE singleton = 1
+                ) OR EXISTS (SELECT 1 FROM provider_key_journal WHERE singleton = 1)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| CredentialError::StorageFailure)?;
+        if conflicting_cleanup_pending {
+            return Err(CredentialError::ProviderKeyCleanupPending);
+        }
         transaction
             .execute(
                 "INSERT INTO reset_journal (singleton, payload) VALUES (1, ?1)
