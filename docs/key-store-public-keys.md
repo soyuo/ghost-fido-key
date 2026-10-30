@@ -8,7 +8,12 @@ material.
 
 The Windows TPM provider exports only `BCRYPT_ECCPUBLIC_BLOB` after finalizing
 the new CNG key. It validates the ECDSA P-256 magic, blob size, and 32-byte
-coordinate size before returning the point. CNG stores X and Y as big-endian
+coordinate size before returning the point. When the TPM provider reports
+`NTE_DEVICE_NOT_READY`, the authenticator requests separate per-credential
+consent before using the Microsoft Software Key Storage Provider. TPM and
+software references use distinct prefixes so signing, public-key retrieval,
+and deletion select the provider that created each key. The software fallback
+does not set CNG's private-key export policy. CNG stores X and Y as big-endian
 unsigned values in the public blob, as described by Microsoft's
 [`BCRYPT_ECCKEY_BLOB` documentation](https://learn.microsoft.com/en-us/windows/win32/api/bcrypt/ns-bcrypt-bcrypt_ecckey_blob).
 
@@ -20,11 +25,12 @@ scalar is kept in the default Secret Service collection, and metadata reports
 imply TPM-backed or non-extractable key protection.
 
 The macOS provider creates a persistent P-256 key in the Data Protection
-Keychain. `PlatformProtectedOnly` requests a Secure Enclave token and fails
-closed if the enclave cannot create the key. Software-backed Security.framework
-keys require both the software-key policy and its explicit consent token; their
-metadata reports `Software` and `exportable: true`. Private keys are never
-exported by the provider. Public coordinates are validated from the uncompressed
+Keychain. `PlatformProtectedOnly` requests a Secure Enclave token when CryptoKit
+reports Secure Enclave access is supported; otherwise the authenticator asks
+for separate per-credential consent before software-key creation. Software-backed Security.framework keys require
+both the software-key policy and its explicit consent token; their metadata
+reports `Software` and `exportable: true`. Private keys are never exported by
+the provider. Public coordinates are validated from the uncompressed
 X9.63 public point, while signatures are converted from strict ASN.1 DER to the
 64-byte P1363 form used by the authenticator.
 

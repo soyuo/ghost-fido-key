@@ -35,6 +35,10 @@ impl WindowsKeyStore {
         "Microsoft Platform Crypto Provider"
     }
 
+    const fn software_provider() -> &'static str {
+        "Microsoft Software Key Storage Provider"
+    }
+
     fn is_missing_key_error(error: &windows::core::Error) -> bool {
         // NCryptOpenKey documents NTE_BAD_KEYSET as "The specified key was not found."
         // Do not treat other provider errors as successful deletion.
@@ -49,21 +53,62 @@ impl WindowsKeyStore {
         )
     }
 
-    fn open_provider(&self) -> Result<NCRYPT_PROV_HANDLE, PlatformError> {
-        let name: Vec<u16> = std::ffi::OsStr::new(Self::preferred_provider())
+    fn open_provider(
+        &self,
+        provider_name: &str,
+        classify_protection_unavailable: bool,
+    ) -> Result<NCRYPT_PROV_HANDLE, PlatformError> {
+        let name: Vec<u16> = std::ffi::OsStr::new(provider_name)
             .encode_wide()
             .chain(Some(0))
             .collect();
         let mut handle = NCRYPT_PROV_HANDLE(0);
         // SAFETY: `name` is NUL terminated and `handle` is a valid writable out pointer.
-        unsafe { NCryptOpenStorageProvider(&mut handle, PCWSTR(name.as_ptr()), 0) }
-            .map_err(Self::fail)?;
+        unsafe { NCryptOpenStorageProvider(&mut handle, PCWSTR(name.as_ptr()), 0) }.map_err(
+            |error| {
+                if classify_protection_unavailable && Self::is_device_not_ready(&error) {
+                    Self::protection_unavailable(error)
+                } else {
+                    Self::fail(error)
+                }
+            },
+        )?;
         Ok(handle)
+    }
+
+    fn is_device_not_ready(error: &windows::core::Error) -> bool {
+        error.code().0 as u32 == 0x8009_0030
+    }
+
+    fn protection_unavailable(error: impl std::fmt::Display) -> PlatformError {
+        PlatformError::new(
+            PlatformErrorKind::PlatformKeyProtectionUnavailable,
+            HostPlatform::Windows,
+            error.to_string(),
+        )
+    }
+
+    fn provider_for_key(reference: &KeyReference) -> Result<&'static str, PlatformError> {
+        if reference.as_provider_reference().starts_with("cng:tpm:") {
+            Ok(Self::preferred_provider())
+        } else if reference
+            .as_provider_reference()
+            .starts_with("cng:software:")
+        {
+            Ok(Self::software_provider())
+        } else {
+            Err(Self::fail(
+                "key reference is not owned by a Windows CNG provider",
+            ))
+        }
     }
 
     fn key_name(reference: &KeyReference) -> Result<Vec<u16>, PlatformError> {
         let name = reference.as_provider_reference();
-        let Some(name) = name.strip_prefix("cng:tpm:") else {
+        let Some(name) = name
+            .strip_prefix("cng:tpm:")
+            .or_else(|| name.strip_prefix("cng:software:"))
+        else {
             return Err(Self::fail(
                 "key reference is not owned by the Windows TPM provider",
             ));
@@ -135,16 +180,28 @@ impl KeyStore for WindowsKeyStore {
         policy: KeyCreationPolicy,
         consent: Option<SoftwareKeyConsent>,
     ) -> Result<CreatedSigningKey, PlatformError> {
-        if policy != KeyCreationPolicy::PlatformProtectedOnly {
-            if consent.is_none() {
-                return Err(Self::fail("explicit software-key consent is required"));
-            }
-            return Err(Self::fail(
-                "software provider is not implemented; no fallback was performed",
-            ));
-        }
+        let (provider_name, reference_prefix, protection, exportable, classify_unavailable) =
+            match policy {
+                KeyCreationPolicy::PlatformProtectedOnly => (
+                    Self::preferred_provider(),
+                    "cng:tpm:",
+                    KeyProtection::HardwareBacked,
+                    false,
+                    true,
+                ),
+                KeyCreationPolicy::SoftwareKeyAfterExplicitConsent if consent.is_some() => (
+                    Self::software_provider(),
+                    "cng:software:",
+                    KeyProtection::Software,
+                    false,
+                    false,
+                ),
+                KeyCreationPolicy::SoftwareKeyAfterExplicitConsent => {
+                    return Err(Self::fail("explicit software-key consent is required"));
+                }
+            };
         let SigningAlgorithm::Es256 = algorithm;
-        let provider = self.open_provider()?;
+        let provider = self.open_provider(provider_name, classify_unavailable)?;
         let name = format!("GhostFido-{}", uuid::Uuid::new_v4());
         let wide_name: Vec<u16> = std::ffi::OsStr::new(&name)
             .encode_wide()
@@ -152,7 +209,7 @@ impl KeyStore for WindowsKeyStore {
             .collect();
         let mut key = NCRYPT_KEY_HANDLE(0);
         // SAFETY: provider is valid, both strings are NUL terminated, and key is a valid output pointer.
-        unsafe {
+        let creation_result = unsafe {
             NCryptCreatePersistedKey(
                 provider,
                 &mut key,
@@ -161,8 +218,18 @@ impl KeyStore for WindowsKeyStore {
                 CERT_KEY_SPEC(0),
                 NCRYPT_FLAGS(0),
             )
+        };
+        if let Err(error) = creation_result {
+            // SAFETY: creation failed before a key handle was returned; release the provider.
+            let _ = unsafe { NCryptFreeObject(provider.into()) };
+            return Err(
+                if classify_unavailable && Self::is_device_not_ready(&error) {
+                    Self::protection_unavailable(error)
+                } else {
+                    Self::fail(error)
+                },
+            );
         }
-        .map_err(Self::fail)?;
         let usage = NCRYPT_ALLOW_SIGNING_FLAG.to_ne_bytes();
         // SAFETY: key is valid and the property bytes remain alive for this call.
         let configured = unsafe {
@@ -204,10 +271,10 @@ impl KeyStore for WindowsKeyStore {
         unsafe { NCryptFreeObject(key.into()) }.map_err(Self::fail)?;
         unsafe { NCryptFreeObject(provider.into()) }.map_err(Self::fail)?;
         Ok(CreatedSigningKey {
-            reference: KeyReference::new(format!("cng:tpm:{name}")),
+            reference: KeyReference::new(format!("{reference_prefix}{name}")),
             metadata: KeyMetadata {
-                protection: KeyProtection::HardwareBacked,
-                exportable: false,
+                protection,
+                exportable,
             },
             public_key,
         })
@@ -223,8 +290,8 @@ impl KeyStore for WindowsKeyStore {
         if digest.len() != 32 {
             return Err(Self::fail("ES256 requires a 32-byte SHA-256 digest"));
         }
-        let provider = self.open_provider()?;
         let name = Self::key_name(key)?;
+        let provider = self.open_provider(Self::provider_for_key(key)?, false)?;
         let mut handle = NCRYPT_KEY_HANDLE(0);
         // SAFETY: provider and NUL-terminated key name are valid; handle is writable.
         unsafe {
@@ -264,8 +331,8 @@ impl KeyStore for WindowsKeyStore {
     }
 
     fn public_key(&self, key: &KeyReference) -> Result<Es256PublicKey, PlatformError> {
-        let provider = self.open_provider()?;
         let name = Self::key_name(key)?;
+        let provider = self.open_provider(Self::provider_for_key(key)?, false)?;
         let mut handle = NCRYPT_KEY_HANDLE(0);
         // SAFETY: provider and NUL-terminated key name are valid; handle is writable.
         unsafe {
@@ -286,8 +353,8 @@ impl KeyStore for WindowsKeyStore {
     }
 
     fn delete_key(&self, key: &KeyReference) -> Result<(), PlatformError> {
-        let provider = self.open_provider()?;
         let name = Self::key_name(key)?;
+        let provider = self.open_provider(Self::provider_for_key(key)?, false)?;
         let mut handle = NCRYPT_KEY_HANDLE(0);
         // SAFETY: provider and NUL-terminated key name are valid; handle is writable.
         let open_result = unsafe {

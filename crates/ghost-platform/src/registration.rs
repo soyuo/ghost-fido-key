@@ -143,8 +143,45 @@ pub fn register_make_credential_with_uv(
         None
     };
 
-    let created =
-        key_store.create_signing_key(SigningAlgorithm::Es256, key_policy, software_key_consent)?;
+    let created = match key_store.create_signing_key(
+        SigningAlgorithm::Es256,
+        key_policy,
+        software_key_consent,
+    ) {
+        Ok(created) => created,
+        Err(error)
+            if key_policy == KeyCreationPolicy::PlatformProtectedOnly
+                && error.kind == PlatformErrorKind::PlatformKeyProtectionUnavailable =>
+        {
+            let fallback_request = VerificationRequest {
+                relying_party_id: request.rp.id.clone(),
+                relying_party_name: request.rp.name.clone(),
+                action: VerificationAction::SoftwareKeyFallback,
+            };
+            match verification.request_confirmation(&fallback_request, timeout) {
+                Ok(VerificationDecision::Approved) => {
+                    let consent = SoftwareKeyConsent::confirm_user_acceptance(true)
+                        .expect("accepted fallback creates a consent marker");
+                    key_store.create_signing_key(
+                        SigningAlgorithm::Es256,
+                        KeyCreationPolicy::SoftwareKeyAfterExplicitConsent,
+                        Some(consent),
+                    )?
+                }
+                Ok(VerificationDecision::Rejected) => {
+                    return Ok(Ctap2Response::error(Ctap2Status::OperationDenied));
+                }
+                Ok(VerificationDecision::Cancelled) => {
+                    return Ok(Ctap2Response::error(Ctap2Status::KeepaliveCancel));
+                }
+                Err(error) if error.kind == PlatformErrorKind::Timeout => {
+                    return Ok(Ctap2Response::error(Ctap2Status::KeepaliveCancel));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(error) => return Err(error.into()),
+    };
     let key_handle = match KeyHandle::new(
         created
             .reference
