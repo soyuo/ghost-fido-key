@@ -656,6 +656,12 @@ impl<'a> AuthenticatorService<'a> {
         self.store.pin_state().verifier().is_some()
     }
 
+    /// Returns whether reset cleanup is pending in the credential store.
+    #[must_use]
+    pub fn reset_is_pending(&self) -> bool {
+        self.store.reset_is_pending()
+    }
+
     /// Handles one CTAP2 request and scopes any GetNextAssertion state to its CTAPHID channel.
     pub fn handle_on_channel(
         &mut self,

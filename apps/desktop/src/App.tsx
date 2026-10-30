@@ -16,6 +16,7 @@ type PlatformStatus = {
   nativeUserVerificationStatus: string;
   credentialStoreAvailable: boolean;
   credentialStoreStatus: string;
+  authenticatorResetPending: boolean;
   statusMessage: string;
   authenticatorRunning: boolean;
 };
@@ -259,9 +260,11 @@ function App() {
     try {
       await invoke<number>("reset_credentials");
       await loadCredentials();
+      await refreshStatus();
     } catch (cause) {
       if (isActionCancelled(cause)) return;
       await loadCredentials();
+      await refreshStatus();
       setCredentialError(typeof cause === "string" ? cause : "인증기 자격 증명을 초기화하지 못했습니다.");
     } finally {
       setResetAction(false);
@@ -320,6 +323,11 @@ function App() {
             </div>
           )}
           {runtimeError && <p className="status-message" role="alert">{runtimeError}</p>}
+          {status?.authenticatorResetPending && (
+            <p className="status-message" role="alert">
+              인증기 초기화가 완료되지 않았습니다. 정리가 끝날 때까지 인증 요청은 차단됩니다. 다음 인증 요청에서 자동으로 정리를 재개하며, 계속 실패하면 인증기를 중지하고 초기화를 다시 시도하세요.
+            </p>
+          )}
           {isTauri() && status?.credentialStoreAvailable && (
             <div className="runtime-actions">
               <button
@@ -409,12 +417,14 @@ function App() {
                   새로고침
                 </button>
                 <button type="button" className="credential-reset" disabled={status.authenticatorRunning || resetAction} onClick={() => void resetCredentials()}>
-                  {resetAction ? "초기화 중…" : "모든 자격 증명 초기화"}
+                  {resetAction ? "초기화 중…" : status.authenticatorResetPending ? "초기화 재시도" : "모든 자격 증명 초기화"}
                 </button>
               </div>
             </div>
             {credentialError && <p className="status-message" role="alert">{credentialError}</p>}
-            {credentials.length === 0 ? (
+            {status.authenticatorResetPending ? (
+              <p className="credential-empty">초기화 정리가 완료될 때까지 자격 증명을 사용할 수 없습니다.</p>
+            ) : credentials.length === 0 ? (
               <p className="credential-empty">등록된 자격 증명이 없습니다.</p>
             ) : credentials.map((credential) => (
               <article className="credential-card" key={credential.creationOrder}>

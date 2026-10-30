@@ -54,6 +54,7 @@ pub fn run(
     key_creation_policy: KeyCreationPolicy,
     software_key_consent: Option<SoftwareKeyConsent>,
     client_pin_configured: Arc<AtomicBool>,
+    reset_pending: Arc<AtomicBool>,
 ) {
     let Some(mut store) = credential_store
         .lock()
@@ -69,6 +70,7 @@ pub fn run(
         );
         return;
     };
+    reset_pending.store(store.reset_is_pending(), Ordering::Release);
 
     if let Err(error) = backend.attach() {
         let availability = backend.availability();
@@ -138,6 +140,7 @@ pub fn run(
                             });
                     client_pin_configured
                         .store(service.client_pin_is_configured(), Ordering::Release);
+                    reset_pending.store(service.reset_is_pending(), Ordering::Release);
                     if response_tx
                         .send(ServiceResponse { channel, response })
                         .is_err()
