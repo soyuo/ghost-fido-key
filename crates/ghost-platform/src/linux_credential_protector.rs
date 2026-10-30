@@ -52,6 +52,10 @@ impl CredentialProtector for LinuxCredentialProtector {
     ) -> Result<Zeroizing<Vec<u8>>, CredentialProtectionError> {
         self.0.unprotect(ciphertext, associated_data)
     }
+
+    fn erase_key(&self) -> Result<(), CredentialProtectionError> {
+        self.0.erase_key()
+    }
 }
 
 impl MetadataKeyStore for LinuxSecretServiceKeyStore {
@@ -128,6 +132,29 @@ impl MetadataKeyStore for LinuxSecretServiceKeyStore {
         } else {
             Err(CredentialProtectionError::Failed)
         }
+    }
+
+    fn delete_key(&self) -> Result<(), CredentialProtectionError> {
+        let service = SecretService::connect(EncryptionType::Dh)
+            .map_err(|_| CredentialProtectionError::Failed)?;
+        let attributes = HashMap::from([
+            ("application", ATTRIBUTE_APPLICATION),
+            ("purpose", ATTRIBUTE_PURPOSE),
+        ]);
+        let found = service
+            .search_items(attributes)
+            .map_err(|_| CredentialProtectionError::Failed)?;
+        for item in found.unlocked {
+            item.delete()
+                .map_err(|_| CredentialProtectionError::Failed)?;
+        }
+        for item in found.locked {
+            item.unlock()
+                .map_err(|_| CredentialProtectionError::Failed)?;
+            item.delete()
+                .map_err(|_| CredentialProtectionError::Failed)?;
+        }
+        Ok(())
     }
 }
 

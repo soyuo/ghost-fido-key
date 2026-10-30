@@ -84,6 +84,12 @@ impl CredentialProtector for WindowsCredentialProtector {
         result.map_err(|_| CredentialProtectionError::Failed)?;
         output.to_vec(MAX_METADATA_BYTES)
     }
+
+    fn erase_key(&self) -> Result<(), CredentialProtectionError> {
+        // DPAPI uses OS-managed per-user master keys; the authenticator does
+        // not own or remove those keys.
+        Ok(())
+    }
 }
 
 fn input_blob(bytes: &[u8]) -> Result<CRYPT_INTEGER_BLOB, CredentialProtectionError> {

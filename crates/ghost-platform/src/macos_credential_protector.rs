@@ -2,6 +2,7 @@
 
 use ghost_fido_core::{CredentialProtectionError, CredentialProtector};
 use security_framework::os::macos::keychain::SecKeychain;
+use security_framework::passwords::delete_generic_password;
 use security_framework_sys::base::{errSecDuplicateItem, errSecItemNotFound};
 use zeroize::Zeroizing;
 
@@ -50,6 +51,10 @@ impl CredentialProtector for MacOsCredentialProtector {
     ) -> Result<Zeroizing<Vec<u8>>, CredentialProtectionError> {
         self.0.unprotect(ciphertext, associated_data)
     }
+
+    fn erase_key(&self) -> Result<(), CredentialProtectionError> {
+        self.0.erase_key()
+    }
 }
 
 impl MetadataKeyStore for MacOsKeychainKeyStore {
@@ -74,6 +79,14 @@ impl MetadataKeyStore for MacOsKeychainKeyStore {
                     Err(_) => Err(CredentialProtectionError::Failed),
                 }
             }
+            Err(_) => Err(CredentialProtectionError::Failed),
+        }
+    }
+
+    fn delete_key(&self) -> Result<(), CredentialProtectionError> {
+        match delete_generic_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT) {
+            Ok(()) => Ok(()),
+            Err(error) if error.code() == errSecItemNotFound => Ok(()),
             Err(_) => Err(CredentialProtectionError::Failed),
         }
     }

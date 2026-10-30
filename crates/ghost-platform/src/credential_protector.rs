@@ -13,6 +13,7 @@ const ENVELOPE_VERSION: u8 = 1;
 
 pub(crate) trait MetadataKeyStore: Send + Sync {
     fn load_or_create_key(&self) -> Result<Zeroizing<[u8; KEY_SIZE]>, CredentialProtectionError>;
+    fn delete_key(&self) -> Result<(), CredentialProtectionError>;
 }
 
 #[derive(Debug)]
@@ -96,6 +97,10 @@ impl<K: MetadataKeyStore> CredentialProtector for AesGcmCredentialProtector<K> {
             return Err(CredentialProtectionError::Failed);
         }
         Ok(plaintext)
+    }
+
+    fn erase_key(&self) -> Result<(), CredentialProtectionError> {
+        self.key_store.delete_key()
     }
 }
 
