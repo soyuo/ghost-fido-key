@@ -1208,9 +1208,11 @@ impl<'a> AuthenticatorService<'a> {
     pub(crate) fn clear_channel(&mut self, channel: u32) {
         self.assertion_continuations.remove(&channel);
         self.credential_management.remove(&channel);
+        self.large_blob_writes.remove(&channel);
     }
 
     fn recover_pending_reset(&mut self) -> Result<(), ()> {
+        self.large_blob_writes.clear();
         if self.store.metadata_key_cleanup_pending() {
             self.store.complete_metadata_key_cleanup().map_err(|_| ())?;
             self.assertion_continuations.clear();
