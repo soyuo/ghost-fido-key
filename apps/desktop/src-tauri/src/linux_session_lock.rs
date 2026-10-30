@@ -92,6 +92,21 @@ impl LinuxSessionLockMonitor {
             },
         ));
 
+        let unlock_verification = Arc::downgrade(&verification);
+        subscriptions.push(connection.signal_subscribe(
+            Some(LOGIND_NAME),
+            Some(LOGIND_SESSION_INTERFACE),
+            Some("Unlock"),
+            Some(&session_path),
+            None,
+            DBusSignalFlags::NONE,
+            move |_, _, _, _, _, _| {
+                if let Some(verification) = unlock_verification.upgrade() {
+                    verification.set_session_unlock_requested();
+                }
+            },
+        ));
+
         let property_verification = Arc::downgrade(&verification);
         let changed_path = session_path.clone();
         subscriptions.push(connection.signal_subscribe(

@@ -38,9 +38,11 @@ registers for this login session's WTS lock notifications. A lock cancels all
 pending approvals, blocks new requests, and leaves late native-dialog responses
 unable to approve. Authenticator start also fails closed if the Windows lock
 monitor is not installed or the session is locked. On Linux, the app monitors
-the current systemd-logind session's `Lock` signal and `LockedHint`; a `Lock`
-signal cancels pending approvals, and authenticator start/approval fail closed
-if the monitor is unavailable or logind reports the session locked. `LockedHint`
+the current systemd-logind session's `Lock` and `Unlock` signals and
+`LockedHint`; a `Lock` signal cancels pending approvals, while `Unlock` only
+clears the transition guard before the next session check re-reads `LockedHint`.
+Authenticator start/approval fail closed if the monitor is unavailable or
+logind reports the session locked. `LockedHint`
 is supplied by the desktop environment, so this behavior is environment-dependent
 and does not guarantee detection on every Linux desktop. On macOS, an observed
 `NSWorkspace.sessionDidResignActiveNotification` invalidates pending approvals

@@ -344,6 +344,16 @@ impl DesktopVerificationProvider {
     }
 
     #[cfg(target_os = "linux")]
+    fn set_session_unlock_requested(&self) {
+        use std::sync::atomic::Ordering;
+
+        // A logind Unlock signal only clears the transition guard. The next
+        // session check still reads LockedHint before authentication resumes.
+        self.session_lock_transition_pending
+            .store(false, Ordering::Release);
+    }
+
+    #[cfg(target_os = "linux")]
     fn apply_session_lock_hint(&self, locked: bool) {
         use std::sync::atomic::Ordering;
 
