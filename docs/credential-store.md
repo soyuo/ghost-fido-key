@@ -32,12 +32,12 @@ plaintext store. The SQLite file alone is not a backup: Windows recovery depends
 on the original user profile, Linux on the same Secret Service key item, and
 macOS on access to the same default Keychain item.
 
-SQLite `user_version` 10 tracks the current complete store format. The credential
+SQLite `user_version` 11 tracks the current complete store format. The credential
 record payload has its own CBOR schema version 7; these are distinct version
 counters because PIN state is stored separately. SQLite stores with `user_version`
 1–3 are read using their original associated data, validated, assigned a
 deterministic legacy creation order where needed, and resealed using the current
-credential payload format. Versions 4–10 are decoded using their corresponding
+credential payload format. Versions 4–11 are decoded using their corresponding
 credential payload schema. Version 9 added an encrypted reset journal containing
 provider key references still awaiting deletion. Version 10 adds a nonsecret
 metadata-key cleanup marker to that journal. After provider signing keys are
@@ -48,7 +48,11 @@ and recovery never loads or creates a key before retrying deletion. After key
 deletion succeeds, reset drops the encrypted tables and marker in one transaction
 and returns the database to an empty schema; a new metadata key is created only
 when the store is next opened or written. Windows uses OS-managed DPAPI master
-keys and does not remove them. While either reset phase is pending, the store
+keys and does not remove them. Version 11 also adds an encrypted provider-key
+creation journal: it records an allocated opaque reference before key creation,
+then clears the journal in the same transaction that commits the credential.
+Interrupted registration retries provider deletion before CTAP commands are
+handled. While either reset phase is pending, the store
 hides credential and PIN state and rejects normal updates. CTAP and desktop reset
 paths resume cleanup before normal use; each completed provider deletion is
 checkpointed so a restart can safely retry cleanup. Missing PIN state in a store

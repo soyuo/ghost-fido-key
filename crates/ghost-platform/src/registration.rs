@@ -10,9 +10,9 @@ use std::time::Duration;
 use zeroize::Zeroizing;
 
 use crate::{
-    KeyCreationPolicy, KeyStore, PlatformError, PlatformErrorKind, SigningAlgorithm,
-    SoftwareKeyConsent, UserVerification, VerificationAction, VerificationDecision,
-    VerificationRequest,
+    CreatedSigningKey, KeyCreationPolicy, KeyStore, PlatformError, PlatformErrorKind,
+    SigningAlgorithm, SoftwareKeyConsent, UserVerification, VerificationAction,
+    VerificationDecision, VerificationRequest,
 };
 
 #[derive(Debug)]
@@ -143,67 +143,51 @@ pub fn register_make_credential_with_uv(
         None
     };
 
-    let created = match key_store.create_signing_key(
-        SigningAlgorithm::Es256,
-        key_policy,
-        software_key_consent,
-    ) {
-        Ok(created) => created,
-        Err(error)
-            if key_policy == KeyCreationPolicy::PlatformProtectedOnly
-                && error.kind == PlatformErrorKind::PlatformKeyProtectionUnavailable =>
-        {
-            let fallback_request = VerificationRequest {
-                relying_party_id: request.rp.id.clone(),
-                relying_party_name: request.rp.name.clone(),
-                action: VerificationAction::SoftwareKeyFallback,
-            };
-            match verification.request_confirmation(&fallback_request, timeout) {
-                Ok(VerificationDecision::Approved) => {
-                    let consent = SoftwareKeyConsent::confirm_user_acceptance(true)
-                        .expect("accepted fallback creates a consent marker");
-                    key_store.create_signing_key(
-                        SigningAlgorithm::Es256,
-                        KeyCreationPolicy::SoftwareKeyAfterExplicitConsent,
-                        Some(consent),
-                    )?
+    let (created, key_handle) =
+        match create_journaled_signing_key(store, key_store, key_policy, software_key_consent) {
+            Ok(created) => created,
+            Err(error)
+                if key_policy == KeyCreationPolicy::PlatformProtectedOnly
+                    && error.kind == PlatformErrorKind::PlatformKeyProtectionUnavailable =>
+            {
+                let fallback_request = VerificationRequest {
+                    relying_party_id: request.rp.id.clone(),
+                    relying_party_name: request.rp.name.clone(),
+                    action: VerificationAction::SoftwareKeyFallback,
+                };
+                match verification.request_confirmation(&fallback_request, timeout) {
+                    Ok(VerificationDecision::Approved) => {
+                        let consent = SoftwareKeyConsent::confirm_user_acceptance(true)
+                            .expect("accepted fallback creates a consent marker");
+                        create_journaled_signing_key(
+                            store,
+                            key_store,
+                            KeyCreationPolicy::SoftwareKeyAfterExplicitConsent,
+                            Some(consent),
+                        )?
+                    }
+                    Ok(VerificationDecision::Rejected) => {
+                        return Ok(Ctap2Response::error(Ctap2Status::OperationDenied));
+                    }
+                    Ok(VerificationDecision::Cancelled) => {
+                        return Ok(Ctap2Response::error(Ctap2Status::KeepaliveCancel));
+                    }
+                    Err(error) if error.kind == PlatformErrorKind::Timeout => {
+                        return Ok(Ctap2Response::error(Ctap2Status::KeepaliveCancel));
+                    }
+                    Err(error) => return Err(error.into()),
                 }
-                Ok(VerificationDecision::Rejected) => {
-                    return Ok(Ctap2Response::error(Ctap2Status::OperationDenied));
-                }
-                Ok(VerificationDecision::Cancelled) => {
-                    return Ok(Ctap2Response::error(Ctap2Status::KeepaliveCancel));
-                }
-                Err(error) if error.kind == PlatformErrorKind::Timeout => {
-                    return Ok(Ctap2Response::error(Ctap2Status::KeepaliveCancel));
-                }
-                Err(error) => return Err(error.into()),
             }
-        }
-        Err(error) => return Err(error.into()),
-    };
-    let key_handle = match KeyHandle::new(
-        created
-            .reference
-            .as_provider_reference()
-            .as_bytes()
-            .to_vec(),
-    ) {
-        Ok(handle) => handle,
-        Err(error) => {
-            return Err(cleanup_failed_creation(
-                key_store,
-                &created.reference,
-                error.into(),
-            ));
-        }
-    };
+            Err(error) => return Err(error.into()),
+        };
     let credential_id = match CredentialId::new(credential_id_bytes.to_vec()) {
         Ok(id) => id,
         Err(error) => {
             return Err(cleanup_failed_creation(
+                store,
                 key_store,
                 &created.reference,
+                &key_handle,
                 error.into(),
             ));
         }
@@ -230,8 +214,10 @@ pub fn register_make_credential_with_uv(
         Ok(response) => response,
         Err(_) => {
             return Err(cleanup_failed_creation(
+                store,
                 key_store,
                 &created.reference,
+                &key_handle,
                 MakeCredentialExecutionError::ResponseEncoding,
             ));
         }
@@ -243,7 +229,7 @@ pub fn register_make_credential_with_uv(
         user_handle: request.user.id.clone(),
         user_name: request.user.name.clone(),
         user_display_name: request.user.display_name.clone(),
-        key_handle,
+        key_handle: key_handle.clone(),
         public_key: Some(created.public_key.clone()),
         hmac_secret,
         cred_protect: request
@@ -261,10 +247,12 @@ pub fn register_make_credential_with_uv(
         creation_order: 0,
         sign_count: 0,
     };
-    if let Err(error) = store.register(record) {
+    if let Err(error) = store.register_created_key(record, &key_handle) {
         return Err(cleanup_failed_creation(
+            store,
             key_store,
             &created.reference,
+            &key_handle,
             error.into(),
         ));
     }
@@ -272,13 +260,89 @@ pub fn register_make_credential_with_uv(
 }
 
 fn cleanup_failed_creation(
+    store: &mut CredentialStore,
     key_store: &dyn KeyStore,
     reference: &crate::KeyReference,
+    key_handle: &KeyHandle,
     original_error: MakeCredentialExecutionError,
 ) -> MakeCredentialExecutionError {
     match key_store.delete_key(reference) {
-        Ok(()) => original_error,
+        Ok(()) => match store.mark_provider_key_deleted(key_handle) {
+            Ok(()) => original_error,
+            Err(error) => MakeCredentialExecutionError::Platform(PlatformError::new(
+                PlatformErrorKind::KeyStoreUnavailable,
+                crate::HostPlatform::current(),
+                format!(
+                    "provider key was deleted but its cleanup journal could not be cleared: {error:?}"
+                ),
+            )),
+        },
         Err(cleanup_error) => MakeCredentialExecutionError::Platform(cleanup_error),
+    }
+}
+
+fn create_journaled_signing_key(
+    store: &mut CredentialStore,
+    key_store: &dyn KeyStore,
+    policy: KeyCreationPolicy,
+    consent: Option<SoftwareKeyConsent>,
+) -> Result<(CreatedSigningKey, KeyHandle), PlatformError> {
+    let reference = key_store.allocate_signing_key_reference(policy, consent)?;
+    let key_handle = KeyHandle::new(reference.as_provider_reference().as_bytes().to_vec())
+        .map_err(|error| {
+            PlatformError::new(
+                PlatformErrorKind::KeyStoreUnavailable,
+                crate::HostPlatform::current(),
+                format!("{error:?}"),
+            )
+        })?;
+    store
+        .begin_provider_key_creation(key_handle.clone())
+        .map_err(|error| {
+            PlatformError::new(
+                PlatformErrorKind::KeyStoreUnavailable,
+                crate::HostPlatform::current(),
+                format!("could not persist provider-key creation intent: {error:?}"),
+            )
+        })?;
+    match key_store.create_signing_key(&reference, SigningAlgorithm::Es256, policy, consent) {
+        Ok(created) if created.reference == reference => Ok((created, key_handle)),
+        Ok(created) => {
+            let _ = key_store.delete_key(&created.reference);
+            Err(PlatformError::new(
+                PlatformErrorKind::KeyStoreUnavailable,
+                crate::HostPlatform::current(),
+                "provider created a key under a different reference than the reserved journal",
+            ))
+        }
+        Err(error) if error.kind == PlatformErrorKind::PlatformKeyProtectionUnavailable => {
+            // Providers use this result only when protection is unavailable
+            // before a key is created, or after their own incomplete-key
+            // cleanup has succeeded.
+            store
+                .mark_provider_key_deleted(&key_handle)
+                .map_err(|journal_error| {
+                    PlatformError::new(
+                        PlatformErrorKind::KeyStoreUnavailable,
+                        crate::HostPlatform::current(),
+                        format!("could not clear unused provider-key intent: {journal_error:?}"),
+                    )
+                })?;
+            Err(error)
+        }
+        Err(error) => match key_store.delete_key(&reference) {
+            Ok(()) => match store.mark_provider_key_deleted(&key_handle) {
+                Ok(()) => Err(error),
+                Err(journal_error) => Err(PlatformError::new(
+                    PlatformErrorKind::KeyStoreUnavailable,
+                    crate::HostPlatform::current(),
+                    format!(
+                        "provider key was absent but its cleanup journal could not be cleared: {journal_error:?}"
+                    ),
+                )),
+            },
+            Err(cleanup_error) => Err(cleanup_error),
+        },
     }
 }
 

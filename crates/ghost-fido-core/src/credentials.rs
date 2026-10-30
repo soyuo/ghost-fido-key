@@ -12,10 +12,11 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::cbor::{CborError, CborLimits, CborValue, decode_with_limits, encode as encode_cbor};
 
-const STORAGE_SCHEMA_VERSION: i64 = 10;
+const STORAGE_SCHEMA_VERSION: i64 = 11;
 const PIN_STATE_SCHEMA_VERSION: i64 = 8;
 const CREDENTIAL_RECORD_SCHEMA_VERSION: i64 = 7;
 const RESET_JOURNAL_SCHEMA_VERSION: i64 = 9;
+const PROVIDER_KEY_JOURNAL_AAD_V1: &[u8] = b"ghost-fido/provider-key-journal/v1";
 const STORAGE_AAD_V1: &[u8] = b"ghost-fido/credential-store/v1";
 const STORAGE_AAD_V2: &[u8] = b"ghost-fido/credential-store/v2";
 const STORAGE_AAD_V3: &[u8] = b"ghost-fido/credential-store/v3";
@@ -227,6 +228,7 @@ pub enum CredentialError {
     CounterOverflow,
     CreationOrderOverflow,
     ResetInProgress,
+    ProviderKeyCleanupPending,
     StorageFailure,
     ProtectedDataInvalid,
     InvalidPinState,
@@ -269,6 +271,7 @@ pub struct CredentialStore {
     pin_state: PinState,
     pending_reset_keys: Option<Vec<KeyHandle>>,
     metadata_key_cleanup_pending: bool,
+    pending_provider_key: Option<KeyHandle>,
     sqlite: Option<SqliteBackend>,
     next_creation_order: u64,
 }
@@ -432,7 +435,7 @@ impl CredentialStore {
                         .map_err(|_| CredentialError::StorageFailure)?;
                     records
                 }
-                4 | 5 | 6 | 7 | 8 | 9 | 10 => {
+                4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 => {
                     let protected = read_protected_payload(&connection)?;
                     let plaintext = protector
                         .unprotect(&protected, STORAGE_AAD_V4)
@@ -440,6 +443,7 @@ impl CredentialStore {
                     decode_records(
                         &plaintext,
                         match schema_version {
+                            11 => 7,
                             10 => 7,
                             9 => 7,
                             8 => 7,
@@ -462,6 +466,11 @@ impl CredentialStore {
         } else {
             initialize_reset_journal(&mut connection, protector.as_ref())?
         };
+        let pending_provider_key = if metadata_key_cleanup_pending || pending_reset_keys.is_some() {
+            None
+        } else {
+            initialize_provider_key_journal(&mut connection, protector.as_ref())?
+        };
         let mut pin_state = if metadata_key_cleanup_pending {
             PinState::default()
         } else {
@@ -482,6 +491,7 @@ impl CredentialStore {
             pin_state,
             pending_reset_keys,
             metadata_key_cleanup_pending,
+            pending_provider_key,
             sqlite: Some(SqliteBackend {
                 connection,
                 protector,
@@ -491,7 +501,34 @@ impl CredentialStore {
         })
     }
 
-    pub fn register(&mut self, mut record: CredentialRecord) -> Result<(), CredentialError> {
+    pub fn register(&mut self, record: CredentialRecord) -> Result<(), CredentialError> {
+        self.register_inner(record, None)
+    }
+
+    /// Persists a new credential and clears its pre-creation key journal in
+    /// the same SQLite transaction.
+    pub fn register_created_key(
+        &mut self,
+        record: CredentialRecord,
+        key_handle: &KeyHandle,
+    ) -> Result<(), CredentialError> {
+        self.register_inner(record, Some(key_handle))
+    }
+
+    fn register_inner(
+        &mut self,
+        mut record: CredentialRecord,
+        created_key: Option<&KeyHandle>,
+    ) -> Result<(), CredentialError> {
+        if self.reset_is_pending() {
+            return Err(CredentialError::ResetInProgress);
+        }
+        if self.pending_provider_key.as_ref() != created_key {
+            return Err(CredentialError::ProviderKeyCleanupPending);
+        }
+        if created_key.is_some_and(|handle| handle != &record.key_handle) {
+            return Err(CredentialError::ProviderKeyCleanupPending);
+        }
         if record.relying_party_id.as_ref().is_some_and(|rp_id| {
             rp_id.is_empty() || rp_id.len() > MAX_RP_ID_BYTES || !rp_id.is_ascii()
         }) {
@@ -524,9 +561,12 @@ impl CredentialStore {
         record.creation_order = creation_order;
         let mut next_records = self.records.clone();
         next_records.insert(record.id.clone(), record);
-        self.persist(&next_records)?;
+        self.persist_with_provider_key_cleanup(&next_records, created_key)?;
         self.records = next_records;
         self.next_creation_order = creation_order;
+        if created_key.is_some() {
+            self.pending_provider_key = None;
+        }
         Ok(())
     }
     #[must_use]
@@ -690,15 +730,82 @@ impl CredentialStore {
     /// Callers must keep the handles out of logs and external UI responses.
     #[must_use]
     pub fn provider_key_handles(&self) -> Vec<KeyHandle> {
-        self.records
+        let mut handles = self
+            .records
             .values()
             .map(|record| record.key_handle.clone())
-            .collect()
+            .collect::<Vec<_>>();
+        if let Some(pending) = self.pending_provider_key.as_ref() {
+            handles.push(pending.clone());
+        }
+        handles
     }
 
     #[must_use]
     pub fn reset_is_pending(&self) -> bool {
         self.pending_reset_keys.is_some() || self.metadata_key_cleanup_pending
+    }
+
+    #[must_use]
+    pub fn pending_provider_key_handle(&self) -> Option<&KeyHandle> {
+        self.pending_provider_key.as_ref()
+    }
+
+    /// Durably reserves the opaque provider reference before key creation.
+    pub fn begin_provider_key_creation(
+        &mut self,
+        handle: KeyHandle,
+    ) -> Result<(), CredentialError> {
+        if self.reset_is_pending() || self.pending_provider_key.is_some() {
+            return Err(CredentialError::ProviderKeyCleanupPending);
+        }
+        let backend = self
+            .sqlite
+            .as_mut()
+            .ok_or(CredentialError::StorageFailure)?;
+        let protected = backend
+            .protector
+            .protect(handle.as_bytes(), PROVIDER_KEY_JOURNAL_AAD_V1)
+            .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+        validate_protected_payload(&protected)?;
+        let transaction = backend
+            .connection
+            .transaction()
+            .map_err(|_| CredentialError::StorageFailure)?;
+        transaction
+            .execute(
+                "INSERT INTO provider_key_journal (singleton, payload) VALUES (1, ?1)",
+                params![protected],
+            )
+            .map_err(|_| CredentialError::StorageFailure)?;
+        transaction
+            .commit()
+            .map_err(|_| CredentialError::StorageFailure)?;
+        self.pending_provider_key = Some(handle);
+        Ok(())
+    }
+
+    /// Clears a reserved key reference only after its provider key is deleted.
+    pub fn mark_provider_key_deleted(&mut self, handle: &KeyHandle) -> Result<(), CredentialError> {
+        if self.pending_provider_key.as_ref() != Some(handle) {
+            return Err(CredentialError::ProviderKeyCleanupPending);
+        }
+        let backend = self
+            .sqlite
+            .as_mut()
+            .ok_or(CredentialError::StorageFailure)?;
+        let transaction = backend
+            .connection
+            .transaction()
+            .map_err(|_| CredentialError::StorageFailure)?;
+        transaction
+            .execute("DELETE FROM provider_key_journal WHERE singleton = 1", [])
+            .map_err(|_| CredentialError::StorageFailure)?;
+        transaction
+            .commit()
+            .map_err(|_| CredentialError::StorageFailure)?;
+        self.pending_provider_key = None;
+        Ok(())
     }
 
     #[must_use]
@@ -713,6 +820,9 @@ impl CredentialStore {
 
     /// Durably records the key references before reset starts deleting keys.
     pub fn begin_reset(&mut self) -> Result<(), CredentialError> {
+        if self.pending_provider_key.is_some() {
+            return Err(CredentialError::ProviderKeyCleanupPending);
+        }
         if self.metadata_key_cleanup_pending {
             return Err(CredentialError::ResetInProgress);
         }
@@ -801,7 +911,8 @@ impl CredentialStore {
             .execute_batch(
                 "DROP TABLE credential_store;
                  DROP TABLE pin_state;
-                 DROP TABLE reset_journal;",
+                 DROP TABLE reset_journal;
+                 DROP TABLE provider_key_journal;",
             )
             .map_err(|_| CredentialError::StorageFailure)?;
         transaction
@@ -968,6 +1079,10 @@ impl CredentialStore {
                     payload BLOB NOT NULL,
                     metadata_key_cleanup INTEGER NOT NULL DEFAULT 0
                         CHECK (metadata_key_cleanup IN (0, 1))
+                );
+                CREATE TABLE provider_key_journal (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    payload BLOB NOT NULL
                 );",
             )
             .map_err(|_| CredentialError::StorageFailure)?;
@@ -997,8 +1112,19 @@ impl CredentialStore {
         &mut self,
         records: &BTreeMap<CredentialId, CredentialRecord>,
     ) -> Result<(), CredentialError> {
+        self.persist_with_provider_key_cleanup(records, None)
+    }
+
+    fn persist_with_provider_key_cleanup(
+        &mut self,
+        records: &BTreeMap<CredentialId, CredentialRecord>,
+        created_key: Option<&KeyHandle>,
+    ) -> Result<(), CredentialError> {
         if self.reset_is_pending() {
             return Err(CredentialError::ResetInProgress);
+        }
+        if self.pending_provider_key.as_ref() != created_key {
+            return Err(CredentialError::ProviderKeyCleanupPending);
         }
         self.ensure_sqlite_initialized()?;
         let Some(backend) = self.sqlite.as_mut() else {
@@ -1015,6 +1141,11 @@ impl CredentialStore {
             .transaction()
             .map_err(|_| CredentialError::StorageFailure)?;
         write_payload(&transaction, &protected)?;
+        if created_key.is_some() {
+            transaction
+                .execute("DELETE FROM provider_key_journal WHERE singleton = 1", [])
+                .map_err(|_| CredentialError::StorageFailure)?;
+        }
         transaction
             .commit()
             .map_err(|_| CredentialError::StorageFailure)
@@ -1023,6 +1154,9 @@ impl CredentialStore {
     fn persist_pin_state(&mut self, pin_state: &PinState) -> Result<(), CredentialError> {
         if self.reset_is_pending() {
             return Err(CredentialError::ResetInProgress);
+        }
+        if self.pending_provider_key.is_some() {
+            return Err(CredentialError::ProviderKeyCleanupPending);
         }
         self.ensure_sqlite_initialized()?;
         let Some(backend) = self.sqlite.as_mut() else {
@@ -1231,10 +1365,60 @@ fn prepare_reset_journal_schema(
     if !(0..=1).contains(&pending) {
         return Err(CredentialError::ProtectedDataInvalid);
     }
+    let creation_table_exists: bool = transaction
+        .query_row(
+            "SELECT EXISTS (
+                SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'provider_key_journal'
+            )",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|_| CredentialError::StorageFailure)?;
+    if !creation_table_exists && schema_version >= STORAGE_SCHEMA_VERSION {
+        return Err(CredentialError::ProtectedDataInvalid);
+    }
+    if !creation_table_exists {
+        transaction
+            .execute_batch(
+                "CREATE TABLE provider_key_journal (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    payload BLOB NOT NULL
+                );",
+            )
+            .map_err(|_| CredentialError::StorageFailure)?;
+    }
     transaction
         .commit()
         .map_err(|_| CredentialError::StorageFailure)?;
     Ok(pending == 1)
+}
+
+fn initialize_provider_key_journal(
+    connection: &mut Connection,
+    protector: &dyn CredentialProtector,
+) -> Result<Option<KeyHandle>, CredentialError> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|_| CredentialError::StorageFailure)?;
+    let payload = transaction
+        .query_row(
+            "SELECT payload FROM provider_key_journal WHERE singleton = 1",
+            [],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional()
+        .map_err(|_| CredentialError::StorageFailure)?;
+    transaction
+        .commit()
+        .map_err(|_| CredentialError::StorageFailure)?;
+    let Some(payload) = payload else {
+        return Ok(None);
+    };
+    validate_protected_payload(&payload)?;
+    let plaintext = protector
+        .unprotect(&payload, PROVIDER_KEY_JOURNAL_AAD_V1)
+        .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+    KeyHandle::new(plaintext.to_vec()).map(Some)
 }
 
 fn initialize_reset_journal(

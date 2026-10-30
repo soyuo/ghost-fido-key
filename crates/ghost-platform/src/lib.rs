@@ -400,8 +400,15 @@ impl fmt::Debug for KeyReference {
 /// Platform key storage contract. Implementations return public material and
 /// signatures, never private key material.
 pub trait KeyStore: Send + Sync {
+    fn allocate_signing_key_reference(
+        &self,
+        policy: KeyCreationPolicy,
+        consent: Option<SoftwareKeyConsent>,
+    ) -> Result<KeyReference, PlatformError>;
+
     fn create_signing_key(
         &self,
+        reference: &KeyReference,
         algorithm: SigningAlgorithm,
         policy: KeyCreationPolicy,
         consent: Option<SoftwareKeyConsent>,
@@ -539,8 +546,21 @@ impl VirtualHidBackend for UnavailableBackend {
 }
 
 impl KeyStore for UnavailableBackend {
+    fn allocate_signing_key_reference(
+        &self,
+        _policy: KeyCreationPolicy,
+        _consent: Option<SoftwareKeyConsent>,
+    ) -> Result<KeyReference, PlatformError> {
+        Err(PlatformError::new(
+            PlatformErrorKind::KeyStoreUnavailable,
+            HostPlatform::current(),
+            "protected key storage is not implemented",
+        ))
+    }
+
     fn create_signing_key(
         &self,
+        _reference: &KeyReference,
         _algorithm: SigningAlgorithm,
         _policy: KeyCreationPolicy,
         _consent: Option<SoftwareKeyConsent>,
