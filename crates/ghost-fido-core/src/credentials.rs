@@ -1966,9 +1966,11 @@ fn read_large_blob_array(
         )
         .map_err(|_| CredentialError::ProtectedDataInvalid)?;
     validate_protected_payload(&protected)?;
-    let plaintext = protector
-        .unprotect(&protected, LARGE_BLOB_ARRAY_AAD_V1)
-        .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+    let plaintext = Zeroizing::new(
+        protector
+            .unprotect(&protected, LARGE_BLOB_ARRAY_AAD_V1)
+            .map_err(|_| CredentialError::ProtectedDataInvalid)?,
+    );
     if !(17..=MAX_SERIALIZED_LARGE_BLOB_ARRAY).contains(&plaintext.len())
         || !valid_serialized_large_blob_array(&plaintext)
     {
@@ -2047,9 +2049,11 @@ fn initialize_large_blob_array(
         Some(_payload) if metadata_key_cleanup_pending => INITIAL_LARGE_BLOB_ARRAY.to_vec(),
         Some(payload) => {
             validate_protected_payload(&payload)?;
-            let plaintext = protector
-                .unprotect(&payload, LARGE_BLOB_ARRAY_AAD_V1)
-                .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+            let plaintext = Zeroizing::new(
+                protector
+                    .unprotect(&payload, LARGE_BLOB_ARRAY_AAD_V1)
+                    .map_err(|_| CredentialError::ProtectedDataInvalid)?,
+            );
             if !(17..=MAX_SERIALIZED_LARGE_BLOB_ARRAY).contains(&plaintext.len())
                 || !valid_serialized_large_blob_array(&plaintext)
             {
