@@ -16,6 +16,8 @@ Deletion removes the provider key before committing metadata removal. A failed k
 
 Credential Management command maps, parameter maps for subcommands that accept parameters, and nested user-entity and descriptor maps ignore keys this implementation does not understand, as required by CTAP. HMAC authentication still covers the complete encoded `subCommandParams` map. Delete and update requests require the `type` and `id` members of `PublicKeyCredentialDescriptor`, validate an optional `transports` string array, and ignore its values. Duplicate keys and malformed required or supported fields are rejected; parameter maps remain invalid for subcommands that do not accept them.
 
+Keep `MISSING_PARAMETER` for an absent mandatory `credentialId` or `user` subcommand parameter. If that parameter is present but has the wrong CBOR shape, or a required member inside its descriptor/user entity is absent or has the wrong type, return `CBOR_UNEXPECTED_TYPE`. Wrong-typed optional known members such as `transports`, `name`, and `displayName` also return `CBOR_UNEXPECTED_TYPE`; semantically invalid values retain their applicable parameter error.
+
 ## Protected metadata and migration
 
 Credential-management metadata remains in the existing authenticated-encrypted credential store. Persist the public ES256 key with each record. For records created before that field existed, recover the public key through the owning platform key provider and persist it before returning enumeration data. Fail the operation if key recovery or protected persistence fails; never return fabricated public-key material. Keep legacy credential ciphertext readable and migrate additively.
