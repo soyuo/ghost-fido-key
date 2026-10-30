@@ -62,6 +62,7 @@ pub enum Ctap2Status {
     UnsupportedAlgorithm = 0x26,
     OperationDenied = 0x27,
     UnsupportedOption = 0x2b,
+    InvalidOption = 0x2c,
     KeepaliveCancel = 0x2d,
     NoCredentials = 0x2e,
     UserActionTimeout = 0x2f,
