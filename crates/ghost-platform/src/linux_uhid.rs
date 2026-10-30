@@ -51,6 +51,7 @@ pub const FIDO_REPORT_DESCRIPTOR: &[u8] = &[
 /// Synchronous Linux `/dev/uhid` backend.
 pub struct LinuxUhidBackend {
     path: PathBuf,
+    product_identity: Option<(u16, u16)>,
     device: Option<UHIDDevice<File>>,
     state: DeviceState,
 }
@@ -65,6 +66,7 @@ impl LinuxUhidBackend {
     pub fn with_path(path: impl AsRef<Path>) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
+            product_identity: configured_product_identity(),
             device: None,
             state: DeviceState::Detached,
         }
@@ -77,22 +79,30 @@ impl LinuxUhidBackend {
 
     #[must_use]
     pub fn capabilities(&self) -> PlatformCapabilities {
-        let virtual_hid = match probe_uhid(&self.path) {
-            Ok(()) => CapabilityStatus::available(),
-            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
-                CapabilityStatus::unavailable(
-                    CapabilityState::PermissionRequired,
-                    format!("{} requires read/write access", self.path.display()),
-                )
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => CapabilityStatus::unavailable(
-                CapabilityState::DriverMissing,
-                format!("{} is not available", self.path.display()),
+        let virtual_hid = match self.product_identity {
+            None => CapabilityStatus::unavailable(
+                CapabilityState::Unsupported,
+                "Linux virtual HID requires explicitly assigned GHOST_FIDO_LINUX_VENDOR_ID and GHOST_FIDO_LINUX_PRODUCT_ID build values",
             ),
-            Err(error) => CapabilityStatus::unavailable(
-                CapabilityState::Error,
-                format!("failed to inspect {}: {error}", self.path.display()),
-            ),
+            Some(_) => match probe_uhid(&self.path) {
+                Ok(()) => CapabilityStatus::available(),
+                Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                    CapabilityStatus::unavailable(
+                        CapabilityState::PermissionRequired,
+                        format!("{} requires read/write access", self.path.display()),
+                    )
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    CapabilityStatus::unavailable(
+                        CapabilityState::DriverMissing,
+                        format!("{} is not available", self.path.display()),
+                    )
+                }
+                Err(error) => CapabilityStatus::unavailable(
+                    CapabilityState::Error,
+                    format!("failed to inspect {}: {error}", self.path.display()),
+                ),
+            },
         };
 
         PlatformCapabilities {
@@ -165,16 +175,21 @@ impl VirtualHidBackend for LinuxUhidBackend {
         if self.device.is_some() {
             return Ok(());
         }
+        let Some((vendor, product)) = self.product_identity else {
+            self.state = DeviceState::Failed;
+            return Err(Self::error(
+                PlatformErrorKind::Unsupported,
+                "Linux virtual HID cannot start without explicitly assigned vendor and product IDs",
+            ));
+        };
         self.state = DeviceState::Starting;
         let params = CreateParams {
             name: "Ghost FIDO Key".to_owned(),
             phys: "".to_owned(),
             uniq: "ghost-fido-key".to_owned(),
             bus: Bus::VIRTUAL,
-            // The project does not claim a manufacturer identity. The FIDO
-            // usage page, not a third-party VID/PID, drives discovery.
-            vendor: 0,
-            product: 0,
+            vendor: u32::from(vendor),
+            product: u32::from(product),
             version: 1,
             country: 0,
             rd_data: FIDO_REPORT_DESCRIPTOR.to_vec(),
@@ -291,6 +306,23 @@ impl VirtualHidBackend for LinuxUhidBackend {
             }
         }
     }
+}
+
+fn configured_product_identity() -> Option<(u16, u16)> {
+    Some((
+        parse_product_id(option_env!("GHOST_FIDO_LINUX_VENDOR_ID")?)?,
+        parse_product_id(option_env!("GHOST_FIDO_LINUX_PRODUCT_ID")?)?,
+    ))
+}
+
+fn parse_product_id(value: &str) -> Option<u16> {
+    let value = value.trim();
+    let parsed = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .map_or_else(|| value.parse::<u32>(), |hex| u32::from_str_radix(hex, 16))
+        .ok()?;
+    (1..0xFFFF).contains(&parsed).then_some(parsed as u16)
 }
 
 impl Drop for LinuxUhidBackend {

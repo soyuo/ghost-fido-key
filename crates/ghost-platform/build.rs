@@ -5,34 +5,43 @@ use std::{
 };
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=GHOST_FIDO_LINUX_VENDOR_ID");
+    println!("cargo:rerun-if-env-changed=GHOST_FIDO_LINUX_PRODUCT_ID");
     println!("cargo:rerun-if-env-changed=GHOST_FIDO_MACOS_VENDOR_ID");
     println!("cargo:rerun-if-env-changed=GHOST_FIDO_MACOS_PRODUCT_ID");
     println!("cargo:rerun-if-changed=../../platforms/macos/corehid/Package.swift");
     println!("cargo:rerun-if-changed=../../platforms/macos/corehid/GhostFidoVirtualDevice.swift");
     println!("cargo:rerun-if-changed=../../platforms/macos/corehid/GhostFidoCoreHIDBridge.swift");
 
-    if env::var("TARGET").map_or(true, |target| !target.ends_with("-apple-darwin")) {
+    let target = env::var("TARGET").unwrap_or_default();
+    if target.ends_with("-linux-gnu") || target.ends_with("-linux-musl") {
+        configure_product_identity("LINUX");
+        return;
+    }
+    if !target.ends_with("-apple-darwin") {
         return;
     }
 
-    configure_product_identity();
+    configure_product_identity("MACOS");
     build_corehid_bridge();
 }
 
-fn configure_product_identity() {
-    let vendor_id = parse_product_id("GHOST_FIDO_MACOS_VENDOR_ID");
-    let product_id = parse_product_id("GHOST_FIDO_MACOS_PRODUCT_ID");
+fn configure_product_identity(platform: &str) {
+    let vendor_name = format!("GHOST_FIDO_{platform}_VENDOR_ID");
+    let product_name = format!("GHOST_FIDO_{platform}_PRODUCT_ID");
+    let vendor_id = parse_product_id(&vendor_name);
+    let product_id = parse_product_id(&product_name);
 
     match (vendor_id, product_id) {
         (Some(vendor_id), Some(product_id)) => {
-            println!("cargo:rustc-env=GHOST_FIDO_MACOS_VENDOR_ID={vendor_id}");
-            println!("cargo:rustc-env=GHOST_FIDO_MACOS_PRODUCT_ID={product_id}");
+            println!("cargo:rustc-env={vendor_name}={vendor_id}");
+            println!("cargo:rustc-env={product_name}={product_id}");
         }
         (None, None) => println!(
-            "cargo:warning=macOS virtual HID identity is not configured; the backend will remain unavailable"
+            "cargo:warning={platform} virtual HID identity is missing or invalid; the backend will remain unavailable"
         ),
         _ => println!(
-            "cargo:warning=both valid GHOST_FIDO_MACOS_VENDOR_ID and GHOST_FIDO_MACOS_PRODUCT_ID are required; the macOS backend will remain unavailable"
+            "cargo:warning=both valid {vendor_name} and {product_name} values are required; the {platform} backend will remain unavailable"
         ),
     }
 }
