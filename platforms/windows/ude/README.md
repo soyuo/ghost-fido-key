@@ -18,9 +18,13 @@ Driver Kit (WDK).
    device.
 3. On an explicit attach IOCTL, the driver creates the default control endpoint
    and both 64-byte interrupt endpoint objects, then plugs in the virtual
-   device. The HID report descriptor and fixed-profile class requests are
+   device. Attach succeeds only after `UdecxUsbDevicePlugIn` succeeds. If
+   plug-in fails and cleanup also fails, the retained handle is retried through
+   cleanup; handle presence alone is never treated as proof of attachment.
+   The HID report descriptor and fixed-profile class requests are
    handled on EP0. Interrupt IN/OUT requests exchange 64-byte reports with
-   bounded kernel queues.
+   bounded kernel queues. Each WDF queue is parented to its UDE endpoint, so
+   endpoint teardown also releases that queue.
 4. Device context cleanup calls `UdecxUsbDevicePlugOutAndDelete` before freeing
    any unconsumed UDE initialization parameters.
 5. A restricted user-mode control device exposes readiness, attach, detach, and
