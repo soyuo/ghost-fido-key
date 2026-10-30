@@ -367,10 +367,10 @@ fn handle_expired_channels(
             if let Some(request) = pending_requests.get_mut(&channel) {
                 request.cancelled = true;
             }
-            let _ = service.send(ServiceCommand::Cancel { channel });
         } else {
             pending_requests.remove(&channel);
         }
+        let _ = service.send(ServiceCommand::Cancel { channel });
     }
 }
 
