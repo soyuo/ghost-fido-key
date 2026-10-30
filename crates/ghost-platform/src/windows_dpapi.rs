@@ -11,6 +11,7 @@ use windows::{
     },
     core::PCWSTR,
 };
+use zeroize::{Zeroize, Zeroizing};
 
 const MAX_METADATA_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PROTECTED_BYTES: usize = MAX_METADATA_BYTES + 4096;
@@ -52,14 +53,14 @@ impl CredentialProtector for WindowsCredentialProtector {
         };
         let output = DpapiBuffer(output);
         result.map_err(|_| CredentialProtectionError::Failed)?;
-        output.to_vec(MAX_PROTECTED_BYTES)
+        Ok(output.to_vec(MAX_PROTECTED_BYTES)?.to_vec())
     }
 
     fn unprotect(
         &self,
         ciphertext: &[u8],
         associated_data: &[u8],
-    ) -> Result<Vec<u8>, CredentialProtectionError> {
+    ) -> Result<Zeroizing<Vec<u8>>, CredentialProtectionError> {
         if ciphertext.is_empty() || ciphertext.len() > MAX_PROTECTED_BYTES {
             return Err(CredentialProtectionError::Failed);
         }
@@ -102,23 +103,31 @@ fn input_blob(bytes: &[u8]) -> Result<CRYPT_INTEGER_BLOB, CredentialProtectionEr
 struct DpapiBuffer(CRYPT_INTEGER_BLOB);
 
 impl DpapiBuffer {
-    fn to_vec(&self, maximum: usize) -> Result<Vec<u8>, CredentialProtectionError> {
+    fn to_vec(&self, maximum: usize) -> Result<Zeroizing<Vec<u8>>, CredentialProtectionError> {
         let length =
             usize::try_from(self.0.cbData).map_err(|_| CredentialProtectionError::Failed)?;
         if length > maximum || (length > 0 && self.0.pbData.is_null()) {
             return Err(CredentialProtectionError::Failed);
         }
         if length == 0 {
-            return Ok(Vec::new());
+            return Ok(Zeroizing::new(Vec::new()));
         }
         // SAFETY: a successful DPAPI call returned `cbData` readable bytes at `pbData`.
-        Ok(unsafe { slice::from_raw_parts(self.0.pbData, length) }.to_vec())
+        Ok(Zeroizing::new(
+            unsafe { slice::from_raw_parts(self.0.pbData, length) }.to_vec(),
+        ))
     }
 }
 
 impl Drop for DpapiBuffer {
     fn drop(&mut self) {
         if !self.0.pbData.is_null() {
+            let length = self.0.cbData as usize;
+            if length > 0 {
+                // SAFETY: DPAPI allocated a writable `cbData`-byte output buffer,
+                // which remains valid until `LocalFree` below.
+                unsafe { slice::from_raw_parts_mut(self.0.pbData, length) }.zeroize();
+            }
             // SAFETY: DPAPI allocated `pbData` with the Windows local allocator.
             let _ = unsafe { LocalFree(Some(HLOCAL(self.0.pbData.cast()))) };
         }

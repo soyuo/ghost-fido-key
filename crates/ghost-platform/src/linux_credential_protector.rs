@@ -49,7 +49,7 @@ impl CredentialProtector for LinuxCredentialProtector {
         &self,
         ciphertext: &[u8],
         associated_data: &[u8],
-    ) -> Result<Vec<u8>, CredentialProtectionError> {
+    ) -> Result<Zeroizing<Vec<u8>>, CredentialProtectionError> {
         self.0.unprotect(ciphertext, associated_data)
     }
 }

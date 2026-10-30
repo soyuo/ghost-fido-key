@@ -22,6 +22,13 @@ dropped. This does not guarantee erasure of every compiler, hardware, or
 dependency-owned intermediate; do not claim complete cryptographic memory
 erasure.
 
+Credential-store decrypted payloads are returned in zeroizing buffers, and
+serialized record payloads are wiped after protection during saves and schema
+migration. On Windows, the copied DPAPI result and the OS-allocated DPAPI output
+buffer are wiped before release. This covers these transient buffers; it does
+not erase credential records held by the active store or guarantee erasure of
+every compiler, OS, provider, or hardware copy.
+
 ## T-022: Login-session lock during authentication
 
 The desktop requires an explicit in-app approval followed by a native
