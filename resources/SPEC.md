@@ -1495,6 +1495,8 @@ CTAP2 입력 CBOR는 definite-length 값만 허용하며 기본 16 depth, 128 co
 
 `GetInfoProfile`은 versions, AAGUID, options, max message size와 PIN/UV protocol을 명시적으로 주입해야만 응답을 직렬화한다. 기본 profile은 제공하지 않아 미완성 authenticator가 기능을 과장하지 않는다. [`docs/ctap2-getinfo.md`](../docs/ctap2-getinfo.md)
 
+ClientPIN은 PIN/UV Auth Protocol 1의 기존 암호 동작을 유지하면서 Protocol 2의 분리된 HKDF 키, random-IV AES-CBC, 32-byte HMAC을 지원한다. agreement, token 및 요청 검증은 선택한 protocol에 묶고, 명시적 비지원 protocol ID는 거부한다. GetInfo는 `[2, 1]` 순서로 프로토콜을 노출하며 CTAP2.1 필수 기능 조건이 모두 성립할 때만 `FIDO_2_1`과 `pinUvAuthToken`을 광고한다. [`docs/ctap2-clientpin.md`](../docs/ctap2-clientpin.md)
+
 `GetAssertionRequest`는 CBOR 필수 필드, 32-byte `clientDataHash`, optional `public-key` allow-list descriptor와 `up`/`uv` boolean 옵션을 검증한다. RP ID의 SHA-256 hash를 사용해 allow-list 또는 discoverable credential을 RP별로 조회한다. allow-list가 없고 여러 discoverable credential이 일치하면 생성 순서 역순으로 첫 응답과 `numberOfCredentials`를 반환하고, 나머지는 channel별 `GetNextAssertion` sequence로 이어진다. 승인과 key provider 서명은 최초 요청에서 한 번 수행하며, 각 응답의 counter를 저장한 뒤 반환한다. UV 없이 user handle 외 이름 정보는 노출하지 않는다. [`docs/ctap2-getassertion.md`](../docs/ctap2-getassertion.md)
 
 `MakeCredentialRequest`는 CBOR 필수 필드, RP/user entity, ordered public-key algorithm, excludeList 및 등록 옵션을 검증한다. excludeList는 RP hash로만 조회하고 일치 시 local presence interaction 후 `CredentialExcluded`를 응답한다. 등록 흐름은 승인 후 보호 키를 만들고 key reference, 보호 정보, user handle 및 선택적 user labels를 credential store에 넣는다. 암호화된 SQLite 저장소는 v1/v2 payload를 v3으로 원자적으로 마이그레이션하고 credential 생성 순서를 저장한다. 재시작 후 사용하려면 아직 OS 기반 `CredentialProtector` provider가 필요하다. [`docs/ctap2-makecredential.md`](../docs/ctap2-makecredential.md)
