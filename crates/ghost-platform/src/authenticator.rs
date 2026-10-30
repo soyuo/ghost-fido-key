@@ -293,10 +293,10 @@ impl ClientPinHandler {
         }
         match subcommand {
             1 => {
-                let mut fields = vec![(
-                    3,
-                    CborValue::Unsigned(u64::from(store.pin_state().retries())),
-                )];
+                let retries = self
+                    .pending_pin_retries
+                    .unwrap_or_else(|| store.pin_state().retries());
+                let mut fields = vec![(3, CborValue::Unsigned(u64::from(retries)))];
                 if self.power_cycle_required {
                     fields.push((4, CborValue::Bool(true)));
                 }
