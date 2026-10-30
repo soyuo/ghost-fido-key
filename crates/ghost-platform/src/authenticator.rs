@@ -569,6 +569,9 @@ impl ClientPinHandler {
             }
         };
         secret.zeroize();
+        // CTAP requires replacing the active authenticator token on successful
+        // issuance, including tokens created on other channels or protocols.
+        self.tokens.clear();
         // Keep a token copy only in the channel owner, which zeroizes it on drop.
         self.tokens.insert(
             channel,
