@@ -662,6 +662,12 @@ impl<'a> AuthenticatorService<'a> {
         self.store.reset_is_pending()
     }
 
+    /// Returns whether provider-key cleanup is pending in the credential store.
+    #[must_use]
+    pub fn provider_key_cleanup_is_pending(&self) -> bool {
+        self.store.pending_provider_key_handle().is_some()
+    }
+
     /// Handles one CTAP2 request and scopes any GetNextAssertion state to its CTAPHID channel.
     pub fn handle_on_channel(
         &mut self,

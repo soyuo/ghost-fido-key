@@ -17,6 +17,7 @@ type PlatformStatus = {
   credentialStoreAvailable: boolean;
   credentialStoreStatus: string;
   authenticatorResetPending: boolean;
+  providerKeyCleanupPending: boolean;
   statusMessage: string;
   authenticatorRunning: boolean;
 };
@@ -310,6 +311,11 @@ function App() {
           <p className="status-message">
             {error ?? status?.statusMessage ?? "시스템 상태를 확인하고 있습니다…"}
           </p>
+          {status?.providerKeyCleanupPending && (
+            <p className="status-message" role="alert">
+              서명 키 정리가 완료되지 않아 인증기 작업이 차단되어 있습니다. 다음 인증기 요청에서 정리를 다시 시도하며, 완료되면 이 안내가 사라집니다. 자격 증명 초기화 상태와는 별개입니다.
+            </p>
+          )}
           {isTauri() && status && ["Linux", "Windows", "macOS"].includes(status.hostPlatform) && !status.authenticatorRunning && status.virtualHidCanStart && status.credentialStoreAvailable && (
             <div className="runtime-actions">
               <button type="button" disabled={runtimeAction} onClick={() => void startAuthenticator()}>
