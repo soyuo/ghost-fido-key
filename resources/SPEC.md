@@ -618,6 +618,8 @@ PIN은 평문으로 저장하지 않는다.
 
 CTAP Credential Management 요청은 command 맵, 매개변수를 받는 subcommand의 매개변수 맵, 중첩된 user entity 및 descriptor 맵에서 구현이 이해하지 못하는 키를 무시한다. HMAC 인증에는 전체 인코딩된 `subCommandParams`를 사용한다. 삭제 및 사용자 정보 변경 요청은 `PublicKeyCredentialDescriptor`의 필수 `type`과 `id`를 검증하고, 선택적 `transports` 문자열 배열을 검증한 뒤 값은 무시한다. 중복 키와 잘못된 필수 또는 지원 필드는 거부하며, 매개변수를 받지 않는 subcommand의 매개변수 맵은 계속 거부한다.
 
+필수 `credentialId` 또는 `user` subcommand 매개변수가 없으면 `MISSING_PARAMETER`를 반환한다. 매개변수가 있지만 CBOR 형태가 잘못되었거나, 중첩된 descriptor/user entity의 필수 필드가 없거나 형식이 잘못된 경우에는 `CBOR_UNEXPECTED_TYPE`을 반환한다. 선택적 `transports`, `name`, `displayName` 필드도 형식이 잘못되면 `CBOR_UNEXPECTED_TYPE`을 반환하고, 의미상 유효하지 않은 값은 기존 매개변수 오류로 처리한다.
+
 단, Windows 앱에서 직접 수행하는 관리 기능과 CTAP 표준을 통해 제공하는 Credential Management 기능을 별도로
 구현하고 검증한다.
 
