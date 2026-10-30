@@ -8,9 +8,9 @@ contract from `ghost-platform`.
 
 - UHID creation requires an explicitly assigned Linux VID/PID supplied at build
   time as `GHOST_FIDO_LINUX_VENDOR_ID` and `GHOST_FIDO_LINUX_PRODUCT_ID`.
-  Values must be decimal or `0x`-prefixed hexadecimal IDs in the range 1 through\n  65534. If
-  either value is absent or invalid, the backend remains unavailable and
-  attachment fails; this project does not currently have assigned Linux IDs.
+  Values must be decimal or hexadecimal (`0x`-prefixed) IDs from 1 through
+  65534. Missing or invalid values keep the backend unavailable and prevent
+  attachment. This project does not currently have assigned Linux IDs.
 - Set both variables in the build environment only after receiving IDs that
   are authorized for this product. For example, a release build environment
   may export the assigned values before invoking Cargo/Tauri; do not copy IDs
