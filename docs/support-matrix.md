@@ -94,10 +94,12 @@ for all of the following:
 5. The platform's key-protection level and any site or authenticator-policy
    limitations recorded alongside the result.
 
-The current Linux dependency audit also retains an unsound GLib advisory,
-tracked by [issue #191](https://github.com/soyuo/ghost-fido-key/issues/191).
-That issue is a security release gate; passing the current build workflow does
-not resolve it.
+The current Linux dependency audit retains two GTK 0.18 graph warnings: the
+unsound GLib advisory, tracked by
+[issue #191](https://github.com/soyuo/ghost-fido-key/issues/191), and an
+unmaintained `proc-macro-error` dependency. The GLib finding remains a security
+release gate; passing the current build workflow does not resolve either
+warning.
 
 ## Evidence sources
 
