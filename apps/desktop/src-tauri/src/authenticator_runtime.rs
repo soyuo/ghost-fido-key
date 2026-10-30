@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
         mpsc::Sender,
         mpsc::{Receiver, TryRecvError, channel},
     },
@@ -52,6 +53,7 @@ pub fn run(
     key_store: Box<dyn KeyStore>,
     key_creation_policy: KeyCreationPolicy,
     software_key_consent: Option<SoftwareKeyConsent>,
+    client_pin_configured: Arc<AtomicBool>,
 ) {
     let Some(mut store) = credential_store
         .lock()
@@ -134,6 +136,8 @@ pub fn run(
                                 status: Ctap2Status::Other,
                                 payload: Vec::new(),
                             });
+                    client_pin_configured
+                        .store(service.client_pin_is_configured(), Ordering::Release);
                     if response_tx
                         .send(ServiceResponse { channel, response })
                         .is_err()

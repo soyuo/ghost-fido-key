@@ -626,6 +626,12 @@ impl<'a> AuthenticatorService<'a> {
         self.handle_on_channel(LEGACY_CHANNEL, request.clone())
     }
 
+    /// Returns whether the credential store currently has a configured Client PIN.
+    #[must_use]
+    pub fn client_pin_is_configured(&self) -> bool {
+        self.store.pin_state().verifier().is_some()
+    }
+
     /// Handles one CTAP2 request and scopes any GetNextAssertion state to its CTAPHID channel.
     pub fn handle_on_channel(
         &mut self,

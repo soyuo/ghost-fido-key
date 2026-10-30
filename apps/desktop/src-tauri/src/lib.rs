@@ -40,7 +40,7 @@ struct DesktopState {
     credential_store: Arc<Mutex<Option<CredentialStore>>>,
     credential_store_available: bool,
     credential_store_status: String,
-    client_pin_configured: AtomicBool,
+    client_pin_configured: Arc<AtomicBool>,
     verification: Arc<DesktopVerificationProvider>,
     virtual_hid: Arc<Mutex<RuntimeStatus>>,
     runtime: Mutex<Option<RuntimeHandle>>,
@@ -935,6 +935,7 @@ fn start_authenticator(
 
     let (stop_tx, stop_rx) = mpsc::sync_channel(1);
     let store = Arc::clone(&state.credential_store);
+    let client_pin_configured = Arc::clone(&state.client_pin_configured);
     let verification: Arc<dyn UserVerification> = state.verification.clone();
     let status = Arc::clone(&state.virtual_hid);
     let key_storage_status = match key_creation_policy {
@@ -953,6 +954,7 @@ fn start_authenticator(
                 key_store,
                 key_creation_policy,
                 software_key_consent,
+                client_pin_configured,
             );
         })
         .map_err(|error| {
@@ -1296,7 +1298,7 @@ pub fn run() {
                 credential_store: Arc::new(Mutex::new(store)),
                 credential_store_available: store_available,
                 credential_store_status: status,
-                client_pin_configured: AtomicBool::new(client_pin_configured),
+                client_pin_configured: Arc::new(AtomicBool::new(client_pin_configured)),
                 verification: Arc::new(DesktopVerificationProvider {
                     app: app.handle().clone(),
                     pending: Arc::new(Mutex::new(HashMap::new())),
