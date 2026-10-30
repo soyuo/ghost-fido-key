@@ -188,12 +188,16 @@ jobs:
       - name: Build frontend
         run: npm --prefix apps/desktop run build
 
+      - name: Build native macOS Intel development app bundle
+        if: runner.os == 'macOS' && runner.arch == 'X64'
+        run: npm --prefix apps/desktop run tauri -- build --bundles app
+
       - name: Build native macOS development bundles
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && runner.arch != 'X64'
         run: npm --prefix apps/desktop run tauri -- build --bundles app,dmg
 
       - name: Verify macOS development bundle outputs
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && runner.arch != 'X64'
         shell: bash
         run: |
           app="$(find target/release/bundle/macos -mindepth 1 -maxdepth 1 -type d -name '*.app' -print -quit)"
@@ -204,6 +208,17 @@ jobs:
           fi
           du -sh "$app" "$dmg"
 
+      - name: Verify macOS Intel development app output
+        if: runner.os == 'macOS' && runner.arch == 'X64'
+        shell: bash
+        run: |
+          app="$(find target/release/bundle/macos -mindepth 1 -maxdepth 1 -type d -name '*.app' -print -quit)"
+          if [[ -z "$app" ]]; then
+            echo "Tauri did not produce the macOS Intel app bundle" >&2
+            exit 1
+          fi
+          du -sh "$app"
+
       - name: Upload unsigned macOS development bundles
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v7
@@ -212,7 +227,7 @@ jobs:
           path: |
             target/release/bundle/macos/*.app
             target/release/bundle/dmg/*.dmg
-          if-no-files-found: error
+          if-no-files-found: ignore
           retention-days: 7
 
       - name: Build Windows x64 NSIS development installer
