@@ -616,6 +616,8 @@ PIN은 평문으로 저장하지 않는다.
 
 등록된 패스키를 조회하고 삭제할 수 있어야 한다.
 
+CTAP Credential Management 요청은 command 맵, 매개변수를 받는 subcommand의 매개변수 맵, 중첩된 user entity 및 descriptor 맵에서 구현이 이해하지 못하는 키를 무시한다. HMAC 인증에는 전체 인코딩된 `subCommandParams`를 사용한다. 삭제 및 사용자 정보 변경 요청은 `PublicKeyCredentialDescriptor`의 필수 `type`과 `id`를 검증하고, 선택적 `transports` 문자열 배열을 검증한 뒤 값은 무시한다. 중복 키와 잘못된 필수 또는 지원 필드는 거부하며, 매개변수를 받지 않는 subcommand의 매개변수 맵은 계속 거부한다.
+
 단, Windows 앱에서 직접 수행하는 관리 기능과 CTAP 표준을 통해 제공하는 Credential Management 기능을 별도로
 구현하고 검증한다.
 

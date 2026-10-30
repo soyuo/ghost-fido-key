@@ -14,6 +14,8 @@ Credential deletion persists an authenticated intent before deleting the platfor
 
 Deletion removes the provider key before committing metadata removal. A failed key deletion must leave metadata intact. User information updates may change only `name` and `displayName`; the supplied `id` must equal the stored handle and is immutable. A missing or empty label removes that stored field, so an update containing only `id` clears both labels.
 
+Credential Management command maps, parameter maps for subcommands that accept parameters, and nested user-entity and descriptor maps ignore keys this implementation does not understand, as required by CTAP. HMAC authentication still covers the complete encoded `subCommandParams` map. Delete and update requests require the `type` and `id` members of `PublicKeyCredentialDescriptor`, validate an optional `transports` string array, and ignore its values. Duplicate keys and malformed required or supported fields are rejected; parameter maps remain invalid for subcommands that do not accept them.
+
 ## Protected metadata and migration
 
 Credential-management metadata remains in the existing authenticated-encrypted credential store. Persist the public ES256 key with each record. For records created before that field existed, recover the public key through the owning platform key provider and persist it before returning enumeration data. Fail the operation if key recovery or protected persistence fails; never return fabricated public-key material. Keep legacy credential ciphertext readable and migrate additively.
