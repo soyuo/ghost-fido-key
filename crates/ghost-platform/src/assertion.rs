@@ -7,7 +7,7 @@ use ghost_fido_core::{
     Ctap2Response, Ctap2Status, GetAssertionRequest, KeyHandle, PinUvAuthSharedSecret,
     client_pin_process_hmac_secret_with_protocol,
     client_pin_validate_hmac_secret_request_with_protocol,
-    encode_get_assertion_response_with_count_and_presence_and_uv_and_extensions,
+    encode_get_assertion_response_with_count_and_presence_and_uv_and_extensions_and_large_blob_key,
     get_assertion_authenticator_data_with_presence_and_uv,
 };
 use sha2::{Digest, Sha256};
@@ -113,6 +113,11 @@ pub(crate) fn execute_get_assertion_with_uv_and_hmac_secret_and_presence_callbac
     hmac_secret_shared_secret: Option<&PinUvAuthSharedSecret>,
     on_user_presence: &mut dyn FnMut(),
 ) -> Result<GetAssertionExecution, GetAssertionExecutionError> {
+    if request.large_blob_key && !store.supports_large_blobs() {
+        return Ok(single_response(Ctap2Response::error(
+            Ctap2Status::UnsupportedOption,
+        )));
+    }
     if request.options.user_verification == Some(true) && !user_verified {
         return Ok(single_response(Ctap2Response::error(
             Ctap2Status::PinUvAuthTokenRequired,
@@ -278,6 +283,11 @@ fn sign_assertion_for_credential(
     let key_handle = record.key_handle.clone();
     let user_handle = record.user_handle.clone();
     let credential_hmac_secret = record.hmac_secret.clone();
+    let credential_large_blob_key = if request.large_blob_key && record.discoverable {
+        record.large_blob_key.as_ref()
+    } else {
+        None
+    };
     let include_user = request.allow_list.is_none() && record.discoverable;
     let next_sign_count = record
         .sign_count
@@ -346,7 +356,7 @@ fn sign_assertion_for_credential(
     let signature = encode_p1363_es256_der(&raw_signature)
         .ok_or(GetAssertionExecutionError::InvalidSignature)?;
 
-    let response = encode_get_assertion_response_with_count_and_presence_and_uv_and_extensions(
+    let response = encode_get_assertion_response_with_count_and_presence_and_uv_and_extensions_and_large_blob_key(
         rp_id_hash,
         credential_id.as_bytes(),
         include_user.then_some(user_handle.as_slice()),
@@ -356,6 +366,7 @@ fn sign_assertion_for_credential(
         user_present,
         user_verified,
         extensions,
+        credential_large_blob_key,
     )
     .map_err(|_| GetAssertionExecutionError::ResponseEncoding)?;
     let committed_sign_count = store.increment_sign_count(credential_id)?;

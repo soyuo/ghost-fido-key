@@ -935,12 +935,17 @@ impl<'a> AuthenticatorService<'a> {
                         .options
                         .push(("credMgmt".into(), credential_management_ready));
                 }
-                profile
-                    .extensions
-                    .retain(|extension| extension != "hmac-secret" && extension != "credProtect");
+                profile.extensions.retain(|extension| {
+                    extension != "hmac-secret"
+                        && extension != "credProtect"
+                        && extension != "largeBlobKey"
+                });
                 if protected_storage_available {
                     profile.extensions.push("hmac-secret".into());
                     profile.extensions.push("credProtect".into());
+                }
+                if large_blobs_available {
+                    profile.extensions.push("largeBlobKey".into());
                 }
                 profile.pin_uv_auth_protocols = if protected_storage_available {
                     vec![
@@ -991,6 +996,9 @@ impl<'a> AuthenticatorService<'a> {
                     Ok(request) => request,
                     Err(error) => return Ok(Ctap2Response::error(error.status())),
                 };
+                if typed.large_blob_key && !self.store.supports_large_blobs() {
+                    return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
+                }
                 let user_verified = match self.verify_pin_authorization(
                     channel,
                     &typed.client_data_hash,
@@ -1031,6 +1039,9 @@ impl<'a> AuthenticatorService<'a> {
                     Ok(request) => request,
                     Err(error) => return Ok(Ctap2Response::error(error.status())),
                 };
+                if typed.large_blob_key && !self.store.supports_large_blobs() {
+                    return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
+                }
                 let mut hmac_secret_shared_secret = if let Some(input) = typed.hmac_secret.as_ref()
                 {
                     let Some(protocol) = PinUvAuthProtocol::from_id(input.pin_uv_auth_protocol)

@@ -3,8 +3,8 @@
 use ghost_fido_core::{
     CborValue, CredentialError, CredentialId, CredentialKeyMetadata, CredentialKeyProtection,
     CredentialProtectionPolicy, CredentialRecord, CredentialStore, Ctap2Response, Ctap2Status,
-    HmacSecretMaterial, KeyHandle, MakeCredentialRequest,
-    encode_make_credential_response_with_extensions,
+    HmacSecretMaterial, KeyHandle, LargeBlobKey, MakeCredentialRequest,
+    encode_make_credential_response_with_extensions_and_large_blob_key,
 };
 use std::time::Duration;
 use zeroize::Zeroizing;
@@ -46,7 +46,12 @@ pub fn register_make_credential(
     aaguid: [u8; 16],
     timeout: Duration,
 ) -> Result<Ctap2Response, MakeCredentialExecutionError> {
-    if (request.hmac_secret || request.cred_protect.is_some()) && !store.has_protected_storage() {
+    if (request.hmac_secret || request.cred_protect.is_some() || request.large_blob_key)
+        && !store.has_protected_storage()
+    {
+        return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
+    }
+    if request.large_blob_key && !store.supports_large_blobs() {
         return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
     }
     register_make_credential_with_uv(
@@ -174,6 +179,15 @@ pub(crate) fn register_make_credential_with_uv_and_presence_callback(
     } else {
         None
     };
+    let large_blob_key = if request.large_blob_key {
+        let mut bytes = Zeroizing::new([0; 32]);
+        if getrandom::fill(&mut bytes[..]).is_err() {
+            return Err(MakeCredentialExecutionError::Randomness);
+        }
+        Some(LargeBlobKey::new(*bytes))
+    } else {
+        None
+    };
 
     let (created, key_handle) =
         match create_journaled_signing_key(store, key_store, key_policy, software_key_consent) {
@@ -235,13 +249,14 @@ pub(crate) fn register_make_credential_with_uv_and_presence_callback(
         ));
     }
     let extensions = (!extension_values.is_empty()).then_some(CborValue::Map(extension_values));
-    let response = match encode_make_credential_response_with_extensions(
+    let response = match encode_make_credential_response_with_extensions_and_large_blob_key(
         request.rp_id_hash(),
         aaguid,
         credential_id.as_bytes(),
         &created.public_key,
         user_verified,
         extensions,
+        large_blob_key.as_ref(),
     ) {
         Ok(response) => response,
         Err(_) => {
@@ -264,6 +279,7 @@ pub(crate) fn register_make_credential_with_uv_and_presence_callback(
         key_handle: key_handle.clone(),
         public_key: Some(created.public_key.clone()),
         hmac_secret,
+        large_blob_key,
         cred_protect: request
             .cred_protect
             .unwrap_or(CredentialProtectionPolicy::UserVerificationOptional),
