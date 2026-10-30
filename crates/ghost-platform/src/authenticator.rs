@@ -675,6 +675,15 @@ impl<'a> AuthenticatorService<'a> {
         request: Ctap2Request,
     ) -> Result<Ctap2Response, AuthenticatorServiceError> {
         let (command, payload, decoded_payload) = request.into_parts();
+        let refreshed_shared_state = match self.store.refresh_shared_state() {
+            Ok(refreshed) => refreshed,
+            Err(_) => return Ok(Ctap2Response::error(Ctap2Status::Other)),
+        };
+        if refreshed_shared_state {
+            self.assertion_continuations.clear();
+            self.credential_management.clear();
+            self.client_pin.clear_all();
+        }
         let resumed_provider_cleanup = self.store.provider_key_cleanup_pending();
         if resumed_provider_cleanup && self.recover_pending_provider_key().is_err() {
             return Ok(Ctap2Response::error(Ctap2Status::Other));
