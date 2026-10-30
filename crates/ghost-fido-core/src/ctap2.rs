@@ -53,12 +53,14 @@ pub enum Ctap2Status {
     InvalidCommand = 0x01,
     InvalidParameter = 0x02,
     InvalidLength = 0x03,
+    InvalidSequence = 0x04,
     ChannelBusy = 0x06,
     Other = 0x7f,
     CborUnexpectedType = 0x11,
     InvalidCbor = 0x12,
     MissingParameter = 0x14,
     CredentialExcluded = 0x19,
+    LargeBlobStorageFull = 0x18,
     UnsupportedAlgorithm = 0x26,
     OperationDenied = 0x27,
     UnsupportedOption = 0x2b,
@@ -77,6 +79,7 @@ pub enum Ctap2Status {
     PinUvAuthTokenRequired = 0x36,
     PinPolicyViolation = 0x37,
     InvalidSubcommand = 0x3e,
+    IntegrityFailure = 0x3d,
     UnauthorizedPermission = 0x40,
 }
 
@@ -1299,6 +1302,16 @@ pub fn encode_get_info(profile: &GetInfoProfile) -> Result<Vec<u8>, GetInfoError
                     .map(CborValue::Unsigned)
                     .collect(),
             ),
+        ));
+    }
+    if profile
+        .options
+        .iter()
+        .any(|(name, enabled)| name == "largeBlobs" && *enabled)
+    {
+        fields.push((
+            CborValue::Unsigned(0x0b),
+            CborValue::Unsigned(crate::credentials::MAX_SERIALIZED_LARGE_BLOB_ARRAY as u64),
         ));
     }
     Ok(encode(&CborValue::Map(fields))?)
