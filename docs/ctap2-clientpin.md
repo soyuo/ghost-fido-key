@@ -10,6 +10,8 @@ The authenticator accepts PIN/UV Auth Protocol 1 and 2 and advertises them in de
 
 The required `subCommand` parameter returns `MissingParameter` only when absent and `CborUnexpectedType` when it is not an unsigned integer. Numeric subcommands that are not implemented return `InvalidSubcommand` (`0x3e`), including unsigned values outside the implementation's internal integer range. Duplicate parameter keys remain `InvalidParameter`.
 
+For supported ClientPIN subcommands, absent mandatory parameters return `MissingParameter`, while present parameters with the wrong CBOR type return `CborUnexpectedType`. This includes byte-string PIN fields, map-valued `keyAgreement`, unsigned `permissions`, and text `rpId`. Correctly typed values that fail semantic, length, protocol, or cryptographic checks retain their specific status; malformed requests do not consume PIN retries.
+
 Protocol 1 preserves the CTAP2.0 behavior:
 
 - Generate a fresh P-256 key-agreement secret and return its COSE public key (EC2, P-256, x and y coordinates).
