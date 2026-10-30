@@ -398,7 +398,7 @@ impl CredentialStore {
                     .map_err(|_| CredentialError::ProtectedDataInvalid)?;
                 let mut records = decode_records(&plaintext, old_version as u8)?;
                 assign_legacy_creation_order(&mut records)?;
-                let migrated_plaintext = Zeroizing::new(encode_records(&records)?);
+                let migrated_plaintext = encode_records(&records)?;
                 let migrated_protected = protector
                     .protect(&migrated_plaintext, STORAGE_AAD_V4)
                     .map_err(|_| CredentialError::ProtectedDataInvalid)?;
@@ -764,7 +764,7 @@ impl CredentialStore {
         let Some(backend) = self.sqlite.as_mut() else {
             return Ok(());
         };
-        let plaintext = Zeroizing::new(encode_records(records)?);
+        let plaintext = encode_records(records)?;
         let protected = backend
             .protector
             .protect(&plaintext, STORAGE_AAD_V4)
@@ -999,7 +999,7 @@ fn validate_protected_payload(payload: &[u8]) -> Result<(), CredentialError> {
 
 fn encode_records(
     records: &BTreeMap<CredentialId, CredentialRecord>,
-) -> Result<Vec<u8>, CredentialError> {
+) -> Result<Zeroizing<Vec<u8>>, CredentialError> {
     if records.len() > MAX_PERSISTED_RECORDS {
         return Err(CredentialError::RecordLimitExceeded);
     }
@@ -1052,7 +1052,8 @@ fn encode_records(
             ])
         })
         .collect::<Vec<_>>();
-    let encoded = encode_cbor(&CborValue::Array(values)).map_err(CredentialError::CborEncoding)?;
+    let value = Zeroizing::new(CborValue::Array(values));
+    let encoded = Zeroizing::new(encode_cbor(&value).map_err(CredentialError::CborEncoding)?);
     if encoded.len() > MAX_PERSISTED_BYTES {
         return Err(CredentialError::RecordLimitExceeded);
     }
