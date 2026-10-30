@@ -5,6 +5,17 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      vendor_id:
+        description: Assigned product vendor ID in hexadecimal (for example, 0x1234)
+        required: false
+        type: string
+        default: "0x0000"
+      product_id:
+        description: Assigned product ID in hexadecimal (for example, 0x0001)
+        required: false
+        type: string
+        default: "0x0000"
 
 permissions:
   contents: read
@@ -70,9 +81,38 @@ jobs:
         if: runner.os == 'Windows'
         run: winget install --id Microsoft.WindowsWDK.10.0.28000 --exact --accept-source-agreements --accept-package-agreements --silent
 
+      - name: Validate optional assigned Windows UDE identity
+        if: runner.os == 'Windows'
+        id: ude_identity
+        shell: pwsh
+        env:
+          GHOST_FIDO_VENDOR_ID_INPUT: ${{ inputs.vendor_id || '0x0000' }}
+          GHOST_FIDO_PRODUCT_ID_INPUT: ${{ inputs.product_id || '0x0000' }}
+        run: |
+          $vendorText = $env:GHOST_FIDO_VENDOR_ID_INPUT
+          $productText = $env:GHOST_FIDO_PRODUCT_ID_INPUT
+          if ($vendorText -notmatch '^0[xX][0-9A-Fa-f]{1,4}$' -or $productText -notmatch '^0[xX][0-9A-Fa-f]{1,4}$') {
+            throw 'Vendor and product IDs must each be hexadecimal values from 0x0000 through 0xFFFF.'
+          }
+
+          $vendorId = [Convert]::ToUInt16($vendorText.Substring(2), 16)
+          $productId = [Convert]::ToUInt16($productText.Substring(2), 16)
+          if (($vendorId -eq 0) -xor ($productId -eq 0)) {
+            throw 'Vendor and product IDs must both be zero or both be assigned nonzero values.'
+          }
+          if ($vendorId -eq 0xFFFF -or $productId -eq 0xFFFF) {
+            throw '0xFFFF is reserved and cannot be used as a product identity.'
+          }
+
+          $output = "vendor_id=0x{0:X4}`nproduct_id=0x{1:X4}`n" -f $vendorId, $productId
+          [System.IO.File]::AppendAllText($env:GITHUB_OUTPUT, $output, [System.Text.UTF8Encoding]::new($false))
+
       - name: Build Windows UDE driver for x64
         if: runner.os == 'Windows'
-        run: msbuild platforms/windows/ude/ghost-fido-ude.vcxproj /m /p:Configuration=Release /p:Platform=x64
+        env:
+          GHOST_FIDO_VENDOR_ID: ${{ steps.ude_identity.outputs.vendor_id }}
+          GHOST_FIDO_PRODUCT_ID: ${{ steps.ude_identity.outputs.product_id }}
+        run: msbuild platforms/windows/ude/ghost-fido-ude.vcxproj /m /p:Configuration=Release /p:Platform=x64 "/p:GhostFidoVendorId=$env:GHOST_FIDO_VENDOR_ID" "/p:GhostFidoProductId=$env:GHOST_FIDO_PRODUCT_ID"
 
       - name: Verify Windows UDE x64 driver output
         if: runner.os == 'Windows'
@@ -86,7 +126,10 @@ jobs:
 
       - name: Build Windows UDE driver for ARM64
         if: runner.os == 'Windows'
-        run: msbuild platforms/windows/ude/ghost-fido-ude.vcxproj /m /p:Configuration=Release /p:Platform=ARM64
+        env:
+          GHOST_FIDO_VENDOR_ID: ${{ steps.ude_identity.outputs.vendor_id }}
+          GHOST_FIDO_PRODUCT_ID: ${{ steps.ude_identity.outputs.product_id }}
+        run: msbuild platforms/windows/ude/ghost-fido-ude.vcxproj /m /p:Configuration=Release /p:Platform=ARM64 "/p:GhostFidoVendorId=$env:GHOST_FIDO_VENDOR_ID" "/p:GhostFidoProductId=$env:GHOST_FIDO_PRODUCT_ID"
 
       - name: Verify Windows UDE ARM64 driver output
         if: runner.os == 'Windows'
