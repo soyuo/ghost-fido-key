@@ -505,7 +505,12 @@ impl DesktopVerificationProvider {
             .map(|name| format!("{name} ({relying_party_id})"))
             .unwrap_or(relying_party_id);
         let message = format!(
-            "{name} is requesting: {action}. Continue only if you initiated this action. Approving here authorizes this request to use the authenticator."
+            "{name} is requesting: {action}. Continue only if you initiated this action. {}",
+            if action == "Use software key" {
+                "The hardware-protected key could not be created. Approving creates this credential with a software-backed key instead, which may be less resistant if this device or account storage is compromised. Denying cancels credential registration."
+            } else {
+                "Approving here authorizes this request to use the authenticator."
+            }
         );
         let callback_request_id = request_id.to_owned();
         let pending = Arc::clone(&self.pending);
@@ -612,6 +617,7 @@ impl UserVerification for DesktopVerificationProvider {
             relying_party_name: request.relying_party_name.clone(),
             action: match request.action {
                 VerificationAction::RegisterCredential => "Register credential",
+                VerificationAction::SoftwareKeyFallback => "Use software key",
                 VerificationAction::Authenticate => "Authenticate",
                 VerificationAction::CredentialExclusionCheck => "Check existing credential",
                 VerificationAction::SelectAuthenticator => "Select authenticator",
@@ -939,7 +945,9 @@ fn start_authenticator(
     let verification: Arc<dyn UserVerification> = state.verification.clone();
     let status = Arc::clone(&state.virtual_hid);
     let key_storage_status = match key_creation_policy {
-        KeyCreationPolicy::PlatformProtectedOnly => "Platform-protected signing key",
+        KeyCreationPolicy::PlatformProtectedOnly => {
+            "Platform-protected key preferred; software fallback requires per-key consent"
+        }
         KeyCreationPolicy::SoftwareKeyAfterExplicitConsent => "Software key (session consent)",
     };
     let worker = std::thread::Builder::new()
@@ -1286,8 +1294,12 @@ pub fn run() {
                 virtual_hid_can_start,
                 key_storage_status: (match HostPlatform::current() {
                     HostPlatform::Linux => "Signing key consent required",
-                    HostPlatform::Windows => "Windows TPM-backed signing key required",
-                    HostPlatform::MacOs => "Secure Enclave-backed signing key required",
+                    HostPlatform::Windows => {
+                        "Windows TPM key preferred; software fallback requires per-key consent"
+                    }
+                    HostPlatform::MacOs => {
+                        "Secure Enclave key preferred; software fallback requires per-key consent"
+                    }
                     HostPlatform::Other => "Protected signing-key provider unavailable",
                 })
                 .into(),

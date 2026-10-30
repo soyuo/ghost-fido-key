@@ -16,6 +16,7 @@ const NOT_READY: i32 = 4;
 const NO_RESOURCES: i32 = 5;
 
 unsafe extern "C" {
+    fn ghost_fido_secure_enclave_is_available() -> i32;
     fn ghost_fido_corehid_session_generation() -> u64;
     fn ghost_fido_corehid_check_readiness(vendor_id: u32, product_id: u32) -> i32;
     fn ghost_fido_corehid_create(
@@ -36,6 +37,11 @@ unsafe extern "C" {
         output_length: *mut isize,
     ) -> i32;
     fn ghost_fido_corehid_destroy(handle: *mut c_void) -> i32;
+}
+
+pub(super) fn secure_enclave_is_available() -> bool {
+    // SAFETY: the Swift function returns a 32-bit availability snapshot and retains no pointers.
+    unsafe { ghost_fido_secure_enclave_is_available() == 1 }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

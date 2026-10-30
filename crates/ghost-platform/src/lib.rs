@@ -216,6 +216,7 @@ pub enum PlatformErrorKind {
     Timeout,
     InvalidReport,
     KeyStoreUnavailable,
+    PlatformKeyProtectionUnavailable,
     UserVerificationUnavailable,
     UserRejected,
 }
@@ -430,6 +431,7 @@ pub trait KeyStore: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VerificationAction {
     RegisterCredential,
+    SoftwareKeyFallback,
     Authenticate,
     CredentialExclusionCheck,
     SelectAuthenticator,

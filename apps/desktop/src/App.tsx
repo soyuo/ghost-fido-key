@@ -452,6 +452,11 @@ function App() {
                   {request.relyingPartyName ?? request.relyingPartyId}
                   {request.relyingPartyName && <span> ({request.relyingPartyId})</span>}
                 </p>
+                {request.action === "Use software key" && (
+                  <p className="status-message" role="alert">
+                    The hardware-protected key could not be created. Approving creates this credential with a software-backed key instead, which may be less resistant if this device or account storage is compromised. Denying cancels credential registration.
+                  </p>
+                )}
                 <p className="approval-timeout">
                   {secondsRemaining > 0
                     ? `This request expires in ${secondsRemaining} seconds.`
