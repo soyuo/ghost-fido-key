@@ -25,3 +25,13 @@ behavior on target systems using the T-022 procedure in
 
 This is the desktop approval boundary only. The Tauri app still has no live HID
 request source, so it does not receive browser authentication requests.
+
+## Authenticator runtime ownership
+
+The desktop app holds an exclusive cross-process lock in its app-data directory
+for the lifetime of an authenticator runtime. A second Ghost FIDO Key process
+cannot attach another virtual HID authenticator while that lock is held. The
+runtime worker retains the lock until it exits; startup/runtime failure, normal
+stop, or process exit releases it. An unavailable lock fails startup before
+runtime consent or HID attachment. This coordinates cooperating app processes
+and does not by itself establish cross-platform runtime validation.

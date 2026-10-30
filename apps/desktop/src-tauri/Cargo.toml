@@ -20,6 +20,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 ghost-fido-core = { path = "../../../crates/ghost-fido-core" }
 ghost-platform = { path = "../../../crates/ghost-platform" }
+fs4 = { version = "1.1", features = ["sync"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 log = "0.4"

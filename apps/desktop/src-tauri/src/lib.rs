@@ -18,6 +18,7 @@ use ghost_platform::{
 use ghost_platform::{KeyCreationPolicy, KeyStore, SoftwareKeyConsent};
 use serde::Serialize;
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
 #[cfg(target_os = "macos")]
 use std::time::Instant;
 use std::{
@@ -276,6 +277,32 @@ fn initialize_credential_store(app: &AppHandle) -> (Option<CredentialStore>, Str
             "Protected credential storage could not be opened. Check directory access and the OS credential service."
                 .into(),
         ),
+    }
+}
+
+fn acquire_runtime_session_lock(app: &AppHandle) -> Result<File, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| "Could not resolve the application data directory.".to_owned())?;
+    fs::create_dir_all(&data_dir)
+        .map_err(|_| "Could not prepare the authenticator runtime lock.".to_owned())?;
+    let lock_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(data_dir.join("authenticator-runtime.lock"))
+        .map_err(|_| "Could not open the authenticator runtime lock.".to_owned())?;
+
+    match fs4::FileExt::try_lock(&lock_file) {
+        Ok(()) => Ok(lock_file),
+        Err(fs4::TryLockError::WouldBlock) => {
+            Err("Another Ghost FIDO Key process already has an authenticator runtime.".into())
+        }
+        Err(fs4::TryLockError::Error(_)) => {
+            Err("Could not safely acquire the authenticator runtime lock.".into())
+        }
     }
 }
 
@@ -934,6 +961,7 @@ fn start_authenticator(
             return Err("The previous authenticator session failed.".into());
         }
     }
+    let session_lock = acquire_runtime_session_lock(&app)?;
     if !credential_store_is_available(&state) {
         audit::record(audit::Event::RuntimeStartRequested, audit::Outcome::Failure);
         return Err(credential_store_status(&state));
@@ -975,6 +1003,7 @@ fn start_authenticator(
     let worker = std::thread::Builder::new()
         .name(format!("ghost-fido-{}-authenticator", std::env::consts::OS))
         .spawn(move || {
+            let _session_lock = session_lock;
             authenticator_runtime::run(
                 store,
                 backend,
