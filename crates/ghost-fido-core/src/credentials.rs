@@ -1682,6 +1682,9 @@ impl CredentialStore {
         if self.reset_is_pending() {
             return Err(CredentialError::ResetInProgress);
         }
+        if self.pending_credential_deletion.is_some() {
+            return Err(CredentialError::ProviderKeyCleanupPending);
+        }
         if self.pending_provider_key.as_ref() != created_key {
             return Err(CredentialError::ProviderKeyCleanupPending);
         }
@@ -1702,6 +1705,17 @@ impl CredentialStore {
             .map_err(|_| CredentialError::StorageFailure)?;
         if reset_pending {
             return Err(CredentialError::ResetInProgress);
+        }
+        // A different store instance may have committed a deletion journal since this one loaded.
+        let credential_deletion_pending: bool = transaction
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM credential_deletion_journal WHERE singleton = 1)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| CredentialError::StorageFailure)?;
+        if credential_deletion_pending {
+            return Err(CredentialError::ProviderKeyCleanupPending);
         }
         if let Some(created_key) = created_key {
             if read_provider_key_journal(&transaction, backend.protector.as_ref())?.as_ref()
