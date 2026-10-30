@@ -6,6 +6,15 @@ contract from `ghost-platform`.
 
 ## Runtime contract
 
+- UHID creation requires an explicitly assigned Linux VID/PID supplied at build
+  time as `GHOST_FIDO_LINUX_VENDOR_ID` and `GHOST_FIDO_LINUX_PRODUCT_ID`.
+  Values must be decimal or `0x`-prefixed hexadecimal IDs in the range 1 through\n  65534. If
+  either value is absent or invalid, the backend remains unavailable and
+  attachment fails; this project does not currently have assigned Linux IDs.
+- Set both variables in the build environment only after receiving IDs that
+  are authorized for this product. For example, a release build environment
+  may export the assigned values before invoking Cargo/Tauri; do not copy IDs
+  from another device or use example values as product identity.
 - The report descriptor advertises FIDO Alliance usage page `0xF1D0`, CTAPHID
   usage `0x01`, and 64-byte input and output reports.
 - `attach` sends `UHID_CREATE2` and waits for `UHID_START` before reporting an
