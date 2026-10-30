@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
+use dbus_secret_service::{EncryptionType, SecretService};
 use ghost_fido_core::{CredentialProtectionError, CredentialProtector};
-use secret_service::{EncryptionType, blocking::SecretService};
 use zeroize::Zeroizing;
 
 use crate::credential_protector::{AesGcmCredentialProtector, MetadataKeyStore};

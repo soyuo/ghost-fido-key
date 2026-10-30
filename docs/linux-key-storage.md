@@ -6,10 +6,17 @@ provider is available. Software key creation requires both
 `SoftwareKeyAfterExplicitConsent` and a `SoftwareKeyConsent` token.
 
 The provider generates a P-256 scalar, stores it as a Secret Service item in
-the default collection, and returns only an opaque item reference and public
-coordinates. Signing loads the matching single item, unlocks it when required,
-and returns a fixed-width P1363 ES256 signature. Duplicate, missing, malformed,
-foreign, locked, or unavailable items fail closed. Deletion removes the item.
+the default collection through a synchronous libdbus client, and returns only
+an opaque item reference and public coordinates. Signing loads the matching
+single item, unlocks it when required, and returns a fixed-width P1363 ES256
+signature. Duplicate, missing, malformed, foreign, locked, or unavailable
+items fail closed. Deletion removes the item. Existing items keep their label,
+attributes, UUID references, and encrypted Secret Service payload; changing the
+Rust D-Bus client does not rewrite or delete them.
+
+Linux builds require the `libdbus-1-dev` development package. Debian bundles
+declare `libdbus-1-3` as a runtime dependency; other distribution packages must
+provide the matching libdbus runtime.
 
 These keys are reported as software-backed and exportable: the application can
 retrieve the scalar to perform signing. This is a lower protection level than a

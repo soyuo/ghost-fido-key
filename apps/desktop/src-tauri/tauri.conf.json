@@ -34,6 +34,9 @@
     ],
     "linux": {
       "deb": {
+        "depends": [
+          "libdbus-1-3"
+        ],
         "postInstallScript": "scripts/refresh-udev-rules.sh",
         "postRemoveScript": "scripts/refresh-udev-rules.sh",
         "files": {
