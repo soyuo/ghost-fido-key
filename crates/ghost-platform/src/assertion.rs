@@ -6,6 +6,7 @@ use ghost_fido_core::{
     CborValue, CredentialError, CredentialId, CredentialProtectionPolicy, CredentialStore,
     Ctap2Response, Ctap2Status, GetAssertionRequest, KeyHandle, PinUvAuthSharedSecret,
     client_pin_process_hmac_secret_with_protocol,
+    client_pin_validate_hmac_secret_request_with_protocol,
     encode_get_assertion_response_with_count_and_presence_and_uv_and_extensions,
     get_assertion_authenticator_data_with_presence_and_uv,
 };
@@ -285,29 +286,39 @@ fn sign_assertion_for_credential(
     let rp_id_hash = request.rp_id_hash();
     let reference = key_reference(&key_handle)?;
     let extensions = if let Some(input) = request.hmac_secret.as_ref() {
-        let Some(material) = credential_hmac_secret.as_ref() else {
-            return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
-        };
         let Some(shared_secret) = hmac_secret_shared_secret else {
             return Ok(Ctap2Response::error(Ctap2Status::PinAuthInvalid));
         };
-        let mut salt_enc = input.salt_enc.clone();
         if shared_secret.protocol().id() as u64 != input.pin_uv_auth_protocol {
             return Ok(Ctap2Response::error(Ctap2Status::PinAuthInvalid));
         }
-        let result = client_pin_process_hmac_secret_with_protocol(
-            shared_secret,
-            &mut salt_enc,
-            &input.salt_auth,
-            material.for_uv(user_verified),
-        );
-        let Ok(encrypted_output) = result else {
-            return Ok(Ctap2Response::error(Ctap2Status::PinAuthInvalid));
-        };
-        Some(CborValue::Map(vec![(
-            CborValue::Text("hmac-secret".into()),
-            CborValue::Bytes(encrypted_output.to_vec()),
-        )]))
+        if let Some(material) = credential_hmac_secret.as_ref() {
+            let mut salt_enc = input.salt_enc.clone();
+            let result = client_pin_process_hmac_secret_with_protocol(
+                shared_secret,
+                &mut salt_enc,
+                &input.salt_auth,
+                material.for_uv(user_verified),
+            );
+            let Ok(encrypted_output) = result else {
+                return Ok(Ctap2Response::error(Ctap2Status::PinAuthInvalid));
+            };
+            Some(CborValue::Map(vec![(
+                CborValue::Text("hmac-secret".into()),
+                CborValue::Bytes(encrypted_output.to_vec()),
+            )]))
+        } else {
+            if client_pin_validate_hmac_secret_request_with_protocol(
+                shared_secret,
+                &input.salt_enc,
+                &input.salt_auth,
+            )
+            .is_err()
+            {
+                return Ok(Ctap2Response::error(Ctap2Status::PinAuthInvalid));
+            }
+            None
+        }
     } else {
         None
     };

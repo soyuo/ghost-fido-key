@@ -20,6 +20,9 @@ fields, and malformed values for recognized fields remain errors. The nested
 Schema failures expose a CTAP2 status through `GetAssertionError::status`:
 malformed CBOR maps to `InvalidCbor`, missing fields to `MissingParameter`,
 wrong types to `CborUnexpectedType`, and invalid values to `InvalidParameter`.
+If a selected credential has no associated `CredRandom`, the request is still
+authenticated and decrypted, but the extension output is omitted and the
+assertion continues successfully, as required by CTAP 2.2 §12.7.
 
 The required fields and allow-list shape follow the
 [FIDO CTAP 2.1 authenticatorGetAssertion request](https://fidoalliance.org/specs/fido-v2.1-ps-20210615/fido-client-to-authenticator-protocol-v2.1-ps-20210615.html#authenticatorgetassertion-0x02).
