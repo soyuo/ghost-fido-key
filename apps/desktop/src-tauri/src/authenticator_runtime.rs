@@ -29,18 +29,32 @@ const KEEPALIVE_INTERVAL: Duration = Duration::from_millis(100);
 const KEEPALIVE_PROCESSING: u8 = 0x01;
 
 enum ServiceCommand {
-    Request { channel: u32, request: Ctap2Request },
-    Cancel { channel: u32 },
+    Request {
+        request_id: u64,
+        channel: u32,
+        request: Ctap2Request,
+    },
+    Cancel {
+        channel: u32,
+    },
     Stop,
 }
 
 struct ServiceResponse {
+    request_id: u64,
     channel: u32,
     response: Ctap2Response,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RequestDisposition {
+    KeepaliveCancel,
+    Discard,
+}
+
 struct PendingRequest {
-    cancelled: bool,
+    channel: u32,
+    disposition: Option<RequestDisposition>,
     last_keepalive: Instant,
 }
 
@@ -132,7 +146,11 @@ pub fn run(
 
         while let Ok(command) = service_rx.recv() {
             match command {
-                ServiceCommand::Request { channel, request } => {
+                ServiceCommand::Request {
+                    request_id,
+                    channel,
+                    request,
+                } => {
                     let response =
                         service
                             .handle_on_channel(channel, request)
@@ -146,7 +164,11 @@ pub fn run(
                     provider_key_cleanup_pending
                         .store(service.provider_key_cleanup_is_pending(), Ordering::Release);
                     if response_tx
-                        .send(ServiceResponse { channel, response })
+                        .send(ServiceResponse {
+                            request_id,
+                            channel,
+                            response,
+                        })
                         .is_err()
                     {
                         break;
@@ -166,9 +188,11 @@ pub fn run(
         CTAPHID_CHANNELS,
         CTAPHID_CHANNEL_TIMEOUT,
     );
-    let mut active_service_channel = None;
-    let mut pending_requests: HashMap<u32, PendingRequest> = HashMap::new();
-    let mut queued_channels = VecDeque::new();
+    let mut active_service_request: Option<u64> = None;
+    let mut next_request_id = 0u64;
+    let mut pending_requests: HashMap<u64, PendingRequest> = HashMap::new();
+    let mut latest_request_by_channel: HashMap<u32, u64> = HashMap::new();
+    let mut queued_requests = VecDeque::new();
     let mut runtime_error = None;
 
     loop {
@@ -179,26 +203,44 @@ pub fn run(
 
         match response_rx.try_recv() {
             Ok(response) => {
-                if active_service_channel == Some(response.channel) {
-                    let request = pending_requests.remove(&response.channel);
-                    active_service_channel = None;
-                    if request.is_some_and(|request| !request.cancelled) {
-                        match session.respond_ctap2(response.channel, &response.response) {
-                            Ok(reports) => {
-                                if let Err(error) = send_reports(backend.as_mut(), &reports) {
-                                    runtime_error = Some(error.detail);
-                                    break;
+                if active_service_request == Some(response.request_id) {
+                    active_service_request = None;
+                    if let Some(request) = remove_pending_request(
+                        response.request_id,
+                        &mut pending_requests,
+                        &mut latest_request_by_channel,
+                    ) {
+                        let completed_response = match request.disposition {
+                            None => Some(response.response),
+                            Some(RequestDisposition::KeepaliveCancel) => Some(Ctap2Response {
+                                status: Ctap2Status::KeepaliveCancel,
+                                payload: Vec::new(),
+                            }),
+                            Some(RequestDisposition::Discard) => None,
+                        };
+                        if request.channel == response.channel {
+                            if let Some(completed_response) = completed_response {
+                                match session.respond_ctap2(request.channel, &completed_response) {
+                                    Ok(reports) => {
+                                        if let Err(error) = send_reports(backend.as_mut(), &reports)
+                                        {
+                                            runtime_error = Some(error.detail);
+                                            break;
+                                        }
+                                    }
+                                    Err(error) => runtime_error = Some(error.to_string()),
                                 }
                             }
-                            Err(error) => runtime_error = Some(error.to_string()),
                         }
                     }
                     if let Err(error) = dispatch_next_request(
                         &service_tx,
-                        &mut queued_channels,
-                        &pending_requests,
-                        &mut active_service_channel,
+                        &mut queued_requests,
+                        &mut pending_requests,
+                        &mut latest_request_by_channel,
+                        &mut active_service_request,
                         &mut session,
+                        backend.as_mut(),
                     ) {
                         runtime_error = Some(error);
                         break;
@@ -218,8 +260,10 @@ pub fn run(
                     handle_expired_channels(
                         expired,
                         &service_tx,
+                        &mut queued_requests,
                         &mut pending_requests,
-                        active_service_channel,
+                        &mut latest_request_by_channel,
+                        active_service_request,
                     );
                     match event {
                         SessionEvent::Response(report) => {
@@ -241,21 +285,27 @@ pub fn run(
                                 runtime_error = Some("CTAPHID request queue is full.".into());
                                 break;
                             }
+                            let request_id =
+                                allocate_request_id(&mut next_request_id, &pending_requests);
                             pending_requests.insert(
-                                channel,
+                                request_id,
                                 PendingRequest {
-                                    cancelled: false,
+                                    channel,
+                                    disposition: None,
                                     last_keepalive: Instant::now(),
                                 },
                             );
-                            queued_channels.push_back((channel, request));
-                            if active_service_channel.is_none() {
+                            latest_request_by_channel.insert(channel, request_id);
+                            queued_requests.push_back((request_id, channel, request));
+                            if active_service_request.is_none() {
                                 if let Err(error) = dispatch_next_request(
                                     &service_tx,
-                                    &mut queued_channels,
-                                    &pending_requests,
-                                    &mut active_service_channel,
+                                    &mut queued_requests,
+                                    &mut pending_requests,
+                                    &mut latest_request_by_channel,
+                                    &mut active_service_request,
                                     &mut session,
+                                    backend.as_mut(),
                                 ) {
                                     runtime_error = Some(error);
                                     break;
@@ -263,13 +313,43 @@ pub fn run(
                             }
                         }
                         SessionEvent::Cancelled(channel) => {
-                            if let Some(request) = pending_requests.get_mut(&channel) {
-                                request.cancelled = true;
+                            let active_on_channel = active_service_request.filter(|request_id| {
+                                pending_requests
+                                    .get(request_id)
+                                    .is_some_and(|request| request.channel == channel)
+                            });
+                            let latest_request = latest_request_by_channel.get(&channel).copied();
+                            let request_id = active_on_channel
+                                .filter(|request_id| {
+                                    pending_requests
+                                        .get(request_id)
+                                        .is_some_and(|request| request.disposition.is_none())
+                                })
+                                .or(latest_request);
+                            if let Some(request_id) = request_id {
+                                if let Some(request) = pending_requests.get_mut(&request_id) {
+                                    request.disposition = Some(RequestDisposition::KeepaliveCancel);
+                                }
                             }
-                            if active_service_channel == Some(channel) {
+                            if active_on_channel.is_some() {
                                 let _ = service_tx.send(ServiceCommand::Cancel { channel });
-                            } else {
-                                pending_requests.remove(&channel);
+                            }
+                        }
+                        SessionEvent::Resynchronized { channel, response } => {
+                            abort_channel_requests(
+                                channel,
+                                RequestDisposition::Discard,
+                                &service_tx,
+                                &mut queued_requests,
+                                &mut pending_requests,
+                                &mut latest_request_by_channel,
+                                active_service_request,
+                            );
+                            if let Err(error) =
+                                send_reports(backend.as_mut(), std::slice::from_ref(&response))
+                            {
+                                runtime_error = Some(error.detail);
+                                break;
                             }
                         }
                         SessionEvent::Pending | SessionEvent::Message(_) => {}
@@ -282,8 +362,10 @@ pub fn run(
                 handle_expired_channels(
                     session.expire(now),
                     &service_tx,
+                    &mut queued_requests,
                     &mut pending_requests,
-                    active_service_channel,
+                    &mut latest_request_by_channel,
+                    active_service_request,
                 );
             }
             Err(error) => {
@@ -292,10 +374,12 @@ pub fn run(
             }
         }
 
-        for (channel, request) in &mut pending_requests {
-            if !request.cancelled && request.last_keepalive.elapsed() >= KEEPALIVE_INTERVAL {
+        for request in pending_requests.values_mut() {
+            if request.disposition.is_none()
+                && request.last_keepalive.elapsed() >= KEEPALIVE_INTERVAL
+            {
                 match encode_initialization(
-                    *channel,
+                    request.channel,
                     CtapHidCommand::Keepalive,
                     &[KEEPALIVE_PROCESSING],
                 ) {
@@ -356,42 +440,143 @@ fn send_reports(
     Ok(())
 }
 
-fn handle_expired_channels(
-    expired: Vec<u32>,
-    service: &std::sync::mpsc::Sender<ServiceCommand>,
-    pending_requests: &mut HashMap<u32, PendingRequest>,
-    active_service_channel: Option<u32>,
-) {
-    for channel in expired {
-        if active_service_channel == Some(channel) {
-            if let Some(request) = pending_requests.get_mut(&channel) {
-                request.cancelled = true;
-            }
+fn allocate_request_id(
+    next_request_id: &mut u64,
+    pending_requests: &HashMap<u64, PendingRequest>,
+) -> u64 {
+    loop {
+        let request_id = *next_request_id;
+        *next_request_id = (*next_request_id).wrapping_add(1);
+        if !pending_requests.contains_key(&request_id) {
+            return request_id;
+        }
+    }
+}
+
+fn remove_pending_request(
+    request_id: u64,
+    pending_requests: &mut HashMap<u64, PendingRequest>,
+    latest_request_by_channel: &mut HashMap<u32, u64>,
+) -> Option<PendingRequest> {
+    let request = pending_requests.remove(&request_id)?;
+    if latest_request_by_channel.get(&request.channel) == Some(&request_id) {
+        if let Some(latest_request_id) = pending_requests
+            .keys()
+            .filter(|candidate| {
+                pending_requests
+                    .get(candidate)
+                    .is_some_and(|pending| pending.channel == request.channel)
+            })
+            .copied()
+            .max()
+        {
+            latest_request_by_channel.insert(request.channel, latest_request_id);
         } else {
-            pending_requests.remove(&channel);
+            latest_request_by_channel.remove(&request.channel);
+        }
+    }
+    Some(request)
+}
+
+fn abort_channel_requests(
+    channel: u32,
+    disposition: RequestDisposition,
+    service: &Sender<ServiceCommand>,
+    queued_requests: &mut VecDeque<(u64, u32, Ctap2Request)>,
+    pending_requests: &mut HashMap<u64, PendingRequest>,
+    latest_request_by_channel: &mut HashMap<u32, u64>,
+    active_service_request: Option<u64>,
+) {
+    if let Some(request_id) = active_service_request.filter(|request_id| {
+        pending_requests
+            .get(request_id)
+            .is_some_and(|request| request.channel == channel)
+    }) {
+        if let Some(request) = pending_requests.get_mut(&request_id) {
+            request.disposition = Some(disposition);
         }
         let _ = service.send(ServiceCommand::Cancel { channel });
+    }
+
+    let mut queued_to_remove = Vec::new();
+    queued_requests.retain(|(request_id, request_channel, _)| {
+        if *request_channel == channel {
+            queued_to_remove.push(*request_id);
+            false
+        } else {
+            true
+        }
+    });
+    for request_id in queued_to_remove {
+        remove_pending_request(request_id, pending_requests, latest_request_by_channel);
+    }
+    latest_request_by_channel.remove(&channel);
+}
+
+fn handle_expired_channels(
+    expired: Vec<u32>,
+    service: &Sender<ServiceCommand>,
+    queued_requests: &mut VecDeque<(u64, u32, Ctap2Request)>,
+    pending_requests: &mut HashMap<u64, PendingRequest>,
+    latest_request_by_channel: &mut HashMap<u32, u64>,
+    active_service_request: Option<u64>,
+) {
+    for channel in expired {
+        abort_channel_requests(
+            channel,
+            RequestDisposition::Discard,
+            service,
+            queued_requests,
+            pending_requests,
+            latest_request_by_channel,
+            active_service_request,
+        );
     }
 }
 
 fn dispatch_next_request(
     service: &Sender<ServiceCommand>,
-    queued_channels: &mut VecDeque<(u32, Ctap2Request)>,
-    pending_requests: &HashMap<u32, PendingRequest>,
-    active_service_channel: &mut Option<u32>,
+    queued_requests: &mut VecDeque<(u64, u32, Ctap2Request)>,
+    pending_requests: &mut HashMap<u64, PendingRequest>,
+    latest_request_by_channel: &mut HashMap<u32, u64>,
+    active_service_request: &mut Option<u64>,
     session: &mut AuthenticatorHidSession<'_>,
+    backend: &mut dyn VirtualHidBackend,
 ) -> Result<(), String> {
-    if active_service_channel.is_some() {
+    if active_service_request.is_some() {
         return Ok(());
     }
-    while let Some((channel, request)) = queued_channels.pop_front() {
-        if !pending_requests.contains_key(&channel) {
+    while let Some((request_id, channel, request)) = queued_requests.pop_front() {
+        let Some(pending) = pending_requests.get(&request_id) else {
             continue;
+        };
+        match pending.disposition {
+            Some(RequestDisposition::Discard) => {
+                remove_pending_request(request_id, pending_requests, latest_request_by_channel);
+                continue;
+            }
+            Some(RequestDisposition::KeepaliveCancel) => {
+                let response = Ctap2Response {
+                    status: Ctap2Status::KeepaliveCancel,
+                    payload: Vec::new(),
+                };
+                let reports = session
+                    .respond_ctap2(channel, &response)
+                    .map_err(|error| error.to_string())?;
+                send_reports(backend, &reports).map_err(|error| error.detail)?;
+                remove_pending_request(request_id, pending_requests, latest_request_by_channel);
+                continue;
+            }
+            None => {}
         }
         service
-            .send(ServiceCommand::Request { channel, request })
+            .send(ServiceCommand::Request {
+                request_id,
+                channel,
+                request,
+            })
             .map_err(|_| "Authenticator service is unavailable.".to_owned())?;
-        *active_service_channel = Some(channel);
+        *active_service_request = Some(request_id);
         session.mark_processing(channel);
         break;
     }

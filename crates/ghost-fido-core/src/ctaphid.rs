@@ -234,7 +234,7 @@ fn init_response_payload(nonce: &[u8], channel: u32) -> [u8; INIT_RESPONSE_SIZE]
     let mut response = [0; INIT_RESPONSE_SIZE];
     response[..INIT_NONCE_SIZE].copy_from_slice(nonce);
     response[8..12].copy_from_slice(&channel.to_be_bytes());
-    response[12..].copy_from_slice(&[2, 1, 0, 0, 0]);
+    response[12..].copy_from_slice(&[2, 1, 0, 0, 0x04]);
     response
 }
 
@@ -293,10 +293,17 @@ pub struct CtapHidSession {
 pub enum SessionEvent {
     Pending,
     Message(CtapHidDispatch),
-    Ctap2Request { channel: u32, request: Ctap2Request },
+    Ctap2Request {
+        channel: u32,
+        request: Ctap2Request,
+    },
     Response([u8; HID_REPORT_SIZE]),
     Responses(Vec<[u8; HID_REPORT_SIZE]>),
     Cancelled(u32),
+    Resynchronized {
+        channel: u32,
+        response: [u8; HID_REPORT_SIZE],
+    },
 }
 
 impl CtapHidSession {
@@ -419,7 +426,10 @@ impl CtapHidSession {
                     .resynchronize(channel, &nonce, now, self.channel_timeout)
                     .map_err(|_| FrameError::InvalidChannel)?;
                 let report = encode_initialization(channel, CtapHidCommand::Init, &payload)?;
-                Ok(SessionEvent::Response(report))
+                Ok(SessionEvent::Resynchronized {
+                    channel,
+                    response: report,
+                })
             }
             Ok(CtapHidDispatch::Ping(payload)) => {
                 let first = encode_initialization(channel, CtapHidCommand::Ping, &payload)?;
