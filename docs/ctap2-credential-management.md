@@ -10,6 +10,8 @@ Implement CTAP Credential Management subcommands 1 through 7: credential metadat
 
 Every command requires a valid PIN/UV auth token with the Credential Management permission (`cm`, bit `0x04`). HMAC authentication binds the subcommand byte and the encoded subcommand parameters. Metadata and RP enumeration require an unscoped token. Per-RP enumeration, delete, and update must enforce a token's optional RP ID scope. Enumeration state is bounded, per CTAPHID channel, expires, and is discarded on cancellation/reset.
 
+Credential deletion persists an authenticated intent before deleting the platform key. If key deletion fails, keep the credential and intent. After key deletion succeeds, remove the credential and intent in one SQLite transaction. Resume pending deletion before CTAP commands and desktop credential-management operations; keep the authenticator fail-closed if recovery cannot complete. The intent stores only protected credential and provider references and is never exposed to protocol responses or UI.
+
 Deletion removes the provider key before committing metadata removal. A failed key deletion must leave metadata intact. User information updates may change only `name` and `displayName`; the supplied `id` must equal the stored handle and is immutable.
 
 ## Protected metadata and migration
@@ -18,4 +20,4 @@ Credential-management metadata remains in the existing authenticated-encrypted c
 
 ## Capability gate
 
-Do not advertise `credMgmt` until all seven subcommands, permission/RP-scope checks, discoverable-only enumeration, old-record public-key recovery, durable updates, deletion ordering, and cancellation/reset cleanup are active. Browser interoperability remains a separate validation gate.
+Do not advertise `credMgmt` until all seven subcommands, permission/RP-scope checks, discoverable-only enumeration, old-record public-key recovery, durable updates, restart-safe credential deletion, and cancellation/reset cleanup are active. Browser interoperability remains a separate validation gate.
