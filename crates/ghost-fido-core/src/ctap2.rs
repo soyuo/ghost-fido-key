@@ -1006,9 +1006,6 @@ impl GetAssertionRequest {
                     let CborValue::Array(descriptors) = value else {
                         return Err(GetAssertionError::UnexpectedType(3));
                     };
-                    if descriptors.is_empty() {
-                        return Err(GetAssertionError::InvalidParameter(3));
-                    }
                     allow_list = Some(parse_credential_descriptors(descriptors, 3)?);
                 }
                 4 => {
