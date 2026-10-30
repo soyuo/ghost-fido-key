@@ -125,13 +125,14 @@ impl LinuxUhidBackend {
             match device.read() {
                 Ok(event) => return Ok(event),
                 Err(StreamError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
-                    if Instant::now() >= deadline {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
                         return Err(Self::error(
                             PlatformErrorKind::Timeout,
                             "timed out waiting for a UHID event",
                         ));
                     }
-                    thread::sleep(Duration::from_millis(1));
+                    thread::sleep(remaining.min(Duration::from_millis(1)));
                 }
                 Err(StreamError::Io(error)) => {
                     self.state = DeviceState::Failed;
@@ -253,8 +254,19 @@ impl VirtualHidBackend for LinuxUhidBackend {
                 "cannot receive a report while the device is detached",
             ));
         }
+        let deadline = Instant::now() + timeout;
+        let mut first_read = true;
         loop {
-            match self.read_until(timeout)? {
+            let now = Instant::now();
+            if !first_read && now >= deadline {
+                return Err(Self::error(
+                    PlatformErrorKind::Timeout,
+                    "timed out waiting for a UHID output report",
+                ));
+            }
+            first_read = false;
+            let remaining = deadline.saturating_duration_since(now);
+            match self.read_until(remaining)? {
                 OutputEvent::Output { data } if data.len() == FIDO_REPORT_SIZE => return Ok(data),
                 OutputEvent::Output { data } => {
                     return Err(Self::error(
