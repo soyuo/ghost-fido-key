@@ -104,6 +104,13 @@ report traffic.
   required. Together, valid assigned identity, all required capability bits,
   and exact report sizes produce a `Configured` state that permits a runtime
   start attempt; this is not proof of operational transport readiness.
+- The cross-platform build workflow's manual dispatch accepts optional
+  `vendor_id` and `product_id` hexadecimal inputs for Windows UDE packaging.
+  Both default to `0x0000`, matching ordinary CI. Dispatch rejects malformed,
+  partial, reserved, or out-of-range identities before MSBuild; use nonzero
+  values only after both IDs have been assigned to this product. The resulting
+  x64 and ARM64 artifacts remain unsigned development packages. The workflow
+  does not install or sign them and does not validate HID or browser behavior.
 - The CI package is unsigned and is not ready for end-user installation or
   product use. Signing and release distribution remain separate gates.
 - Test installation, elevation, reboot, upgrade, and removal on supported
