@@ -42,6 +42,7 @@ struct DesktopState {
     credential_store_status: String,
     client_pin_configured: Arc<AtomicBool>,
     reset_pending: Arc<AtomicBool>,
+    provider_key_cleanup_pending: Arc<AtomicBool>,
     verification: Arc<DesktopVerificationProvider>,
     virtual_hid: Arc<Mutex<RuntimeStatus>>,
     runtime: Mutex<Option<RuntimeHandle>>,
@@ -113,6 +114,7 @@ struct PlatformStatus {
     credential_store_available: bool,
     credential_store_status: String,
     authenticator_reset_pending: bool,
+    provider_key_cleanup_pending: bool,
     status_message: String,
     authenticator_running: bool,
 }
@@ -818,6 +820,7 @@ fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
         .map(|status| status.key_storage_status.clone())
         .unwrap_or_default();
     let authenticator_reset_pending = state.reset_pending.load(Ordering::Acquire);
+    let provider_key_cleanup_pending = state.provider_key_cleanup_pending.load(Ordering::Acquire);
     let client_pin_status = if authenticator_reset_pending {
         "Reset pending"
     } else if !state.credential_store_available {
@@ -885,6 +888,7 @@ fn platform_status(state: tauri::State<'_, DesktopState>) -> PlatformStatus {
         },
         authenticator_running,
         authenticator_reset_pending,
+        provider_key_cleanup_pending,
     }
 }
 
@@ -949,6 +953,7 @@ fn start_authenticator(
     let store = Arc::clone(&state.credential_store);
     let client_pin_configured = Arc::clone(&state.client_pin_configured);
     let reset_pending = Arc::clone(&state.reset_pending);
+    let provider_key_cleanup_pending = Arc::clone(&state.provider_key_cleanup_pending);
     let verification: Arc<dyn UserVerification> = state.verification.clone();
     let status = Arc::clone(&state.virtual_hid);
     let key_storage_status = match key_creation_policy {
@@ -971,6 +976,7 @@ fn start_authenticator(
                 software_key_consent,
                 client_pin_configured,
                 reset_pending,
+                provider_key_cleanup_pending,
             );
         })
         .map_err(|error| {
@@ -1230,6 +1236,9 @@ fn reset_credentials(
             store.mark_provider_key_deleted(&handle).map_err(|_| {
                 "Provider key cleanup succeeded, but its journal could not be cleared.".to_owned()
             })?;
+            state
+                .provider_key_cleanup_pending
+                .store(false, Ordering::Release);
         }
         let credential_count = store.len();
         if !store.metadata_key_cleanup_pending() {
@@ -1281,6 +1290,9 @@ fn reset_credentials(
             "Credential and signing keys were removed, but metadata key cleanup did not finish. Retry reset to complete cleanup.".to_owned()
         })?;
         state.reset_pending.store(false, Ordering::Release);
+        state
+            .provider_key_cleanup_pending
+            .store(false, Ordering::Release);
         Ok(credential_count)
     });
     audit::record(
@@ -1327,6 +1339,10 @@ pub fn run() {
                     .as_ref()
                     .is_some_and(CredentialStore::reset_is_pending),
             ));
+            let provider_key_cleanup_pending =
+                Arc::new(AtomicBool::new(store.as_ref().is_some_and(|store| {
+                    store.pending_provider_key_handle().is_some()
+                })));
             audit::record(
                 audit::Event::CredentialStoreInitialization,
                 if store_available {
@@ -1373,6 +1389,7 @@ pub fn run() {
                 credential_store_status: status,
                 client_pin_configured: Arc::new(AtomicBool::new(client_pin_configured)),
                 reset_pending,
+                provider_key_cleanup_pending,
                 verification: Arc::new(DesktopVerificationProvider {
                     app: app.handle().clone(),
                     pending: Arc::new(Mutex::new(HashMap::new())),
