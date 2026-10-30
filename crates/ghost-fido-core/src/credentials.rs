@@ -1157,6 +1157,170 @@ impl CredentialStore {
         &self.pin_state
     }
 
+    /// Refreshes credential and PIN state from the shared protected store.
+    ///
+    /// Returns whether credential or PIN state changed, or stale cached
+    /// cleanup state was cleared after its journal disappeared. A newly
+    /// observed cleanup journal is rejected so the caller fails closed.
+    pub fn refresh_shared_state(&mut self) -> Result<bool, CredentialError> {
+        let Some(backend) = self.sqlite.as_mut() else {
+            return Ok(false);
+        };
+
+        let snapshot = {
+            let transaction = backend
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(|_| CredentialError::StorageFailure)?;
+            let metadata_key_cleanup_pending: i64 = transaction
+                .query_row(
+                    "SELECT COALESCE((
+                        SELECT metadata_key_cleanup FROM reset_journal WHERE singleton = 1
+                    ), 0)",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|_| CredentialError::StorageFailure)?;
+            if !(0..=1).contains(&metadata_key_cleanup_pending) {
+                return Err(CredentialError::ProtectedDataInvalid);
+            }
+
+            let protected_reset = transaction
+                .query_row(
+                    "SELECT payload FROM reset_journal WHERE singleton = 1",
+                    [],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )
+                .optional()
+                .map_err(|_| CredentialError::StorageFailure)?;
+            let metadata_key_cleanup_pending = metadata_key_cleanup_pending != 0;
+            let pending_reset_keys = if metadata_key_cleanup_pending {
+                None
+            } else if let Some(protected) = protected_reset.as_deref() {
+                validate_protected_payload(protected)?;
+                let plaintext = backend
+                    .protector
+                    .unprotect(protected, RESET_JOURNAL_AAD_V1)
+                    .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+                Some(decode_reset_journal(&plaintext)?)
+            } else {
+                None
+            };
+
+            let has_provider_key_journal: bool = transaction
+                .query_row(
+                    "SELECT EXISTS (
+                        SELECT 1 FROM provider_key_journal WHERE singleton = 1
+                    )",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|_| CredentialError::StorageFailure)?;
+            let has_credential_deletion_journal: bool = transaction
+                .query_row(
+                    "SELECT EXISTS (
+                        SELECT 1 FROM credential_deletion_journal WHERE singleton = 1
+                    )",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|_| CredentialError::StorageFailure)?;
+            if (metadata_key_cleanup_pending || pending_reset_keys.is_some())
+                && (has_provider_key_journal || has_credential_deletion_journal)
+            {
+                return Err(CredentialError::ProtectedDataInvalid);
+            }
+
+            let (records, pin_state, pending_provider_key, pending_credential_deletion) =
+                if metadata_key_cleanup_pending || pending_reset_keys.is_some() {
+                    (None, None, None, None)
+                } else {
+                    let records =
+                        read_credential_records(&transaction, backend.protector.as_ref())?;
+                    let pin_state = read_pin_state(&transaction, backend.protector.as_ref())?;
+                    let pending_provider_key =
+                        read_provider_key_journal(&transaction, backend.protector.as_ref())?;
+                    let pending_credential_deletion = read_credential_deletion_journal(
+                        &transaction,
+                        backend.protector.as_ref(),
+                        &records,
+                    )?;
+                    (
+                        Some(records),
+                        Some(pin_state),
+                        pending_provider_key,
+                        pending_credential_deletion,
+                    )
+                };
+            if pending_provider_key.is_some() && pending_credential_deletion.is_some() {
+                return Err(CredentialError::ProtectedDataInvalid);
+            }
+
+            transaction
+                .commit()
+                .map_err(|_| CredentialError::StorageFailure)?;
+            (
+                metadata_key_cleanup_pending,
+                pending_reset_keys,
+                records,
+                pin_state,
+                pending_provider_key,
+                pending_credential_deletion,
+            )
+        };
+
+        let (
+            metadata_key_cleanup_pending,
+            pending_reset_keys,
+            records,
+            pin_state,
+            pending_provider_key,
+            pending_credential_deletion,
+        ) = snapshot;
+        let has_pending_cleanup = metadata_key_cleanup_pending
+            || pending_reset_keys.is_some()
+            || pending_provider_key.is_some()
+            || pending_credential_deletion.is_some();
+        if has_pending_cleanup {
+            let matches_cached_state = self.metadata_key_cleanup_pending
+                == metadata_key_cleanup_pending
+                && self.pending_reset_keys == pending_reset_keys
+                && self.pending_provider_key == pending_provider_key
+                && self.pending_credential_deletion == pending_credential_deletion;
+            if !matches_cached_state {
+                return Err(
+                    if metadata_key_cleanup_pending || pending_reset_keys.is_some() {
+                        CredentialError::ResetInProgress
+                    } else {
+                        CredentialError::ProviderKeyCleanupPending
+                    },
+                );
+            }
+            return Ok(false);
+        }
+
+        let records = records.ok_or(CredentialError::StorageFailure)?;
+        let pin_state = pin_state.ok_or(CredentialError::StorageFailure)?;
+        let changed = self.records != records
+            || self.pin_state != pin_state
+            || self.pending_reset_keys.is_some()
+            || self.metadata_key_cleanup_pending
+            || self.pending_provider_key.is_some()
+            || self.pending_credential_deletion.is_some();
+        self.next_creation_order = records
+            .values()
+            .map(|record| record.creation_order)
+            .max()
+            .unwrap_or(0);
+        self.records = records;
+        self.pin_state = pin_state;
+        self.pending_reset_keys = None;
+        self.metadata_key_cleanup_pending = false;
+        self.pending_provider_key = None;
+        self.pending_credential_deletion = None;
+        Ok(changed)
+    }
+
     #[must_use]
     pub fn has_protected_storage(&self) -> bool {
         self.sqlite.is_some()
@@ -1678,6 +1842,33 @@ fn read_provider_key_journal(
     KeyHandle::new(plaintext.to_vec())
         .map(Some)
         .map_err(|_| CredentialError::ProtectedDataInvalid)
+}
+
+fn read_credential_deletion_journal(
+    transaction: &Transaction<'_>,
+    protector: &dyn CredentialProtector,
+    records: &BTreeMap<CredentialId, CredentialRecord>,
+) -> Result<Option<(CredentialId, KeyHandle)>, CredentialError> {
+    let payload = transaction
+        .query_row(
+            "SELECT payload FROM credential_deletion_journal WHERE singleton = 1",
+            [],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional()
+        .map_err(|_| CredentialError::StorageFailure)?;
+    let Some(payload) = payload else {
+        return Ok(None);
+    };
+    validate_protected_payload(&payload)?;
+    let plaintext = protector
+        .unprotect(&payload, CREDENTIAL_DELETION_JOURNAL_AAD_V1)
+        .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+    let (id, handle) = decode_credential_deletion_journal(&plaintext)?;
+    if records.get(&id).map(|record| &record.key_handle) != Some(&handle) {
+        return Err(CredentialError::ProtectedDataInvalid);
+    }
+    Ok(Some((id, handle)))
 }
 
 fn merge_credential_records(

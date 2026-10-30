@@ -1044,6 +1044,9 @@ fn with_stopped_credential_store<T>(
     let store = store_slot
         .as_mut()
         .ok_or_else(|| credential_store_status(state))?;
+    store
+        .refresh_shared_state()
+        .map_err(|_| "Credential storage could not be refreshed safely.".to_owned())?;
     if let Some((id, handle)) = store.pending_credential_deletion() {
         let reference = std::str::from_utf8(handle.as_bytes())
             .map_err(|_| "A pending credential key reference is invalid.".to_owned())?;
