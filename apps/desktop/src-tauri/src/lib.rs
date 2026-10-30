@@ -1203,29 +1203,47 @@ fn reset_credentials(
             "Reset authenticator",
             "Delete all credentials and signing keys from this computer? This cannot be undone.",
         )?;
-        let references = store
-            .provider_key_handles()
-            .into_iter()
-            .map(|handle| {
-                String::from_utf8(handle.as_bytes().to_vec())
-                    .map(KeyReference::new)
-                    .map_err(|_| "A credential key reference is invalid.".to_owned())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let credential_count = store.len();
+        let handles = store.provider_key_handles();
+        for handle in &handles {
+            let reference = std::str::from_utf8(handle.as_bytes())
+                .map_err(|_| "A credential key reference is invalid.".to_owned())?;
+            if reference.is_empty() {
+                return Err("A credential key reference is invalid.".to_owned());
+            }
+        }
+        let begin_result = store.begin_reset();
+        if store.reset_is_pending() {
+            state.client_pin_configured.store(false, Ordering::Release);
+        }
+        begin_result
+            .map_err(|_| "Could not persist reset progress; no keys were deleted.".to_owned())?;
         let key_store = management_key_store()?;
-        for (index, reference) in references.iter().enumerate() {
-            key_store.delete_key(reference).map_err(|error| {
-                format!(
-                    "Could not delete signing key {} of {}. Credential metadata was kept; resolve the provider error before retrying reset. {}",
-                    index + 1,
-                    references.len(),
-                    error.detail
-                )
+        loop {
+            let handle = store
+                .pending_reset_key_handles()
+                .and_then(|pending| pending.first().cloned());
+            let Some(handle) = handle else {
+                break;
+            };
+            let reference = std::str::from_utf8(handle.as_bytes())
+                .map_err(|_| "A pending reset key reference is invalid.".to_owned())?;
+            key_store
+                .delete_key(&KeyReference::new(reference))
+                .map_err(|error| {
+                    format!(
+                        "Could not delete a signing key. Reset progress is saved; retry reset after resolving the provider error. {}",
+                        error.detail
+                    )
+                })?;
+            store.mark_reset_key_deleted(&handle).map_err(|_| {
+                "A signing key was deleted, but reset progress could not be saved. Retry reset to continue cleanup.".to_owned()
             })?;
         }
-        store.clear().map_err(|_| {
-            "All signing keys were deleted, but credential metadata could not be cleared. Retry reset to finish cleanup.".to_owned()
-        })
+        store.finish_reset().map_err(|_| {
+            "All signing keys were deleted, but reset metadata could not be committed. Retry reset to finish cleanup.".to_owned()
+        })?;
+        Ok(credential_count)
     });
     audit::record(
         audit::Event::AuthenticatorReset,
