@@ -9,11 +9,13 @@ initialization, ping, error, and CTAP2 response reports use one event model.
 A completed CBOR request is emitted as
 `SessionEvent::Ctap2Request { channel, request }`. The caller executes
 it through `AuthenticatorService` and passes the response to
-`respond_ctap2`. The desktop runtime tracks each allocated channel separately
-and queues service execution in arrival order, while keeping the report loop
-available during user approval. Pending channels receive independent
-keepalives and deadlines; the shared credential store and service remain
-serialized.
+`respond_ctap2`. A transaction claims the HID session when its initialization
+packet arrives and holds it through the response or abort. If a different
+channel starts a request while that transaction is active, the session returns
+`CTAPHID_ERROR(ERR_CHANNEL_BUSY)` on the requesting channel without dispatching
+or queuing the request. The active transaction continues normally. The desktop
+runtime keeps the report loop available during user approval while serializing
+authenticator service execution.
 
 A valid CTAPHID CANCEL completes the original CBOR transaction with
 `KEEPALIVE_CANCEL`; the CANCEL command itself receives no response. A queued

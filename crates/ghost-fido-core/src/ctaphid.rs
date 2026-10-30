@@ -286,6 +286,7 @@ pub fn encode_error(
 pub struct CtapHidSession {
     channels: CtapHidChannelAllocator,
     pending: BTreeMap<u32, CtapHidAssembler>,
+    transaction_channel: Option<u32>,
     channel_timeout: Duration,
 }
 
@@ -312,6 +313,7 @@ impl CtapHidSession {
         Self {
             channels: CtapHidChannelAllocator::new(channel_capacity),
             pending: BTreeMap::new(),
+            transaction_channel: None,
             channel_timeout,
         }
     }
@@ -358,11 +360,14 @@ impl CtapHidSession {
             return match continuation {
                 Ok(Some(message)) => {
                     self.pending.remove(&channel);
-                    self.dispatch_message(message, now)
+                    self.dispatch_and_release_immediate(message, now, true)
                 }
                 Ok(None) => Ok(SessionEvent::Pending),
                 Err(error) => {
                     self.pending.remove(&channel);
+                    if self.transaction_channel == Some(channel) {
+                        self.transaction_channel = None;
+                    }
                     Err(error)
                 }
             };
@@ -376,6 +381,16 @@ impl CtapHidSession {
                 CtapHidErrorCode::InvalidChannel,
             )?));
         }
+        if self
+            .transaction_channel
+            .is_some_and(|active_channel| active_channel != channel)
+        {
+            return Ok(SessionEvent::Response(encode_error(
+                channel,
+                CtapHidErrorCode::ChannelBusy,
+            )?));
+        }
+        let owns_transaction = self.transaction_channel.is_none();
         if self.pending.contains_key(&channel) {
             let payload_len = u16::from_be_bytes([report[5], report[6]]) as usize;
             if command == CtapHidCommand::Init
@@ -391,6 +406,9 @@ impl CtapHidSession {
             }
         }
         let message = CtapHidAssembler::start(report)?;
+        if self.transaction_channel.is_none() {
+            self.transaction_channel = Some(channel);
+        }
         if !message.is_complete() {
             self.pending.insert(channel, message);
             return Ok(SessionEvent::Pending);
@@ -401,7 +419,24 @@ impl CtapHidSession {
             command: message.command,
             payload: core::mem::take(&mut message.payload),
         };
-        self.dispatch_message(complete, now)
+        self.dispatch_and_release_immediate(complete, now, owns_transaction)
+    }
+
+    fn dispatch_and_release_immediate(
+        &mut self,
+        message: CtapHidMessage,
+        now: Instant,
+        owns_transaction: bool,
+    ) -> Result<SessionEvent, FrameError> {
+        let channel = message.channel;
+        let event = self.dispatch_message(message, now)?;
+        if owns_transaction
+            && self.transaction_channel == Some(channel)
+            && !matches!(&event, SessionEvent::Ctap2Request { .. })
+        {
+            self.transaction_channel = None;
+        }
+        Ok(event)
     }
 
     fn dispatch_message(
@@ -426,6 +461,7 @@ impl CtapHidSession {
                     .resynchronize(channel, &nonce, now, self.channel_timeout)
                     .map_err(|_| FrameError::InvalidChannel)?;
                 let report = encode_initialization(channel, CtapHidCommand::Init, &payload)?;
+                self.transaction_channel = None;
                 Ok(SessionEvent::Resynchronized {
                     channel,
                     response: report,
@@ -464,13 +500,16 @@ impl CtapHidSession {
         let expired = self.channels.expire(now);
         for channel in &expired {
             self.pending.remove(channel);
+            if self.transaction_channel == Some(*channel) {
+                self.transaction_channel = None;
+            }
         }
         expired
     }
 
     /// Frames a CTAP2 result on its originating channel while it remains active.
     pub fn respond_ctap2(
-        &self,
+        &mut self,
         channel: u32,
         status: Ctap2Status,
         payload: &[u8],
@@ -478,12 +517,16 @@ impl CtapHidSession {
         if !self.channels.is_active(channel) {
             return Err(FrameError::InvalidChannel);
         }
-        encode_ctap2_response(channel, status, payload)
+        let reports = encode_ctap2_response(channel, status, payload)?;
+        if self.transaction_channel == Some(channel) {
+            self.transaction_channel = None;
+        }
+        Ok(reports)
     }
 
     /// Frames a CTAP2 handler result on its originating active channel.
     pub fn respond_ctap2_result(
-        &self,
+        &mut self,
         channel: u32,
         response: &Ctap2Response,
     ) -> Result<Vec<[u8; HID_REPORT_SIZE]>, FrameError> {
