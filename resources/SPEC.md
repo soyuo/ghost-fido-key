@@ -1519,6 +1519,8 @@ MakeCredential 실행은 알고리즘·옵션 검사, RP-scoped excludeList pres
 
 Credential domain은 private key bytes 대신 opaque key handle만 보관하고, 모든 allow-list/discoverable 조회를 RP ID hash로 격리한다. 중복 credential ID와 빈 metadata는 등록 전에 거부한다. Windows credential metadata는 current-user DPAPI, Linux는 Secret Service, macOS는 기본 Keychain에 보관한 key와 플랫폼별 associated data로 보호한다. Linux와 macOS는 공통 bounded AES-256-GCM envelope를 사용한다. Tauri는 앱 시작 시 persistent store를 초기화하고 승인 요청을 UI에 전달하지만, native HID 입력과 인증 서비스 연결은 후속 작업이다. [`docs/credential-domain.md`](../docs/credential-domain.md), [`docs/windows-credential-protection.md`](../docs/windows-credential-protection.md), [`docs/linux-credential-protection.md`](../docs/linux-credential-protection.md), [`docs/macos-credential-protection.md`](../docs/macos-credential-protection.md), [`docs/desktop-approval-flow.md`](../docs/desktop-approval-flow.md)
 
+GetAssertion에서 빈 allow-list는 present 상태로 유지되어 어떤 credential도 일치하지 않으며 `NoCredentials`를 반환한다. absent allow-list만 discoverable credential 조회를 허용한다. 플랫폼은 빈 allow-list를 보내지 않아야 한다. [`docs/ctap2-getassertion.md`](../docs/ctap2-getassertion.md)
+
 프로그램은 지원 OS에서 가상 HID 장치의 연결과 분리를 제어하고, 사용자가 별도의 하드웨어 보안 키 없이 표준 WebAuthn 인증을 시도할 수 있는 환경을 제공하는 것을 목표로 한다. 각 OS와 브라우저 조합은 실제 검증을 통과한 경우에만 지원한다.
 
 이 프로젝트의 핵심은 **USB 장치의 물리적 존재를 구현하는 것이 아니라, USB FIDO2 인증기의 표준 인터페이스와 인증 동작을
