@@ -476,11 +476,16 @@ impl ClientPinHandler {
         if has_duplicate_field(fields, 9) || has_duplicate_field(fields, 10) {
             return Ctap2Response::error(Ctap2Status::InvalidParameter);
         }
-        let Some(permissions) = uint_field(fields, 9).and_then(|value| u8::try_from(value).ok())
-        else {
+        let Some(requested_permissions) = uint_field(fields, 9) else {
             return Ctap2Response::error(Ctap2Status::MissingParameter);
         };
-        if permissions == 0 || permissions & !0x07 != 0 {
+        if requested_permissions == 0 {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        }
+        // CTAP ignores undefined permission bits, while defined but unsupported
+        // permissions must still be rejected below.
+        let permissions = (requested_permissions & 0x7f) as u8;
+        if permissions & !0x07 != 0 {
             return Ctap2Response::error(Ctap2Status::UnauthorizedPermission);
         }
         let relying_party_id = match field(fields, 10) {
