@@ -663,11 +663,15 @@ fn text_map_field<'a>(fields: &'a [(CborValue, CborValue)], key: &str) -> Option
         .map(|(_, value)| value)
 }
 
-fn optional_text_field(fields: &[(CborValue, CborValue)], key: &str) -> Result<Option<String>, ()> {
+fn optional_text_field(
+    fields: &[(CborValue, CborValue)],
+    key: &str,
+) -> Result<Option<String>, Ctap2Status> {
     match text_map_field(fields, key) {
         None => Ok(None),
         Some(CborValue::Text(value)) if value.len() <= 256 => Ok(Some(value.clone())),
-        _ => Err(()),
+        Some(CborValue::Text(_)) => Err(Ctap2Status::InvalidParameter),
+        Some(_) => Err(Ctap2Status::CborUnexpectedType),
     }
 }
 
@@ -1418,25 +1422,36 @@ impl<'a> AuthenticatorService<'a> {
                 self.next_credential_management_credential(channel)
             }
             6 | 7 => {
-                let Some(CborValue::Map(descriptor)) = field(parameter_fields, 2) else {
-                    return Ctap2Response::error(Ctap2Status::MissingParameter);
+                let descriptor = match field(parameter_fields, 2) {
+                    None => return Ctap2Response::error(Ctap2Status::MissingParameter),
+                    Some(CborValue::Map(descriptor)) => descriptor,
+                    Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
                 };
-                if text_map_field(descriptor, "type") != Some(&CborValue::Text("public-key".into()))
-                    || descriptor.iter().enumerate().any(|(index, (key, _))| {
-                        descriptor[..index]
-                            .iter()
-                            .any(|(previous, _)| previous == key)
-                    })
-                {
-                    return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                match text_map_field(descriptor, "type") {
+                    None => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
+                    Some(CborValue::Text(value)) if value == "public-key" => {}
+                    Some(CborValue::Text(_)) => {
+                        return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                    }
+                    Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
                 }
-                if text_map_field(descriptor, "transports").is_some_and(|transports| {
-                    !matches!(transports, CborValue::Array(values) if values.iter().all(|value| matches!(value, CborValue::Text(_))))
+                if descriptor.iter().enumerate().any(|(index, (key, _))| {
+                    descriptor[..index]
+                        .iter()
+                        .any(|(previous, _)| previous == key)
                 }) {
                     return Ctap2Response::error(Ctap2Status::InvalidParameter);
                 }
-                let Some(CborValue::Bytes(id_bytes)) = text_map_field(descriptor, "id") else {
-                    return Ctap2Response::error(Ctap2Status::MissingParameter);
+                if let Some(transports) = text_map_field(descriptor, "transports") {
+                    if !matches!(transports, CborValue::Array(values) if values.iter().all(|value| matches!(value, CborValue::Text(_))))
+                    {
+                        return Ctap2Response::error(Ctap2Status::CborUnexpectedType);
+                    }
+                }
+                let id_bytes = match text_map_field(descriptor, "id") {
+                    None => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
+                    Some(CborValue::Bytes(id_bytes)) => id_bytes,
+                    Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
                 };
                 let Ok(id) = CredentialId::new(id_bytes.to_vec()) else {
                     return Ctap2Response::error(Ctap2Status::InvalidParameter);
@@ -1491,23 +1506,26 @@ impl<'a> AuthenticatorService<'a> {
                         Err(_) => Ctap2Response::error(Ctap2Status::Other),
                     }
                 } else {
-                    let Some(CborValue::Map(user)) = field(parameter_fields, 3) else {
-                        return Ctap2Response::error(Ctap2Status::MissingParameter);
+                    let user = match field(parameter_fields, 3) {
+                        None => return Ctap2Response::error(Ctap2Status::MissingParameter),
+                        Some(CborValue::Map(user)) => user,
+                        Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
                     };
-                    if user.is_empty()
-                        || user.iter().enumerate().any(|(index, (key, _))| {
-                            user[..index].iter().any(|(previous, _)| previous == key)
-                        })
-                    {
+                    if user.iter().enumerate().any(|(index, (key, _))| {
+                        user[..index].iter().any(|(previous, _)| previous == key)
+                    }) {
                         return Ctap2Response::error(Ctap2Status::InvalidParameter);
                     }
-                    let Some(CborValue::Bytes(user_id)) = text_map_field(user, "id") else {
-                        return Ctap2Response::error(Ctap2Status::MissingParameter);
+                    let user_id = match text_map_field(user, "id") {
+                        None => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
+                        Some(CborValue::Bytes(user_id)) => user_id,
+                        Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
                     };
                     let name = optional_text_field(user, "name");
                     let display_name = optional_text_field(user, "displayName");
-                    let (Ok(name), Ok(display_name)) = (name, display_name) else {
-                        return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                    let (name, display_name) = match (name, display_name) {
+                        (Ok(name), Ok(display_name)) => (name, display_name),
+                        (Err(status), _) | (_, Err(status)) => return Ctap2Response::error(status),
                     };
                     let name = name.filter(|value| !value.is_empty());
                     let display_name = display_name.filter(|value| !value.is_empty());
