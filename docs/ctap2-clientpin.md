@@ -34,7 +34,7 @@ PIN/UV auth tokens are random, in-memory secrets. Legacy `getPINToken` grants on
 
 After MakeCredential or GetAssertion obtains user presence, the in-use token loses every permission except Large Blob Write (`lbw`), as required by CTAP 2.2. A rejected, cancelled, or timed-out presence request does not consume permissions. Silent GetAssertion preflight with `up=false` does not test presence and leaves token permissions available.
 
-The `hmac-secret` extension also records its selected PIN/UV protocol and validates its protocol-specific authentication length and encrypted salt size. Its key agreement must use the same protocol selected in the extension request.
+The `hmac-secret` extension also records its selected PIN/UV protocol and validates its protocol-specific authentication length and encrypted salt size. Its key agreement must use the same protocol selected in the extension request. Unknown keys in the extension input map are ignored as required by CTAP2 §8; recognized fields retain their type, length, and duplicate checks.
 
 The local user approval path remains required for credential registration and assertion. PIN authentication supplies user verification; it does not silently authorize signing or bypass the existing user-presence prompt. Credential Management uses the separate `cm` permission (`0x04`) and is granted only by the permission-based token subcommand; legacy `getPINToken` never grants it.
 

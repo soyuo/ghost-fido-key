@@ -1071,14 +1071,14 @@ fn parse_hmac_secret_assertion(
     let mut pin_uv_auth_protocol = None;
     for (key, value) in fields {
         let CborValue::Unsigned(key) = key else {
-            return Err(GetAssertionError::UnexpectedType(4));
+            continue;
         };
         let slot = match key {
             1 => &mut key_agreement,
             2 => &mut salt_enc,
             3 => &mut salt_auth,
             4 => &mut pin_uv_auth_protocol,
-            _ => return Err(GetAssertionError::InvalidParameter(4)),
+            _ => continue,
         };
         if slot.is_some() {
             return Err(GetAssertionError::InvalidParameter(4));
