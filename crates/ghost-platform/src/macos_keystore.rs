@@ -91,8 +91,23 @@ impl MacOsKeyStore {
 }
 
 impl KeyStore for MacOsKeyStore {
+    fn allocate_signing_key_reference(
+        &self,
+        policy: KeyCreationPolicy,
+        consent: Option<SoftwareKeyConsent>,
+    ) -> Result<KeyReference, PlatformError> {
+        if policy == KeyCreationPolicy::SoftwareKeyAfterExplicitConsent && consent.is_none() {
+            return Err(Self::fail("explicit software-key consent is required"));
+        }
+        Ok(KeyReference::new(format!(
+            "{KEY_REFERENCE_PREFIX}{}",
+            uuid::Uuid::new_v4()
+        )))
+    }
+
     fn create_signing_key(
         &self,
+        reference: &KeyReference,
         algorithm: SigningAlgorithm,
         policy: KeyCreationPolicy,
         consent: Option<SoftwareKeyConsent>,
@@ -117,7 +132,7 @@ impl KeyStore for MacOsKeyStore {
             }
         };
 
-        let label = uuid::Uuid::new_v4().to_string();
+        let label = Self::key_label(reference)?;
         let mut options = GenerateKeyOptions::default();
         options
             .set_key_type(KeyType::ec())
@@ -135,7 +150,7 @@ impl KeyStore for MacOsKeyStore {
         };
 
         Ok(CreatedSigningKey {
-            reference: KeyReference::new(format!("{KEY_REFERENCE_PREFIX}{label}")),
+            reference: reference.clone(),
             metadata: KeyMetadata {
                 protection,
                 exportable,

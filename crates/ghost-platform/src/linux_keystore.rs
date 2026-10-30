@@ -106,8 +106,23 @@ impl LinuxKeyStore {
 }
 
 impl KeyStore for LinuxKeyStore {
+    fn allocate_signing_key_reference(
+        &self,
+        policy: KeyCreationPolicy,
+        consent: Option<SoftwareKeyConsent>,
+    ) -> Result<KeyReference, PlatformError> {
+        if policy != KeyCreationPolicy::SoftwareKeyAfterExplicitConsent || consent.is_none() {
+            return Err(Self::fail("explicit software-key consent is required"));
+        }
+        Ok(KeyReference::new(format!(
+            "{KEY_REFERENCE_PREFIX}{}",
+            Uuid::new_v4()
+        )))
+    }
+
     fn create_signing_key(
         &self,
+        reference: &KeyReference,
         algorithm: SigningAlgorithm,
         policy: KeyCreationPolicy,
         consent: Option<SoftwareKeyConsent>,
@@ -147,7 +162,7 @@ impl KeyStore for LinuxKeyStore {
                 .expect("validated 32-byte Y coordinate"),
         };
 
-        let key_id = Uuid::new_v4().to_string();
+        let key_id = Self::key_id(reference)?;
         let service = SecretService::connect(EncryptionType::Dh)
             .map_err(|_| Self::fail("could not connect to Secret Service"))?;
         Self::ensure_unlocked(&service)?;
@@ -171,7 +186,7 @@ impl KeyStore for LinuxKeyStore {
         drop(item);
 
         Ok(CreatedSigningKey {
-            reference: KeyReference::new(format!("{KEY_REFERENCE_PREFIX}{key_id}")),
+            reference: reference.clone(),
             metadata: KeyMetadata {
                 protection: KeyProtection::Software,
                 exportable: true,

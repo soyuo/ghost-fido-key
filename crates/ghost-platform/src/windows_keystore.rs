@@ -208,8 +208,29 @@ impl WindowsKeyStore {
 }
 
 impl KeyStore for WindowsKeyStore {
+    fn allocate_signing_key_reference(
+        &self,
+        policy: KeyCreationPolicy,
+        consent: Option<SoftwareKeyConsent>,
+    ) -> Result<KeyReference, PlatformError> {
+        let prefix = match policy {
+            KeyCreationPolicy::PlatformProtectedOnly => "cng:tpm:",
+            KeyCreationPolicy::SoftwareKeyAfterExplicitConsent if consent.is_some() => {
+                "cng:software:"
+            }
+            KeyCreationPolicy::SoftwareKeyAfterExplicitConsent => {
+                return Err(Self::fail("explicit software-key consent is required"));
+            }
+        };
+        Ok(KeyReference::new(format!(
+            "{prefix}GhostFido-{}",
+            uuid::Uuid::new_v4()
+        )))
+    }
+
     fn create_signing_key(
         &self,
+        reference: &KeyReference,
         algorithm: SigningAlgorithm,
         policy: KeyCreationPolicy,
         consent: Option<SoftwareKeyConsent>,
@@ -235,12 +256,16 @@ impl KeyStore for WindowsKeyStore {
                 }
             };
         let SigningAlgorithm::Es256 = algorithm;
+        if !reference
+            .as_provider_reference()
+            .starts_with(reference_prefix)
+        {
+            return Err(Self::fail(
+                "CNG key reference does not match its selected provider",
+            ));
+        }
         let provider = self.open_provider(provider_name, classify_unavailable)?;
-        let name = format!("GhostFido-{}", uuid::Uuid::new_v4());
-        let wide_name: Vec<u16> = std::ffi::OsStr::new(&name)
-            .encode_wide()
-            .chain(Some(0))
-            .collect();
+        let wide_name = Self::key_name(reference)?;
         let mut key = NCRYPT_KEY_HANDLE(0);
         // SAFETY: provider is valid, both strings are NUL terminated, and key is a valid output pointer.
         let creation_result = unsafe {
@@ -311,7 +336,7 @@ impl KeyStore for WindowsKeyStore {
         unsafe { NCryptFreeObject(key.into()) }.map_err(Self::fail)?;
         unsafe { NCryptFreeObject(provider.into()) }.map_err(Self::fail)?;
         Ok(CreatedSigningKey {
-            reference: KeyReference::new(format!("{reference_prefix}{name}")),
+            reference: reference.clone(),
             metadata: KeyMetadata {
                 protection,
                 exportable,

@@ -1219,6 +1219,18 @@ fn reset_credentials(
                 "Delete all credentials, signing keys, and app-managed metadata encryption keys from this computer? This cannot be undone.",
             )?;
         }
+        if let Some(handle) = store.pending_provider_key_handle().cloned() {
+            let reference = std::str::from_utf8(handle.as_bytes())
+                .map_err(|_| "A pending provider key reference is invalid.".to_owned())?;
+            management_key_store()?
+                .delete_key(&KeyReference::new(reference))
+                .map_err(|error| {
+                    format!("Could not resume provider-key cleanup. {}", error.detail)
+                })?;
+            store.mark_provider_key_deleted(&handle).map_err(|_| {
+                "Provider key cleanup succeeded, but its journal could not be cleared.".to_owned()
+            })?;
+        }
         let credential_count = store.len();
         if !store.metadata_key_cleanup_pending() {
             let handles = store.provider_key_handles();

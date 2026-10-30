@@ -669,6 +669,10 @@ impl<'a> AuthenticatorService<'a> {
         request: Ctap2Request,
     ) -> Result<Ctap2Response, AuthenticatorServiceError> {
         let (command, payload, decoded_payload) = request.into_parts();
+        let resumed_provider_cleanup = self.store.pending_provider_key_handle().is_some();
+        if resumed_provider_cleanup && self.recover_pending_provider_key().is_err() {
+            return Ok(Ctap2Response::error(Ctap2Status::Other));
+        }
         let resumed_reset = self.store.reset_is_pending();
         if resumed_reset && self.recover_pending_reset().is_err() {
             return Ok(Ctap2Response::error(Ctap2Status::Other));
@@ -978,6 +982,21 @@ impl<'a> AuthenticatorService<'a> {
         self.credential_management.clear();
         self.client_pin.clear_all();
         Ok(())
+    }
+
+    fn recover_pending_provider_key(&mut self) -> Result<(), ()> {
+        let handle = self
+            .store
+            .pending_provider_key_handle()
+            .cloned()
+            .ok_or(())?;
+        let reference = std::str::from_utf8(handle.as_bytes()).map_err(|_| ())?;
+        self.key_store
+            .delete_key(&crate::KeyReference::new(reference))
+            .map_err(|_| ())?;
+        self.store
+            .mark_provider_key_deleted(&handle)
+            .map_err(|_| ())
     }
 
     /// Clears per-channel state after the transport reports cancellation or expiry.
