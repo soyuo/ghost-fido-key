@@ -14,11 +14,23 @@ dependencies as well as runtime dependencies. A clean dependency audit is not a
 substitute for protocol review, platform testing, browser interoperability, or
 runtime security validation.
 
-## Known unresolved Rust advisory
+## Known unresolved Rust audit warnings
 
-As of 2026-10-29, [`cargo audit`](https://rustsec.org/advisories/RUSTSEC-2024-0429)
-reports `RUSTSEC-2024-0429` for `glib 0.18.5` on Linux. The locked Tauri 2.12.5
-graph reaches it through GTK 0.18.2 and WebKitGTK. Tauri 2.12.5 requires
+As of 2026-10-30, the CI dependency audit reports two allowed RustSec
+warning-category findings on Linux. The migration in PR #268 removed the
+`zbus`/`zvariant` findings by moving Secret Service access to libdbus; it did
+not change the desktop GTK dependency graph.
+
+- [`RUSTSEC-2024-0429`](https://rustsec.org/advisories/RUSTSEC-2024-0429) marks
+  `glib 0.18.5` unsound because of `VariantStrIter` iterator implementations.
+  RustSec lists `glib >=0.20.0` as patched. The locked Tauri 2.12.5 graph
+  reaches it through GTK 0.18.2 and WebKitGTK.
+- [`RUSTSEC-2024-0370`](https://rustsec.org/advisories/RUSTSEC-2024-0370) marks
+  `proc-macro-error 1.0.4` as unmaintained with no patched release. It enters
+  through `glib-macros 0.18.5` and `gtk3-macros 0.18.2` in the same GTK 0.18
+  graph.
+
+Tauri 2.12.5 requires
 `gtk ^0.18`; Cargo rejects `gtk 0.19.0` because it does not satisfy that
 constraint. The [gtk3-rs 0.19.0 release](https://github.com/gtk-rs/gtk3-rs/releases/tag/0.19.0)
 uses gtk-rs-core 0.22, as confirmed in the
@@ -26,20 +38,22 @@ uses gtk-rs-core 0.22, as confirmed in the
 but it is not compatible with this Tauri 2 graph.
 
 Tauri's upstream [GTK4/WebKitGTK 6 migration](https://github.com/tauri-apps/tauri/pull/14684)
-is an unmerged Tauri 3 breaking change. Until a compatible maintained Tauri
-release is available, keep the advisory visible; do not ignore it, alter crate
-version metadata, or describe it as fixed. A source search found no
+remains an in-progress Tauri 3 breaking change; the related
+[Wry WebKitGTK 6 port](https://github.com/tauri-apps/wry/pull/1530) is still a
+draft. Until a compatible maintained Tauri release and macro stack are
+available, keep both findings visible; do not ignore either warning, alter
+crate version metadata, or describe them as fixed. A source search found no
 `VariantStrIter` or `array_iter_str` call sites in this repository or the
 locked `tauri`, `tauri-runtime-wry`, `wry`, `tao`, `muda`, `gtk`, `webkit2gtk`,
 and `glib` sources. That limits known use in the current application, but does
 not remove the unsound API from the dependency graph or resolve the advisory.
-The upstream migration is tracked for this project in
+The GLib issue is tracked for this project in
 [issue #191](https://github.com/soyuo/ghost-fido-key/issues/191).
 
-`cargo audit` treats unsound advisories as warnings by default, so the current
-workflow reports this finding without failing. After the Linux dependency
-graph moves to a compatible fixed release, add `cargo audit --deny unsound` to
-make the resolved condition a CI gate and verify Linux x64 and ARM64 builds.
+`cargo audit` is configured to report these warning categories without failing
+the workflow. Do not enable `--deny unsound` until the unsound dependency has
+been removed through a compatible upstream stack; then make that condition a
+CI gate and verify Linux x64 and ARM64 builds.
 
 Each job runs `cargo fmt --all -- --check`,
 `cargo check --workspace --locked`, `npm ci --prefix apps/desktop`, and
