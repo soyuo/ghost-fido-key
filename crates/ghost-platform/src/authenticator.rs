@@ -93,6 +93,7 @@ struct ClientPinHandler {
     tokens: BTreeMap<u32, PinTokenEntry>,
     consecutive_pin_mismatches: u8,
     power_cycle_required: bool,
+    pending_pin_retries: Option<u8>,
 }
 
 struct PinAgreementEntry {
@@ -271,7 +272,25 @@ impl ClientPinHandler {
         if !store.has_protected_storage() {
             return Ctap2Response::error(Ctap2Status::InvalidParameter);
         }
-
+        if let Some(retries) = self.pending_pin_retries {
+            match store.set_pin_retries(retries) {
+                Ok(()) => {
+                    self.pending_pin_retries = None;
+                    if retries == 0 {
+                        self.power_cycle_required = false;
+                        if subcommand != 1 {
+                            return Ctap2Response::error(Ctap2Status::PinBlocked);
+                        }
+                    } else if self.power_cycle_required && subcommand != 1 {
+                        return Ctap2Response::error(Ctap2Status::PinAuthBlocked);
+                    }
+                }
+                Err(_) if subcommand != 1 => {
+                    return Ctap2Response::error(Ctap2Status::Other);
+                }
+                Err(_) => {}
+            }
+        }
         match subcommand {
             1 => {
                 let mut fields = vec![(
@@ -316,10 +335,15 @@ impl ClientPinHandler {
 
     fn record_pin_mismatch(&mut self, store: &mut CredentialStore) -> Ctap2Status {
         let retries = store.pin_state().retries().saturating_sub(1);
+        self.consecutive_pin_mismatches = self.consecutive_pin_mismatches.saturating_add(1);
+        self.pending_pin_retries = Some(retries);
         if store.set_pin_retries(retries).is_err() {
+            if self.consecutive_pin_mismatches >= 3 {
+                self.power_cycle_required = true;
+            }
             return Ctap2Status::Other;
         }
-        self.consecutive_pin_mismatches = self.consecutive_pin_mismatches.saturating_add(1);
+        self.pending_pin_retries = None;
         if retries == 0 {
             return Ctap2Status::PinBlocked;
         }
@@ -331,8 +355,10 @@ impl ClientPinHandler {
     }
 
     fn record_pin_success(&mut self, store: &mut CredentialStore) -> Result<(), Ctap2Status> {
-        store.set_pin_retries(8).map_err(|_| Ctap2Status::Other)?;
         self.consecutive_pin_mismatches = 0;
+        self.pending_pin_retries = Some(8);
+        store.set_pin_retries(8).map_err(|_| Ctap2Status::Other)?;
+        self.pending_pin_retries = None;
         Ok(())
     }
 
