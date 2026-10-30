@@ -1085,6 +1085,11 @@ fn parse_hmac_secret_assertion(
         }
         *slot = Some(value);
     }
+    let CborValue::Map(key_agreement) =
+        key_agreement.ok_or(GetAssertionError::MissingParameter(4))?
+    else {
+        return Err(GetAssertionError::UnexpectedType(4));
+    };
     let CborValue::Bytes(salt_enc) = salt_enc.ok_or(GetAssertionError::MissingParameter(4))? else {
         return Err(GetAssertionError::UnexpectedType(4));
     };
@@ -1095,7 +1100,8 @@ fn parse_hmac_secret_assertion(
     let protocol = match pin_uv_auth_protocol {
         None => 1,
         Some(CborValue::Unsigned(value @ (1 | 2))) => value,
-        Some(_) => return Err(GetAssertionError::InvalidParameter(4)),
+        Some(CborValue::Unsigned(_)) => return Err(GetAssertionError::InvalidParameter(4)),
+        Some(_) => return Err(GetAssertionError::UnexpectedType(4)),
     };
     let block_iv = if protocol == 2 { 16 } else { 0 };
     let auth_size = if protocol == 2 { 32 } else { 16 };
@@ -1105,7 +1111,7 @@ fn parse_hmac_secret_assertion(
         return Err(GetAssertionError::InvalidParameter(4));
     }
     Ok(Some(HmacSecretInput {
-        key_agreement: key_agreement.ok_or(GetAssertionError::MissingParameter(4))?,
+        key_agreement: CborValue::Map(key_agreement),
         salt_enc,
         salt_auth,
         pin_uv_auth_protocol: protocol,
