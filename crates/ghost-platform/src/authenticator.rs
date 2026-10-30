@@ -224,6 +224,9 @@ impl ClientPinHandler {
         {
             return Ctap2Response::error(Ctap2Status::InvalidParameter);
         }
+        if !store.has_protected_storage() {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        }
 
         match subcommand {
             1 => response_map(vec![(
@@ -683,7 +686,11 @@ impl<'a> AuthenticatorService<'a> {
                     profile.extensions.push("hmac-secret".into());
                     profile.extensions.push("credProtect".into());
                 }
-                profile.pin_uv_auth_protocols = vec![u64::from(PIN_UV_AUTH_PROTOCOL)];
+                profile.pin_uv_auth_protocols = if self.store.has_protected_storage() {
+                    vec![u64::from(PIN_UV_AUTH_PROTOCOL)]
+                } else {
+                    Vec::new()
+                };
                 match GetInfoHandler::new(&profile) {
                     Ok(handler) => Ok(handler.handle(&payload)),
                     Err(_) => Ok(Ctap2Response::error(Ctap2Status::Other)),

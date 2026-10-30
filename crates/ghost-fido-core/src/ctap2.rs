@@ -1211,7 +1211,7 @@ pub fn encode_get_info(profile: &GetInfoProfile) -> Result<Vec<u8>, GetInfoError
         .iter()
         .map(|(key, value)| (CborValue::Text(key.clone()), CborValue::Bool(*value)))
         .collect();
-    Ok(encode(&CborValue::Map(vec![
+    let mut fields = vec![
         (CborValue::Unsigned(1), CborValue::Array(versions)),
         (CborValue::Unsigned(2), CborValue::Array(extensions)),
         (
@@ -1223,7 +1223,9 @@ pub fn encode_get_info(profile: &GetInfoProfile) -> Result<Vec<u8>, GetInfoError
             CborValue::Unsigned(5),
             CborValue::Unsigned(profile.max_msg_size),
         ),
-        (
+    ];
+    if !profile.pin_uv_auth_protocols.is_empty() {
+        fields.push((
             CborValue::Unsigned(6),
             CborValue::Array(
                 profile
@@ -1233,6 +1235,7 @@ pub fn encode_get_info(profile: &GetInfoProfile) -> Result<Vec<u8>, GetInfoError
                     .map(CborValue::Unsigned)
                     .collect(),
             ),
-        ),
-    ]))?)
+        ));
+    }
+    Ok(encode(&CborValue::Map(fields))?)
 }
