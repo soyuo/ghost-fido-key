@@ -950,6 +950,13 @@ impl<'a> AuthenticatorService<'a> {
     }
 
     fn recover_pending_reset(&mut self) -> Result<(), ()> {
+        if self.store.metadata_key_cleanup_pending() {
+            self.store.complete_metadata_key_cleanup().map_err(|_| ())?;
+            self.assertion_continuations.clear();
+            self.credential_management.clear();
+            self.client_pin.clear_all();
+            return Ok(());
+        }
         self.store.begin_reset().map_err(|_| ())?;
         loop {
             let handle = self
@@ -966,6 +973,7 @@ impl<'a> AuthenticatorService<'a> {
             self.store.mark_reset_key_deleted(&handle).map_err(|_| ())?;
         }
         self.store.finish_reset().map_err(|_| ())?;
+        self.store.complete_metadata_key_cleanup().map_err(|_| ())?;
         self.assertion_continuations.clear();
         self.credential_management.clear();
         self.client_pin.clear_all();
