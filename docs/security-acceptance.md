@@ -15,6 +15,13 @@ normalized key block and an inner digest temporary that are not zeroized by its
 zeroize feature. Treat this as a known memory-hygiene limitation; do not claim
 complete erasure of all HMAC intermediates.
 
+On Linux and macOS, the AES-GCM credential-store cipher enables zeroization for
+its AES-GCM, GHASH, and POLYVAL dependency state. This clears the AES-GCM
+derived GHASH key temporary and the GHASH/POLYVAL state when their values are
+dropped. This does not guarantee erasure of every compiler, hardware, or
+dependency-owned intermediate; do not claim complete cryptographic memory
+erasure.
+
 ## T-022: Login-session lock during authentication
 
 The desktop requires an explicit in-app approval followed by a native
