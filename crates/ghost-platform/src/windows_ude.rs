@@ -1,8 +1,12 @@
 //! Windows UDE user-mode boundary.
 //!
 //! The actual UdeCx/KMDF implementation lives under `platforms/windows/ude`.
-//! This Rust adapter intentionally fails closed until a signed driver exposes
-//! the documented control endpoint and IOCTL contract.
+//! The adapter permits a runtime attempt only when a loaded driver responds
+//! to the documented control endpoint with an assigned identity, all required
+//! capability bits, and the exact FIDO report profile. `Configured` does not
+//! mean this adapter verified the driver's signature or trust, nor does it
+//! establish report round-trip or browser interoperability. Windows driver
+//! loading policy remains responsible for whether a driver can be loaded.
 #![allow(unsafe_code)]
 
 use std::{
