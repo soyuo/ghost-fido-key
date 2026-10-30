@@ -16,7 +16,10 @@ subtle = "2.6.1"
 zeroize = "1"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-aes-gcm = "0.10.3"
+aes-gcm = { version = "0.10.3", features = ["zeroize"] }
+# aes-gcm's zeroize feature does not forward to GHASH or POLYVAL.
+ghash = { version = "0.5", features = ["zeroize"] }
+polyval = { version = "0.6.2", features = ["zeroize"] }
 libc = "0.2"
 secret-service = { version = "=5.1.0", default-features = false, features = ["rt-tokio-crypto-rust"] }
 p256 = { version = "=0.14.0", default-features = false, features = ["ecdsa", "std"] }
@@ -25,7 +28,10 @@ uhid-virt = "0.0.8"
 zeroize = "1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-aes-gcm = "0.10.3"
+aes-gcm = { version = "0.10.3", features = ["zeroize"] }
+# aes-gcm's zeroize feature does not forward to GHASH or POLYVAL.
+ghash = { version = "0.5", features = ["zeroize"] }
+polyval = { version = "0.6.2", features = ["zeroize"] }
 security-framework = { version = "=3.7.0", features = ["OSX_10_15"] }
 security-framework-sys = "=2.17.0"
 uuid = { version = "1", features = ["v4"] }
