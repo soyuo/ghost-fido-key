@@ -32,15 +32,20 @@ plaintext store. The SQLite file alone is not a backup: Windows recovery depends
 on the original user profile, Linux on the same Secret Service key item, and
 macOS on access to the same default Keychain item.
 
-SQLite `user_version` 8 tracks the current complete store format. The credential
+SQLite `user_version` 9 tracks the current complete store format. The credential
 record payload has its own CBOR schema version 7; these are distinct version
 counters because PIN state is stored separately. SQLite stores with `user_version`
 1–3 are read using their original associated data, validated, assigned a
 deterministic legacy creation order where needed, and resealed using the current
-credential payload format. Versions 4–8 are decoded using their corresponding
-credential payload schema. Missing PIN state in a store older than version 8 is
-initialized as protected default state. Unsupported versions, authentication
-failures, malformed records, and SQLite errors fail closed. Record registration
+credential payload format. Versions 4–9 are decoded using their corresponding
+credential payload schema. Version 9 adds an encrypted reset journal containing
+provider key references still awaiting deletion. While reset is pending, the
+store hides credential and PIN state and rejects normal updates. CTAP and desktop
+reset paths resume the journal before normal use; each completed provider deletion
+is checkpointed so a restart can safely retry cleanup. Missing PIN state in a
+store older than version 8 is initialized as protected default state. Unsupported
+versions, authentication failures, malformed records, and SQLite errors fail
+closed. Record registration
 and signature-counter updates persist the protected record payload before
 changing the in-memory view. The default in-memory store remains available for
 volatile use.

@@ -663,6 +663,13 @@ impl<'a> AuthenticatorService<'a> {
         request: Ctap2Request,
     ) -> Result<Ctap2Response, AuthenticatorServiceError> {
         let (command, payload, decoded_payload) = request.into_parts();
+        let resumed_reset = self.store.reset_is_pending();
+        if resumed_reset && self.recover_pending_reset().is_err() {
+            return Ok(Ctap2Response::error(Ctap2Status::Other));
+        }
+        if resumed_reset && command == Ctap2Command::Reset {
+            return Ok(Ctap2Response::error(Ctap2Status::Success));
+        }
         if command != Ctap2Command::GetNextAssertion {
             self.assertion_continuations.remove(&channel);
         }
@@ -906,7 +913,7 @@ impl<'a> AuthenticatorService<'a> {
                 if decision != VerificationDecision::Approved {
                     return Ok(Ctap2Response::error(Ctap2Status::OperationDenied));
                 }
-                let references = match self
+                let _references = match self
                     .store
                     .provider_key_handles()
                     .into_iter()
@@ -922,17 +929,9 @@ impl<'a> AuthenticatorService<'a> {
                     Ok(references) => references,
                     Err(()) => return Ok(Ctap2Response::error(Ctap2Status::Other)),
                 };
-                for reference in &references {
-                    if self.key_store.delete_key(reference).is_err() {
-                        return Ok(Ctap2Response::error(Ctap2Status::Other));
-                    }
-                }
-                if self.store.clear().is_err() {
+                if self.store.begin_reset().is_err() || self.recover_pending_reset().is_err() {
                     return Ok(Ctap2Response::error(Ctap2Status::Other));
                 }
-                self.assertion_continuations.clear();
-                self.credential_management.clear();
-                self.client_pin.clear_all();
                 Ok(Ctap2Response::error(Ctap2Status::Success))
             }
             _ => Ok(Ctap2Response::error(Ctap2Status::InvalidCommand)),
@@ -942,6 +941,29 @@ impl<'a> AuthenticatorService<'a> {
     pub(crate) fn clear_channel(&mut self, channel: u32) {
         self.assertion_continuations.remove(&channel);
         self.credential_management.remove(&channel);
+    }
+
+    fn recover_pending_reset(&mut self) -> Result<(), ()> {
+        self.store.begin_reset().map_err(|_| ())?;
+        loop {
+            let handle = self
+                .store
+                .pending_reset_key_handles()
+                .and_then(|pending| pending.first().cloned());
+            let Some(handle) = handle else {
+                break;
+            };
+            let reference = std::str::from_utf8(handle.as_bytes()).map_err(|_| ())?;
+            self.key_store
+                .delete_key(&KeyReference::new(reference))
+                .map_err(|_| ())?;
+            self.store.mark_reset_key_deleted(&handle).map_err(|_| ())?;
+        }
+        self.store.finish_reset().map_err(|_| ())?;
+        self.assertion_continuations.clear();
+        self.credential_management.clear();
+        self.client_pin.clear_all();
+        Ok(())
     }
 
     /// Clears per-channel state after the transport reports cancellation or expiry.
