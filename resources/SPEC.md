@@ -566,13 +566,22 @@ Attestation은 실제 하드웨어 인증기라는 허위 주장을 하지 않�
 
 기존 자격 증명으로 서명한다.
 
+`options.up`이 생략되면 사용자 존재를 요구한다. `options.up`이 `false`이면
+플랫폼이 허용 목록 또는 제외 목록을 미리 확인하는 요청으로 처리하며 사용자 승인
+화면을 띄우지 않는다. 이때 서명된 인증 데이터의 UP 비트는 0이어야 한다. UV 비트는
+유효한 PIN/UV 인증이 검증된 경우에만 1로 설정한다. 이어지는
+`authenticatorGetNextAssertion` 응답도 원래 요청의 UP 및 UV 상태를 유지한다.
+
+이 규칙은 `authenticatorGetAssertion`에 적용한다. `authenticatorMakeCredential`의
+`options.up = false`는 계속 지원하지 않는다.
+
 처리 절차:
 
 1. 로그인 요청 수신
 2. rpId 및 Credential ID 일치 여부 검사
 3. 관련 자격 증명 탐색
 4. 사용자 존재 및 확인 정책 검사
-5. 사용자 승인 요청
+5. `up`이 생략되거나 `true`이면 사용자 승인 요청; `false`이면 승인 화면 생략
 6. 인증 데이터 구성
 7. 보호된 개인 키로 서명
 8. Signature 및 Credential 정보 반환

@@ -5,8 +5,8 @@ use std::{cmp::Reverse, time::Duration};
 use ghost_fido_core::{
     CborValue, CredentialError, CredentialId, CredentialProtectionPolicy, CredentialStore,
     Ctap2Response, Ctap2Status, GetAssertionRequest, KeyHandle, client_pin_process_hmac_secret,
-    encode_get_assertion_response_with_count_and_uv_and_extensions,
-    get_assertion_authenticator_data_with_uv,
+    encode_get_assertion_response_with_count_and_presence_and_uv_and_extensions,
+    get_assertion_authenticator_data_with_presence_and_uv,
 };
 use sha2::{Digest, Sha256};
 
@@ -89,15 +89,9 @@ pub fn execute_get_assertion_with_uv_and_hmac_secret(
     user_verified: bool,
     hmac_secret_shared_secret: Option<&[u8; 32]>,
 ) -> Result<GetAssertionExecution, GetAssertionExecutionError> {
-    if (request.options.user_verification == Some(true) && !user_verified)
-        || request.options.user_presence == Some(false)
-    {
+    if request.options.user_verification == Some(true) && !user_verified {
         return Ok(single_response(Ctap2Response::error(
-            if request.options.user_verification == Some(true) {
-                Ctap2Status::PinUvAuthTokenRequired
-            } else {
-                Ctap2Status::UnsupportedOption
-            },
+            Ctap2Status::PinUvAuthTokenRequired,
         )));
     }
 
@@ -154,24 +148,27 @@ pub fn execute_get_assertion_with_uv_and_hmac_secret(
         relying_party_name: None,
         action: VerificationAction::Authenticate,
     };
-    match verification.request_confirmation(&confirmation, timeout) {
-        Ok(VerificationDecision::Approved) => {}
-        Ok(VerificationDecision::Rejected) => {
-            return Ok(single_response(Ctap2Response::error(
-                Ctap2Status::OperationDenied,
-            )));
+    let user_present = request.options.user_presence != Some(false);
+    if user_present {
+        match verification.request_confirmation(&confirmation, timeout) {
+            Ok(VerificationDecision::Approved) => {}
+            Ok(VerificationDecision::Rejected) => {
+                return Ok(single_response(Ctap2Response::error(
+                    Ctap2Status::OperationDenied,
+                )));
+            }
+            Ok(VerificationDecision::Cancelled) => {
+                return Ok(single_response(Ctap2Response::error(
+                    Ctap2Status::KeepaliveCancel,
+                )));
+            }
+            Err(error) if error.kind == PlatformErrorKind::Timeout => {
+                return Ok(single_response(Ctap2Response::error(
+                    Ctap2Status::UserActionTimeout,
+                )));
+            }
+            Err(error) => return Err(error.into()),
         }
-        Ok(VerificationDecision::Cancelled) => {
-            return Ok(single_response(Ctap2Response::error(
-                Ctap2Status::KeepaliveCancel,
-            )));
-        }
-        Err(error) if error.kind == PlatformErrorKind::Timeout => {
-            return Ok(single_response(Ctap2Response::error(
-                Ctap2Status::UserActionTimeout,
-            )));
-        }
-        Err(error) => return Err(error.into()),
     }
 
     let number_of_credentials =
@@ -288,9 +285,14 @@ fn sign_assertion_for_credential(
     } else {
         None
     };
-    let mut authenticator_data =
-        get_assertion_authenticator_data_with_uv(rp_id_hash, next_sign_count, user_verified)
-            .to_vec();
+    let user_present = request.options.user_presence != Some(false);
+    let mut authenticator_data = get_assertion_authenticator_data_with_presence_and_uv(
+        rp_id_hash,
+        next_sign_count,
+        user_present,
+        user_verified,
+    )
+    .to_vec();
     if let Some(ref extensions) = extensions {
         authenticator_data[32] |= 0x80;
         authenticator_data.extend_from_slice(
@@ -307,13 +309,14 @@ fn sign_assertion_for_credential(
     let signature = encode_p1363_es256_der(&raw_signature)
         .ok_or(GetAssertionExecutionError::InvalidSignature)?;
 
-    let response = encode_get_assertion_response_with_count_and_uv_and_extensions(
+    let response = encode_get_assertion_response_with_count_and_presence_and_uv_and_extensions(
         rp_id_hash,
         credential_id.as_bytes(),
         include_user.then_some(user_handle.as_slice()),
         &signature,
         next_sign_count,
         number_of_credentials,
+        user_present,
         user_verified,
         extensions,
     )
