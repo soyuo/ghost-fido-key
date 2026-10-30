@@ -1153,9 +1153,6 @@ impl<'a> AuthenticatorService<'a> {
             .iter()
             .enumerate()
             .any(|(index, (key, _))| fields[..index].iter().any(|(previous, _)| previous == key))
-            || fields
-                .iter()
-                .any(|(key, _)| !matches!(key, CborValue::Unsigned(1..=4)))
         {
             return Ctap2Response::error(Ctap2Status::InvalidParameter);
         }
@@ -1276,9 +1273,6 @@ impl<'a> AuthenticatorService<'a> {
                 self.next_credential_management_rp(channel)
             }
             4 => {
-                if parameter_fields.len() != 1 || field(parameter_fields, 2).is_some() {
-                    return Ctap2Response::error(Ctap2Status::InvalidParameter);
-                }
                 let Some(CborValue::Bytes(rp_hash)) = field(parameter_fields, 1) else {
                     return Ctap2Response::error(Ctap2Status::MissingParameter);
                 };
@@ -1362,23 +1356,21 @@ impl<'a> AuthenticatorService<'a> {
                 self.next_credential_management_credential(channel)
             }
             6 | 7 => {
-                if (subcommand == 6 && parameter_fields.len() != 1)
-                    || (subcommand == 7 && parameter_fields.len() != 2)
-                {
-                    return Ctap2Response::error(Ctap2Status::InvalidParameter);
-                }
                 let Some(CborValue::Map(descriptor)) = field(parameter_fields, 2) else {
                     return Ctap2Response::error(Ctap2Status::MissingParameter);
                 };
-                if descriptor.len() != 2
-                    || text_map_field(descriptor, "type")
-                        != Some(&CborValue::Text("public-key".into()))
+                if text_map_field(descriptor, "type") != Some(&CborValue::Text("public-key".into()))
                     || descriptor.iter().enumerate().any(|(index, (key, _))| {
                         descriptor[..index]
                             .iter()
                             .any(|(previous, _)| previous == key)
                     })
                 {
+                    return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                }
+                if text_map_field(descriptor, "transports").is_some_and(|transports| {
+                    !matches!(transports, CborValue::Array(values) if values.iter().all(|value| matches!(value, CborValue::Text(_))))
+                }) {
                     return Ctap2Response::error(Ctap2Status::InvalidParameter);
                 }
                 let Some(CborValue::Bytes(id_bytes)) = text_map_field(descriptor, "id") else {
@@ -1441,9 +1433,6 @@ impl<'a> AuthenticatorService<'a> {
                         return Ctap2Response::error(Ctap2Status::MissingParameter);
                     };
                     if user.is_empty()
-                        || user.iter().any(|(key, _)| {
-                            !matches!(key, CborValue::Text(name) if ["id", "name", "displayName"].contains(&name.as_str()))
-                        })
                         || user.iter().enumerate().any(|(index, (key, _))| {
                             user[..index].iter().any(|(previous, _)| previous == key)
                         })
