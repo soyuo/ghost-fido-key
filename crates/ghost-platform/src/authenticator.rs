@@ -260,6 +260,9 @@ impl ClientPinHandler {
         if self.power_cycle_required && subcommand != 1 {
             return Ctap2Response::error(Ctap2Status::PinAuthBlocked);
         }
+        if let Err(status) = validate_pin_parameter_types(&fields, subcommand) {
+            return Ctap2Response::error(status);
+        }
         let protocol = match field(&fields, 1) {
             None => PinUvAuthProtocol::One,
             Some(CborValue::Unsigned(id)) => {
@@ -372,6 +375,9 @@ impl ClientPinHandler {
         fields: &[(CborValue, CborValue)],
     ) -> Result<PinUvAuthSharedSecret, Ctap2Status> {
         let peer = field(fields, 3).ok_or(Ctap2Status::MissingParameter)?;
+        if !matches!(peer, CborValue::Map(_)) {
+            return Err(Ctap2Status::CborUnexpectedType);
+        }
         let agreement = self
             .agreements
             .remove(&channel)
@@ -553,7 +559,8 @@ impl ClientPinHandler {
         let relying_party_id = match field(fields, 10) {
             None => None,
             Some(CborValue::Text(value)) if !value.is_empty() => Some(value.clone()),
-            Some(_) => return Ctap2Response::error(Ctap2Status::InvalidParameter),
+            Some(CborValue::Text(_)) => return Ctap2Response::error(Ctap2Status::InvalidParameter),
+            Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
         };
         if permissions & 0x03 != 0 && relying_party_id.is_none() {
             return Ctap2Response::error(Ctap2Status::MissingParameter);
@@ -709,6 +716,56 @@ fn byte_field(fields: &[(CborValue, CborValue)], key: u64) -> Option<&[u8]> {
     match field(fields, key) {
         Some(CborValue::Bytes(value)) => Some(value),
         _ => None,
+    }
+}
+
+fn validate_pin_parameter_types(
+    fields: &[(CborValue, CborValue)],
+    subcommand: u64,
+) -> Result<(), Ctap2Status> {
+    let require_bytes = |key| match field(fields, key) {
+        None => Err(Ctap2Status::MissingParameter),
+        Some(CborValue::Bytes(_)) => Ok(()),
+        Some(_) => Err(Ctap2Status::CborUnexpectedType),
+    };
+    let require_key_agreement = || match field(fields, 3) {
+        None => Err(Ctap2Status::MissingParameter),
+        Some(CborValue::Map(_)) => Ok(()),
+        Some(_) => Err(Ctap2Status::CborUnexpectedType),
+    };
+    match subcommand {
+        1 | 2 => Ok(()),
+        3 => {
+            require_key_agreement()?;
+            require_bytes(4)?;
+            require_bytes(5)
+        }
+        4 => {
+            require_key_agreement()?;
+            require_bytes(4)?;
+            require_bytes(5)?;
+            require_bytes(6)
+        }
+        5 => {
+            require_key_agreement()?;
+            require_bytes(4)?;
+            require_bytes(6)
+        }
+        9 => {
+            require_key_agreement()?;
+            require_bytes(4)?;
+            require_bytes(6)?;
+            match field(fields, 9) {
+                None => return Err(Ctap2Status::MissingParameter),
+                Some(CborValue::Unsigned(_)) => {}
+                Some(_) => return Err(Ctap2Status::CborUnexpectedType),
+            }
+            if matches!(field(fields, 10), Some(value) if !matches!(value, CborValue::Text(_))) {
+                return Err(Ctap2Status::CborUnexpectedType);
+            }
+            Ok(())
+        }
+        _ => Err(Ctap2Status::InvalidParameter),
     }
 }
 
