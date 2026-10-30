@@ -104,7 +104,7 @@ struct PinTokenEntry {
     value: [u8; 32],
     expires_at: Instant,
     permissions: u8,
-    relying_party_id: Option<String>,
+    relying_party_hash: Option<[u8; 32]>,
 }
 
 impl Drop for PinTokenEntry {
@@ -147,23 +147,35 @@ impl ClientPinHandler {
         relying_party_hash: Option<[u8; 32]>,
     ) -> Result<(), Ctap2Status> {
         self.expire();
-        let token = self
+        if self
             .tokens
             .get(&channel)
-            .ok_or(Ctap2Status::PinUvAuthTokenRequired)?;
-        if Instant::now() >= token.expires_at {
+            .is_some_and(|token| Instant::now() >= token.expires_at)
+        {
             self.tokens.remove(&channel);
             return Err(Ctap2Status::PinUvAuthTokenRequired);
         }
+        let token = self
+            .tokens
+            .get_mut(&channel)
+            .ok_or(Ctap2Status::PinUvAuthTokenRequired)?;
         if !client_pin_verify_authentication(&token.value, message, auth) {
             return Err(Ctap2Status::PinAuthInvalid);
         }
-        if token.permissions & permission == 0
-            || token.relying_party_id.as_deref().is_some_and(|allowed| {
-                Some(<[u8; 32]>::from(Sha256::digest(allowed.as_bytes()))) != relying_party_hash
-            })
-        {
+        if token.permissions & permission == 0 {
             return Err(Ctap2Status::UnauthorizedPermission);
+        }
+        if let Some(allowed_hash) = token.relying_party_hash {
+            if Some(allowed_hash) != relying_party_hash {
+                return Err(Ctap2Status::UnauthorizedPermission);
+            }
+        } else if permission & 0x03 != 0 {
+            let Some(relying_party_hash) = relying_party_hash else {
+                return Err(Ctap2Status::UnauthorizedPermission);
+            };
+            // Legacy getPinToken grants default permissions before an RP is known.
+            // Bind that token to the first MakeCredential/GetAssertion RP it authorizes.
+            token.relying_party_hash = Some(relying_party_hash);
         }
         Ok(())
     }
@@ -430,6 +442,9 @@ impl ClientPinHandler {
             Some(CborValue::Text(value)) if !value.is_empty() => Some(value.clone()),
             Some(_) => return Ctap2Response::error(Ctap2Status::InvalidParameter),
         };
+        if permissions & 0x03 != 0 && relying_party_id.is_none() {
+            return Ctap2Response::error(Ctap2Status::MissingParameter);
+        }
         self.issue_pin_token(channel, fields, store, permissions, relying_party_id)
     }
 
@@ -506,7 +521,8 @@ impl ClientPinHandler {
                 value: *token,
                 expires_at: Instant::now() + PIN_PROTOCOL_TIMEOUT,
                 permissions,
-                relying_party_id,
+                relying_party_hash: relying_party_id
+                    .map(|rp_id| Sha256::digest(rp_id.as_bytes()).into()),
             },
         );
         response_map(vec![(
