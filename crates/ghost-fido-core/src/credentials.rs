@@ -964,11 +964,11 @@ impl CredentialStore {
             self.persist_reset_journal(&handles)?;
             return Ok(());
         }
-        let handles = self.provider_key_handles();
-        if !handles.is_empty() && self.sqlite.is_none() {
+        let local_handles = self.provider_key_handles();
+        if !local_handles.is_empty() && self.sqlite.is_none() {
             return Err(CredentialError::StorageFailure);
         }
-        if handles.is_empty()
+        if local_handles.is_empty()
             && self
                 .sqlite
                 .as_ref()
@@ -976,11 +976,18 @@ impl CredentialStore {
         {
             return Ok(());
         }
+        let handles = if self.sqlite.is_some() {
+            self.begin_reset_journal_from_storage()?
+        } else {
+            local_handles
+        };
         self.pending_reset_keys = Some(handles.clone());
         self.records.clear();
         self.pin_state = PinState::default();
         self.next_creation_order = 0;
-        self.persist_reset_journal(&handles)?;
+        if self.sqlite.is_none() {
+            self.persist_reset_journal(&handles)?;
+        }
         Ok(())
     }
 
@@ -1349,6 +1356,68 @@ impl CredentialStore {
         transaction
             .commit()
             .map_err(|_| CredentialError::StorageFailure)
+    }
+
+    fn begin_reset_journal_from_storage(&mut self) -> Result<Vec<KeyHandle>, CredentialError> {
+        self.ensure_sqlite_initialized()?;
+        let Some(backend) = self.sqlite.as_mut() else {
+            return Err(CredentialError::StorageFailure);
+        };
+        let transaction = backend
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|_| CredentialError::StorageFailure)?;
+        let reset_pending: bool = transaction
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM reset_journal WHERE singleton = 1)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| CredentialError::StorageFailure)?;
+        if reset_pending {
+            return Err(CredentialError::ResetInProgress);
+        }
+        let conflicting_cleanup_pending: bool = transaction
+            .query_row(
+                "SELECT EXISTS (
+                    SELECT 1 FROM credential_deletion_journal WHERE singleton = 1
+                ) OR EXISTS (SELECT 1 FROM provider_key_journal WHERE singleton = 1)",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|_| CredentialError::StorageFailure)?;
+        if conflicting_cleanup_pending {
+            return Err(CredentialError::ProviderKeyCleanupPending);
+        }
+
+        let protected_records = read_protected_payload(&transaction)?;
+        validate_protected_payload(&protected_records)?;
+        let plaintext = backend
+            .protector
+            .unprotect(&protected_records, STORAGE_AAD_V4)
+            .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+        let current_records = decode_records(&plaintext, 7)?;
+        let handles: Vec<_> = current_records
+            .values()
+            .map(|record| record.key_handle.clone())
+            .collect();
+        let journal = encode_reset_journal(&handles)?;
+        let protected_journal = backend
+            .protector
+            .protect(&journal, RESET_JOURNAL_AAD_V1)
+            .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+        validate_protected_payload(&protected_journal)?;
+        transaction
+            .execute(
+                "INSERT INTO reset_journal (singleton, payload) VALUES (1, ?1)",
+                params![protected_journal],
+            )
+            .map_err(|_| CredentialError::StorageFailure)?;
+        transaction
+            .commit()
+            .map_err(|_| CredentialError::StorageFailure)?;
+        self.records = current_records;
+        Ok(handles)
     }
 
     fn persist_reset(&mut self) -> Result<(), CredentialError> {
