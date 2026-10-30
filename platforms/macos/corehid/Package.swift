@@ -21,6 +21,7 @@ let package = Package(
                 .linkedFramework("AppKit"),
                 .linkedFramework("Foundation"),
                 .linkedFramework("Security"),
+                .linkedFramework("CryptoKit"),
             ]
         ),
     ]

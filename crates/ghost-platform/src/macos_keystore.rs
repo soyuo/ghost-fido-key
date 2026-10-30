@@ -100,6 +100,13 @@ impl KeyStore for MacOsKeyStore {
         let SigningAlgorithm::Es256 = algorithm;
         let (token, protection, exportable) = match policy {
             KeyCreationPolicy::PlatformProtectedOnly => {
+                if !super::macos_corehid_ffi::secure_enclave_is_available() {
+                    return Err(PlatformError::new(
+                        PlatformErrorKind::PlatformKeyProtectionUnavailable,
+                        HostPlatform::MacOs,
+                        "Secure Enclave access is not supported on this device",
+                    ));
+                }
                 (Token::SecureEnclave, KeyProtection::HardwareBacked, false)
             }
             KeyCreationPolicy::SoftwareKeyAfterExplicitConsent if consent.is_some() => {

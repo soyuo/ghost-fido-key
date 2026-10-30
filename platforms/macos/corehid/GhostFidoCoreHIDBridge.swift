@@ -2,8 +2,15 @@ import CoreHID
 import Foundation
 import AppKit
 import Security
+import CryptoKit
 
 private let ghostFidoVirtualHIDEntitlement = "com.apple.developer.hid.virtual.device"
+
+/// Reports the system's explicit Secure Enclave support check.
+@_cdecl("ghost_fido_secure_enclave_is_available")
+public func ghostFidoSecureEnclaveIsAvailable() -> Int32 {
+    SecureEnclave.isAvailable ? 1 : 0
+}
 
 /// Tracks user-session transitions only; this is not a screen-lock detector.
 private final class GhostFidoSessionGeneration: @unchecked Sendable {

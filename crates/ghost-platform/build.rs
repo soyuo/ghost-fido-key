@@ -95,6 +95,7 @@ fn build_corehid_bridge() {
     println!("cargo:rustc-link-lib=framework=CoreHID");
     println!("cargo:rustc-link-lib=framework=Foundation");
     println!("cargo:rustc-link-lib=framework=Security");
+    println!("cargo:rustc-link-lib=framework=CryptoKit");
     println!(
         "cargo:rerun-if-changed={}",
         package_dir.join("Package.swift").display()

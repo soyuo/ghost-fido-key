@@ -2,14 +2,17 @@
 
 `MacOsKeyStore` requests persistent P-256 signing keys in the Data Protection
 Keychain. The default `PlatformProtectedOnly` policy asks Security.framework for
-a Secure Enclave key. If that token or its required signing/access configuration
-is unavailable, key creation fails without creating a software key.
+a Secure Enclave key first. If CryptoKit reports that the device does not
+support Secure Enclave access, the authenticator asks for separate,
+per-credential software-key consent. A denial or cancellation creates no key.
+If Secure Enclave access is reported as available, key-creation errors do not
+trigger fallback. See Apple's [`SecureEnclave.isAvailable`](https://developer.apple.com/documentation/cryptokit/secureenclave/isavailable).
 
-Software-backed Security.framework keys are created only when both
-`SoftwareKeyAfterExplicitConsent` and a `SoftwareKeyConsent` value are supplied.
-Their protection metadata identifies them as software keys and exportable. This
-is a lower protection level and the credential must remain identifiable as such
-in the UI.
+Software-backed Security.framework keys are created only after the distinct
+fallback approval and with both `SoftwareKeyAfterExplicitConsent` and a
+`SoftwareKeyConsent` value. Their protection metadata identifies them as
+software keys and exportable. This is a lower protection level and the
+credential remains identifiable as such in the credential list.
 
 The database stores only an opaque Security.framework label reference. Public
 coordinates are returned separately; signing uses the stored key handle and
