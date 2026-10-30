@@ -567,7 +567,7 @@ impl ClientPinHandler {
         // CTAP ignores undefined permission bits, while defined but unsupported
         // permissions must still be rejected below.
         let permissions = (requested_permissions & 0x7f) as u8;
-        if permissions & !0x07 != 0 {
+        if permissions & !(0x07 | PIN_UV_PERMISSION_LARGE_BLOB_WRITE) != 0 {
             return Ctap2Response::error(Ctap2Status::UnauthorizedPermission);
         }
         let relying_party_id = match field(fields, 10) {
