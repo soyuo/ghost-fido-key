@@ -244,11 +244,16 @@ jobs:
 
       - name: Verify Debian package includes the UHID rule
         if: runner.os == 'Linux'
+        id: verify-debian-package
         shell: bash
         run: |
           package="$(find target/release/bundle/deb -maxdepth 1 -name '*.deb' -print -quit)"
           if [[ -z "$package" ]]; then
             echo "Tauri did not produce a Debian package" >&2
+            exit 1
+          fi
+          if [[ ! -s "$package" ]]; then
+            echo "Tauri produced an empty Debian package" >&2
             exit 1
           fi
           contents="$(dpkg-deb --contents "$package")"
@@ -257,6 +262,16 @@ jobs:
             echo "The Debian package is missing the UHID udev rule" >&2
             exit 1
           fi
+          echo "package=$package" >> "$GITHUB_OUTPUT"
+
+      - name: Upload unsigned Linux Debian development package
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-${{ runner.arch }}-unsigned-development-debian-package
+          path: ${{ steps.verify-debian-package.outputs.package }}
+          if-no-files-found: error
+          retention-days: 7
 
   windows-arm64-desktop:
     name: Build Windows ARM64 desktop development installer
