@@ -74,6 +74,32 @@ pub fn register_make_credential_with_uv(
     timeout: Duration,
     user_verified: bool,
 ) -> Result<Ctap2Response, MakeCredentialExecutionError> {
+    register_make_credential_with_uv_and_presence_callback(
+        request,
+        store,
+        key_store,
+        verification,
+        key_policy,
+        software_key_consent,
+        aaguid,
+        timeout,
+        user_verified,
+        &mut || {},
+    )
+}
+
+pub(crate) fn register_make_credential_with_uv_and_presence_callback(
+    request: &MakeCredentialRequest,
+    store: &mut CredentialStore,
+    key_store: &dyn KeyStore,
+    verification: &dyn UserVerification,
+    key_policy: KeyCreationPolicy,
+    software_key_consent: Option<SoftwareKeyConsent>,
+    aaguid: [u8; 16],
+    timeout: Duration,
+    user_verified: bool,
+    on_user_presence: &mut dyn FnMut(),
+) -> Result<Ctap2Response, MakeCredentialExecutionError> {
     if (request.hmac_secret || request.cred_protect.is_some()) && !store.has_protected_storage() {
         return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
     }
@@ -100,7 +126,13 @@ pub fn register_make_credential_with_uv(
         return Ok(Ctap2Response::error(Ctap2Status::PinUvAuthTokenRequired));
     }
 
-    if let Some(response) = check_credential_exclusion(request, store, verification, timeout)? {
+    if let Some(response) = check_credential_exclusion_with_presence_callback(
+        request,
+        store,
+        verification,
+        timeout,
+        on_user_presence,
+    )? {
         return Ok(response);
     }
 
@@ -110,7 +142,7 @@ pub fn register_make_credential_with_uv(
         action: VerificationAction::RegisterCredential,
     };
     match verification.request_confirmation(&verification_request, timeout) {
-        Ok(VerificationDecision::Approved) => {}
+        Ok(VerificationDecision::Approved) => on_user_presence(),
         Ok(VerificationDecision::Rejected) => {
             return Ok(Ctap2Response::error(Ctap2Status::OperationDenied));
         }
@@ -358,6 +390,22 @@ pub fn check_credential_exclusion(
     verification: &dyn UserVerification,
     timeout: Duration,
 ) -> Result<Option<Ctap2Response>, PlatformError> {
+    check_credential_exclusion_with_presence_callback(
+        request,
+        store,
+        verification,
+        timeout,
+        &mut || {},
+    )
+}
+
+fn check_credential_exclusion_with_presence_callback(
+    request: &MakeCredentialRequest,
+    store: &CredentialStore,
+    verification: &dyn UserVerification,
+    timeout: Duration,
+    on_user_presence: &mut dyn FnMut(),
+) -> Result<Option<Ctap2Response>, PlatformError> {
     if !request.has_excluded_credential(store) {
         return Ok(None);
     }
@@ -369,7 +417,8 @@ pub fn check_credential_exclusion(
     };
 
     match verification.request_confirmation(&verification_request, timeout) {
-        Ok(VerificationDecision::Approved | VerificationDecision::Rejected) => {}
+        Ok(VerificationDecision::Approved) => on_user_presence(),
+        Ok(VerificationDecision::Rejected) => {}
         Ok(VerificationDecision::Cancelled) => {
             return Ok(Some(Ctap2Response::error(Ctap2Status::KeepaliveCancel)));
         }
