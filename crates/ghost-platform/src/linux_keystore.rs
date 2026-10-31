@@ -82,11 +82,13 @@ impl LinuxKeyStore {
             item.get_secret()
                 .map_err(|_| Self::fail("Secret Service signing key could not be read"))?,
         );
-        let key: [u8; PRIVATE_KEY_SIZE] = secret
+        let secret_bytes: &[u8; PRIVATE_KEY_SIZE] = secret
             .as_slice()
             .try_into()
             .map_err(|_| Self::fail("Secret Service signing key has an invalid size"))?;
-        Ok(Zeroizing::new(key))
+        let mut key = Zeroizing::new([0_u8; PRIVATE_KEY_SIZE]);
+        key.copy_from_slice(secret_bytes);
+        Ok(key)
     }
 
     fn ensure_unlocked(service: &SecretService) -> Result<(), PlatformError> {
