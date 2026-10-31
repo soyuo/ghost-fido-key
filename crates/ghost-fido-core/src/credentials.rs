@@ -434,7 +434,9 @@ impl CredentialStore {
         path: impl AsRef<Path>,
         protector: Arc<dyn CredentialProtector>,
     ) -> Result<Self, CredentialError> {
-        let mut connection = Connection::open(path).map_err(|_| CredentialError::StorageFailure)?;
+        let path = path.as_ref().to_path_buf();
+        let mut connection =
+            Connection::open(&path).map_err(|_| CredentialError::StorageFailure)?;
         let schema_version: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|_| CredentialError::StorageFailure)?;
@@ -449,7 +451,23 @@ impl CredentialStore {
         } else {
             match schema_version {
                 0 => {
-                    let user_tables: i64 = connection
+                    connection
+                        .busy_timeout(std::time::Duration::from_secs(30))
+                        .map_err(|_| CredentialError::StorageFailure)?;
+                    let transaction = connection
+                        .transaction_with_behavior(TransactionBehavior::Immediate)
+                        .map_err(|_| CredentialError::StorageFailure)?;
+                    let current_version: i64 = transaction
+                        .pragma_query_value(None, "user_version", |row| row.get(0))
+                        .map_err(|_| CredentialError::StorageFailure)?;
+                    if current_version != 0 {
+                        transaction
+                            .rollback()
+                            .map_err(|_| CredentialError::StorageFailure)?;
+                        drop(connection);
+                        return Self::open(&path, protector);
+                    }
+                    let user_tables: i64 = transaction
                     .query_row(
                         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
                         [],
@@ -466,9 +484,6 @@ impl CredentialStore {
                     if protected.is_empty() || protected.len() > MAX_PROTECTED_BYTES {
                         return Err(CredentialError::ProtectedDataInvalid);
                     }
-                    let transaction = connection
-                        .transaction()
-                        .map_err(|_| CredentialError::StorageFailure)?;
                     transaction
                         .execute_batch(
                             "CREATE TABLE credential_store (
@@ -488,6 +503,9 @@ impl CredentialStore {
                         .map_err(|_| CredentialError::StorageFailure)?;
                     transaction
                         .commit()
+                        .map_err(|_| CredentialError::StorageFailure)?;
+                    connection
+                        .busy_timeout(std::time::Duration::ZERO)
                         .map_err(|_| CredentialError::StorageFailure)?;
                     BTreeMap::new()
                 }
