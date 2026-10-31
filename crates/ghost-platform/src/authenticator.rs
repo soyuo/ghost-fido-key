@@ -1655,10 +1655,11 @@ impl<'a> AuthenticatorService<'a> {
             .options
             .iter()
             .any(|(name, enabled)| name == "alwaysUv" && *enabled);
-        if (pin_configured || always_uv) && pin_auth.is_none() {
-            return Ctap2Response::error(Ctap2Status::PinUvAuthTokenRequired);
-        }
-        if let Some(auth) = pin_auth {
+        let auth_required = pin_configured || always_uv;
+        if auth_required {
+            let Some(auth) = pin_auth else {
+                return Ctap2Response::error(Ctap2Status::PinUvAuthTokenRequired);
+            };
             let Some(protocol_id) = pin_protocol_id else {
                 return Ctap2Response::error(Ctap2Status::MissingParameter);
             };
@@ -1684,8 +1685,6 @@ impl<'a> AuthenticatorService<'a> {
                     status
                 });
             }
-        } else if pin_protocol_id.is_some() {
-            return Ctap2Response::error(Ctap2Status::InvalidParameter);
         }
 
         let offset = offset as usize;
