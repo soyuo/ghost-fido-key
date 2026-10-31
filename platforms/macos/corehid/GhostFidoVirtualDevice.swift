@@ -1,4 +1,5 @@
 import CoreHID
+import Dispatch
 import Foundation
 
 /// FIDO Alliance CTAPHID usage page 0xF1D0, usage 0x01, 64-byte reports.
@@ -20,24 +21,29 @@ enum GhostFidoCoreHIDError: Error, Equatable {
 
 @available(macOS 15.0, *)
 private final class GhostFidoOutputReportQueue: @unchecked Sendable {
-    private let condition = NSCondition()
+    private let lock = NSLock()
     private let capacity = 16
     private var reports: [Data] = []
+    private var waiters: [DispatchSemaphore] = []
     private var active = false
 
     func activate() {
-        condition.lock()
+        lock.lock()
         active = true
-        condition.broadcast()
-        condition.unlock()
+        lock.unlock()
     }
 
     func deactivate() {
-        condition.lock()
+        lock.lock()
         active = false
         reports.removeAll(keepingCapacity: false)
-        condition.broadcast()
-        condition.unlock()
+        let blockedWaiters = waiters
+        waiters.removeAll(keepingCapacity: false)
+        lock.unlock()
+
+        for waiter in blockedWaiters {
+            waiter.signal()
+        }
     }
 
     func enqueue(_ report: Data) throws {
@@ -45,32 +51,59 @@ private final class GhostFidoOutputReportQueue: @unchecked Sendable {
             throw HIDDeviceError.badArgument
         }
 
-        condition.lock()
-        defer { condition.unlock() }
+        lock.lock()
         guard active else {
+            lock.unlock()
             throw HIDDeviceError.notReady
         }
         guard reports.count < capacity else {
+            lock.unlock()
             throw HIDDeviceError.noResources
         }
         reports.append(report)
-        condition.signal()
+        let waiter = waiters.isEmpty ? nil : waiters.removeFirst()
+        lock.unlock()
+        waiter?.signal()
     }
 
     func dequeue(timeoutMilliseconds: UInt64) throws -> Data {
-        let deadline = Date().addingTimeInterval(Double(timeoutMilliseconds) / 1_000)
-        condition.lock()
-        defer { condition.unlock() }
+        let deadline = DispatchTime.now() + .milliseconds(Int(clamping: timeoutMilliseconds))
 
-        while reports.isEmpty && active {
-            if !condition.wait(until: deadline), reports.isEmpty {
+        while true {
+            lock.lock()
+            guard active else {
+                lock.unlock()
+                throw GhostFidoCoreHIDError.notActive
+            }
+            if !reports.isEmpty {
+                let report = reports.removeFirst()
+                lock.unlock()
+                return report
+            }
+
+            let waiter = DispatchSemaphore(value: 0)
+            waiters.append(waiter)
+            lock.unlock()
+
+            let signaled = waiter.wait(timeout: deadline) == .success
+
+            lock.lock()
+            waiters.removeAll { $0 === waiter }
+            guard active else {
+                lock.unlock()
+                throw GhostFidoCoreHIDError.notActive
+            }
+            if !reports.isEmpty {
+                let report = reports.removeFirst()
+                lock.unlock()
+                return report
+            }
+            lock.unlock()
+
+            if !signaled {
                 throw GhostFidoCoreHIDError.timedOut
             }
         }
-        guard active else {
-            throw GhostFidoCoreHIDError.notActive
-        }
-        return reports.removeFirst()
     }
 }
 
