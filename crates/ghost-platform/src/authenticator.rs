@@ -704,6 +704,15 @@ impl ClientPinHandler {
             _ => return Ctap2Response::error(Ctap2Status::PinPolicyViolation),
         };
         let new_verifier = client_pin_hash(&pin);
+        if store.pin_state().force_pin_change()
+            && new_verifier
+                .as_slice()
+                .ct_eq(verifier.as_slice())
+                .unwrap_u8()
+                == 1
+        {
+            return Ctap2Response::error(Ctap2Status::PinPolicyViolation);
+        }
         match store.set_pin_verifier_with_length(Some(*new_verifier), Some(code_points)) {
             Ok(()) => {
                 // CTAP requires a successful changePIN to revoke tokens on every channel.
