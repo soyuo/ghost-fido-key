@@ -1,3 +1,5 @@
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use crate::session_lock_transition::SessionLockTransition;
 use ghost_fido_core::{
     CredentialProtector, CredentialStore, PIN_MAX_UTF8_BYTES, PinManagementError, ProductInfo,
     configure_client_pin,
@@ -72,33 +74,15 @@ struct DesktopVerificationProvider {
     #[cfg(target_os = "windows")]
     session_monitor_available: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(target_os = "windows")]
-    windows_session_lock_transition: Mutex<WindowsSessionLockTransition>,
+    windows_session_lock_transition: Mutex<SessionLockTransition>,
     #[cfg(target_os = "linux")]
     session_locked: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(target_os = "linux")]
     session_monitor_available: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(target_os = "linux")]
-    session_lock_transition: Mutex<LinuxSessionLockTransition>,
+    session_lock_transition: Mutex<SessionLockTransition>,
     #[cfg(target_os = "linux")]
     session_context: Arc<Mutex<Option<linux_session_lock::LinuxSessionContext>>>,
-}
-
-#[cfg(target_os = "linux")]
-#[derive(Default)]
-struct LinuxSessionLockTransition {
-    generation: u64,
-    // Stable across repeated snapshots; changes for lock events and state transitions.
-    approval_epoch: u64,
-    pending: bool,
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Default)]
-struct WindowsSessionLockTransition {
-    generation: u64,
-    // Stable across repeated snapshots; changes for lock events and state transitions.
-    approval_epoch: u64,
-    pending: bool,
 }
 
 struct PendingApproval {
@@ -380,8 +364,7 @@ impl DesktopVerificationProvider {
 
         let locked = match self.session_lock_transition.lock() {
             Ok(mut transition) => {
-                transition.generation = transition.generation.wrapping_add(1);
-                transition.approval_epoch = transition.approval_epoch.wrapping_add(1);
+                transition.record_change();
                 self.session_locked.store(locked, Ordering::Release);
                 locked
             }
@@ -411,9 +394,7 @@ impl DesktopVerificationProvider {
             self.set_session_monitor_available(false);
             return;
         };
-        transition.generation = transition.generation.wrapping_add(1);
-        transition.approval_epoch = transition.approval_epoch.wrapping_add(1);
-        transition.pending = true;
+        transition.request_lock();
         self.session_locked.store(true, Ordering::Release);
         drop(transition);
         self.publish_session_lock_state(true);
@@ -425,11 +406,9 @@ impl DesktopVerificationProvider {
             self.set_session_monitor_available(false);
             return;
         };
-        transition.generation = transition.generation.wrapping_add(1);
-        transition.approval_epoch = transition.approval_epoch.wrapping_add(1);
         // A logind Unlock signal only clears the transition guard. The next
         // session check still reads LockedHint before authentication resumes.
-        transition.pending = false;
+        transition.request_unlock();
     }
 
     #[cfg(target_os = "linux")]
@@ -442,7 +421,7 @@ impl DesktopVerificationProvider {
         self.session_lock_transition
             .lock()
             .ok()
-            .map(|transition| transition.generation)
+            .map(|transition| transition.generation())
     }
 
     #[cfg(target_os = "linux")]
@@ -450,7 +429,7 @@ impl DesktopVerificationProvider {
         self.session_lock_transition
             .lock()
             .ok()
-            .map(|transition| transition.approval_epoch)
+            .map(|transition| transition.approval_epoch())
     }
 
     #[cfg(target_os = "linux")]
@@ -466,24 +445,13 @@ impl DesktopVerificationProvider {
             self.set_session_monitor_available(false);
             return false;
         };
-        if expected_generation.is_some_and(|generation| generation != transition.generation) {
+        let current_locked = self.session_locked.load(Ordering::Acquire);
+        let Some((next_locked, changed)) =
+            transition.apply_linux_snapshot(locked, expected_generation, current_locked)
+        else {
             return false;
-        }
-        transition.generation = transition.generation.wrapping_add(1);
-        let next_locked = if locked {
-            transition.pending = false;
-            true
-        } else if transition.pending {
-            // A Lock signal can arrive before the desktop environment reports
-            // LockedHint=true. Do not let that stale false value reopen approvals.
-            true
-        } else {
-            false
         };
-        let changed = self.session_locked.swap(next_locked, Ordering::AcqRel) != next_locked;
-        if changed {
-            transition.approval_epoch = transition.approval_epoch.wrapping_add(1);
-        }
+        self.session_locked.store(next_locked, Ordering::Release);
         drop(transition);
         self.publish_session_lock_state(next_locked);
         true
@@ -546,9 +514,7 @@ impl DesktopVerificationProvider {
 
         let locked = match self.windows_session_lock_transition.lock() {
             Ok(mut transition) => {
-                transition.generation = transition.generation.wrapping_add(1);
-                transition.approval_epoch = transition.approval_epoch.wrapping_add(1);
-                transition.pending = locked;
+                transition.request_state(locked);
                 self.session_locked.store(locked, Ordering::Release);
                 locked
             }
@@ -575,7 +541,7 @@ impl DesktopVerificationProvider {
         self.windows_session_lock_transition
             .lock()
             .ok()
-            .map(|transition| transition.generation)
+            .map(|transition| transition.generation())
     }
 
     #[cfg(target_os = "windows")]
@@ -583,7 +549,7 @@ impl DesktopVerificationProvider {
         self.windows_session_lock_transition
             .lock()
             .ok()
-            .map(|transition| transition.approval_epoch)
+            .map(|transition| transition.approval_epoch())
     }
 
     #[cfg(target_os = "windows")]
@@ -598,20 +564,13 @@ impl DesktopVerificationProvider {
             self.set_session_monitor_available(false);
             return None;
         };
-        if transition.generation != expected_generation {
+        let current_locked = self.session_locked.load(Ordering::Acquire);
+        let Some((next_locked, changed)) =
+            transition.apply_windows_snapshot(locked, expected_generation, current_locked)
+        else {
             return Some(false);
-        }
-        transition.generation = transition.generation.wrapping_add(1);
-        let next_locked = if locked {
-            transition.pending = false;
-            true
-        } else {
-            transition.pending
         };
-        let changed = self.session_locked.swap(next_locked, Ordering::AcqRel) != next_locked;
-        if changed {
-            transition.approval_epoch = transition.approval_epoch.wrapping_add(1);
-        }
+        self.session_locked.store(next_locked, Ordering::Release);
         drop(transition);
         if changed {
             self.publish_windows_session_lock_state(next_locked);
@@ -1814,15 +1773,13 @@ pub fn run() {
                     #[cfg(target_os = "windows")]
                     session_monitor_available: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     #[cfg(target_os = "windows")]
-                    windows_session_lock_transition: Mutex::new(
-                        WindowsSessionLockTransition::default(),
-                    ),
+                    windows_session_lock_transition: Mutex::new(SessionLockTransition::default()),
                     #[cfg(target_os = "linux")]
                     session_locked: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     #[cfg(target_os = "linux")]
                     session_monitor_available: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     #[cfg(target_os = "linux")]
-                    session_lock_transition: Mutex::new(LinuxSessionLockTransition::default()),
+                    session_lock_transition: Mutex::new(SessionLockTransition::default()),
                     #[cfg(target_os = "linux")]
                     session_context: Arc::new(Mutex::new(None)),
                 }),
@@ -1911,5 +1868,8 @@ mod audit;
 mod authenticator_runtime;
 #[cfg(target_os = "linux")]
 mod linux_session_lock;
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+mod session_lock_transition;
 #[cfg(target_os = "windows")]
 mod windows_session_lock;
