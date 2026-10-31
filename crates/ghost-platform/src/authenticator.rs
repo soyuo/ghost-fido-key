@@ -2161,8 +2161,10 @@ impl<'a> AuthenticatorService<'a> {
             self.credential_management.remove(&channel);
             return Ctap2Response::error(Ctap2Status::NoCredentials);
         };
+        let total = entries.len() as u64;
         state.position += 1;
-        rp_response(&entry, entries.len() as u64)
+        state.expires_at = Instant::now() + CREDENTIAL_MANAGEMENT_TIMEOUT;
+        rp_response(&entry, total)
     }
 
     fn can_start_credential_management(&mut self, channel: u32) -> bool {
@@ -2174,23 +2176,31 @@ impl<'a> AuthenticatorService<'a> {
     }
 
     fn next_credential_management_credential(&mut self, channel: u32) -> Ctap2Response {
-        let Some(state) = self.credential_management.get_mut(&channel) else {
-            return Ctap2Response::error(Ctap2Status::NoCredentials);
+        let (record, total) = {
+            let Some(state) = self.credential_management.get_mut(&channel) else {
+                return Ctap2Response::error(Ctap2Status::NoCredentials);
+            };
+            if Instant::now() >= state.expires_at {
+                self.credential_management.remove(&channel);
+                return Ctap2Response::error(Ctap2Status::NoCredentials);
+            }
+            let CredentialManagementEntries::Credentials { records, .. } = &state.entries else {
+                return Ctap2Response::error(Ctap2Status::NotAllowed);
+            };
+            let Some(record) = records.get(state.position).cloned() else {
+                self.credential_management.remove(&channel);
+                return Ctap2Response::error(Ctap2Status::NoCredentials);
+            };
+            state.position += 1;
+            (record, records.len() as u64)
         };
-        if Instant::now() >= state.expires_at {
-            self.credential_management.remove(&channel);
-            return Ctap2Response::error(Ctap2Status::NoCredentials);
+        let response = self.credential_response(&record, total);
+        if response.status == Ctap2Status::Success {
+            if let Some(state) = self.credential_management.get_mut(&channel) {
+                state.expires_at = Instant::now() + CREDENTIAL_MANAGEMENT_TIMEOUT;
+            }
         }
-        let CredentialManagementEntries::Credentials { records, .. } = &state.entries else {
-            return Ctap2Response::error(Ctap2Status::NotAllowed);
-        };
-        let Some(record) = records.get(state.position).cloned() else {
-            self.credential_management.remove(&channel);
-            return Ctap2Response::error(Ctap2Status::NoCredentials);
-        };
-        state.position += 1;
-        let total = records.len() as u64;
-        self.credential_response(&record, total)
+        response
     }
 
     fn credential_response(
