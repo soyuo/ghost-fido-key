@@ -1802,12 +1802,12 @@ impl<'a> AuthenticatorService<'a> {
             if complete[content_length..] != Sha256::digest(&complete[..content_length])[..16] {
                 return Ctap2Response::error(Ctap2Status::IntegrityFailure);
             }
-            if self
-                .store
-                .replace_large_blob_array(complete.as_slice())
-                .is_err()
-            {
-                return Ctap2Response::error(Ctap2Status::Other);
+            match self.store.replace_large_blob_array(complete.as_slice()) {
+                Ok(()) => {}
+                Err(CredentialError::StorageFull) => {
+                    return Ctap2Response::error(Ctap2Status::LargeBlobStorageFull);
+                }
+                Err(_) => return Ctap2Response::error(Ctap2Status::Other),
             }
         }
         Ctap2Response {
