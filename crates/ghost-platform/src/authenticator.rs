@@ -35,6 +35,15 @@ const MAX_CREDENTIAL_MANAGEMENT_CHANNELS: usize = 8;
 const RESET_POWER_UP_WINDOW: Duration = Duration::from_secs(10);
 const LEGACY_CHANNEL: u32 = u32::MAX;
 
+/// Global Credential Management operations require an unscoped token.
+fn credential_management_global_auth_status(status: Ctap2Status) -> Ctap2Status {
+    if status == Ctap2Status::UnauthorizedPermission {
+        Ctap2Status::PinAuthInvalid
+    } else {
+        status
+    }
+}
+
 struct AssertionContinuation {
     request: GetAssertionRequest,
     credentials: VecDeque<CredentialId>,
@@ -1864,7 +1873,7 @@ impl<'a> AuthenticatorService<'a> {
                     self.client_pin
                         .authorize(channel, &auth_message, auth, protocol, 0x04, None)
                 {
-                    return Ctap2Response::error(status);
+                    return Ctap2Response::error(credential_management_global_auth_status(status));
                 }
                 if !self.can_start_credential_management(channel) {
                     return Ctap2Response::error(Ctap2Status::ChannelBusy);
@@ -1892,7 +1901,11 @@ impl<'a> AuthenticatorService<'a> {
                     None,
                 ) {
                     Ok(()) => self.client_pin.token_expiration(channel),
-                    Err(status) => return Ctap2Response::error(status),
+                    Err(status) => {
+                        return Ctap2Response::error(credential_management_global_auth_status(
+                            status,
+                        ));
+                    }
                 };
                 if !self.can_start_credential_management(channel) {
                     return Ctap2Response::error(Ctap2Status::ChannelBusy);
@@ -1939,7 +1952,7 @@ impl<'a> AuthenticatorService<'a> {
                     self.client_pin
                         .authorize(channel, &auth_message, auth, protocol, 0x04, None)
                 {
-                    return Ctap2Response::error(status);
+                    return Ctap2Response::error(credential_management_global_auth_status(status));
                 }
                 self.next_credential_management_rp(channel)
             }
