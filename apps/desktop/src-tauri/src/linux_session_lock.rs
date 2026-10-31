@@ -158,6 +158,12 @@ impl LinuxSessionLockMonitor {
             }
         });
 
+        let Some(initial_generation) = verification.session_lock_generation() else {
+            for subscription in subscriptions {
+                connection.signal_unsubscribe(subscription);
+            }
+            return Err("Linux session lock transition state is unavailable.".to_owned());
+        };
         let initial_locked = match context.locked_hint() {
             Ok(locked) => locked,
             Err(error) => {
@@ -168,7 +174,10 @@ impl LinuxSessionLockMonitor {
             }
         };
 
-        verification.set_session_locked(initial_locked);
+        // Lock signals may arrive after subscription but before the initial
+        // snapshot returns. Discard the snapshot if any newer transition has
+        // already updated the generation.
+        verification.apply_session_lock_snapshot(initial_locked, initial_generation);
 
         Ok((
             Self {

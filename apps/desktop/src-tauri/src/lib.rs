@@ -76,9 +76,16 @@ struct DesktopVerificationProvider {
     #[cfg(target_os = "linux")]
     session_monitor_available: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(target_os = "linux")]
-    session_lock_transition_pending: Arc<std::sync::atomic::AtomicBool>,
+    session_lock_transition: Mutex<LinuxSessionLockTransition>,
     #[cfg(target_os = "linux")]
     session_context: Arc<Mutex<Option<linux_session_lock::LinuxSessionContext>>>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct LinuxSessionLockTransition {
+    generation: u64,
+    pending: bool,
 }
 
 struct PendingApproval {
@@ -320,10 +327,14 @@ impl DesktopVerificationProvider {
             .lock()
             .ok()
             .and_then(|context| context.as_ref().cloned());
+        let Some(generation) = self.session_lock_generation() else {
+            self.set_session_monitor_available(false);
+            return false;
+        };
         match session_context.map(|context| context.locked_hint()) {
             Some(Ok(locked)) => {
-                self.apply_session_lock_hint(locked);
-                self.session_monitor_available.load(Ordering::Acquire)
+                self.apply_session_lock_snapshot(locked, generation)
+                    && self.session_monitor_available.load(Ordering::Acquire)
                     && !locked
                     && !self.session_locked.load(Ordering::Acquire)
             }
@@ -354,7 +365,24 @@ impl DesktopVerificationProvider {
     fn set_session_locked(&self, locked: bool) {
         use std::sync::atomic::Ordering;
 
-        self.session_locked.store(locked, Ordering::Release);
+        let locked = match self.session_lock_transition.lock() {
+            Ok(mut transition) => {
+                transition.generation = transition.generation.wrapping_add(1);
+                self.session_locked.store(locked, Ordering::Release);
+                locked
+            }
+            Err(_) => {
+                self.session_monitor_available
+                    .store(false, Ordering::Release);
+                self.session_locked.store(true, Ordering::Release);
+                true
+            }
+        };
+        self.publish_session_lock_state(locked);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn publish_session_lock_state(&self, locked: bool) {
         if locked {
             self.cancel_pending();
         }
@@ -365,36 +393,73 @@ impl DesktopVerificationProvider {
     fn set_session_lock_requested(&self) {
         use std::sync::atomic::Ordering;
 
-        self.session_lock_transition_pending
-            .store(true, Ordering::Release);
-        self.set_session_locked(true);
+        let Ok(mut transition) = self.session_lock_transition.lock() else {
+            self.set_session_monitor_available(false);
+            return;
+        };
+        transition.generation = transition.generation.wrapping_add(1);
+        transition.pending = true;
+        self.session_locked.store(true, Ordering::Release);
+        drop(transition);
+        self.publish_session_lock_state(true);
     }
 
     #[cfg(target_os = "linux")]
     fn set_session_unlock_requested(&self) {
-        use std::sync::atomic::Ordering;
-
+        let Ok(mut transition) = self.session_lock_transition.lock() else {
+            self.set_session_monitor_available(false);
+            return;
+        };
+        transition.generation = transition.generation.wrapping_add(1);
         // A logind Unlock signal only clears the transition guard. The next
         // session check still reads LockedHint before authentication resumes.
-        self.session_lock_transition_pending
-            .store(false, Ordering::Release);
+        transition.pending = false;
     }
 
     #[cfg(target_os = "linux")]
     fn apply_session_lock_hint(&self, locked: bool) {
+        self.apply_session_lock_state(locked, None);
+    }
+
+    #[cfg(target_os = "linux")]
+    fn session_lock_generation(&self) -> Option<u64> {
+        self.session_lock_transition
+            .lock()
+            .ok()
+            .map(|transition| transition.generation)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn apply_session_lock_snapshot(&self, locked: bool, generation: u64) -> bool {
+        self.apply_session_lock_state(locked, Some(generation))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn apply_session_lock_state(&self, locked: bool, expected_generation: Option<u64>) -> bool {
         use std::sync::atomic::Ordering;
 
-        if locked {
-            self.session_lock_transition_pending
-                .store(false, Ordering::Release);
-            self.set_session_locked(true);
-        } else if self.session_lock_transition_pending.load(Ordering::Acquire) {
+        let Ok(mut transition) = self.session_lock_transition.lock() else {
+            self.set_session_monitor_available(false);
+            return false;
+        };
+        if expected_generation.is_some_and(|generation| generation != transition.generation) {
+            return false;
+        }
+        transition.generation = transition.generation.wrapping_add(1);
+        let next_locked = if locked {
+            transition.pending = false;
+            true
+        } else if transition.pending {
             // A Lock signal can arrive before the desktop environment reports
             // LockedHint=true. Do not let that stale false value reopen approvals.
-            self.set_session_locked(true);
+            true
         } else {
-            self.set_session_locked(false);
-        }
+            false
+        };
+        self.session_locked.store(next_locked, Ordering::Release);
+        drop(transition);
+        self.publish_session_lock_state(next_locked);
+        true
     }
 
     #[cfg(target_os = "linux")]
@@ -1494,9 +1559,7 @@ pub fn run() {
                     #[cfg(target_os = "linux")]
                     session_monitor_available: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                     #[cfg(target_os = "linux")]
-                    session_lock_transition_pending: Arc::new(std::sync::atomic::AtomicBool::new(
-                        false,
-                    )),
+                    session_lock_transition: Mutex::new(LinuxSessionLockTransition::default()),
                     #[cfg(target_os = "linux")]
                     session_context: Arc::new(Mutex::new(None)),
                 }),
