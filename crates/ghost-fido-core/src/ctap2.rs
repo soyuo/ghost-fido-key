@@ -768,6 +768,9 @@ impl MakeCredentialRequest {
         }
         let options = options.unwrap_or_default();
         let extensions = extensions.unwrap_or((false, None, false, false, None, false));
+        if options.user_presence == Some(false) {
+            return Err(MakeCredentialError::InvalidOption);
+        }
         if extensions.3 && options.resident_key != Some(true) {
             return Err(MakeCredentialError::InvalidOption);
         }
