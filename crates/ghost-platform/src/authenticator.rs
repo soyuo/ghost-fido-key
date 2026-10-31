@@ -59,6 +59,7 @@ struct LargeBlobWriteState {
     expected_length: usize,
     bytes: Zeroizing<Vec<u8>>,
     expires_at: Instant,
+    pin_uv_auth_token_expires_at: Option<Instant>,
 }
 
 impl Drop for LargeBlobWriteState {
@@ -223,7 +224,7 @@ impl ClientPinHandler {
         auth: &[u8],
         protocol: PinUvAuthProtocol,
         permission: u8,
-    ) -> Result<(), Ctap2Status> {
+    ) -> Result<Instant, Ctap2Status> {
         self.expire();
         let token = self
             .tokens
@@ -241,7 +242,7 @@ impl ClientPinHandler {
         if token.permissions & permission == 0 {
             return Err(Ctap2Status::UnauthorizedPermission);
         }
-        Ok(())
+        Ok(token.expires_at)
     }
 
     fn clear_channel(&mut self, channel: u32) {
@@ -1072,12 +1073,17 @@ impl<'a> AuthenticatorService<'a> {
         if command != Ctap2Command::CredentialManagement {
             self.credential_management.remove(&channel);
         }
-        self.large_blob_writes
-            .retain(|_, state| Instant::now() < state.expires_at);
+        self.client_pin.expire();
+        let now = Instant::now();
+        self.large_blob_writes.retain(|_, state| {
+            now < state.expires_at
+                && state
+                    .pin_uv_auth_token_expires_at
+                    .map_or(true, |expires_at| now < expires_at)
+        });
         if command != Ctap2Command::LargeBlobs {
             self.large_blob_writes.remove(&channel);
         }
-        self.client_pin.expire();
         match command {
             Ctap2Command::GetInfo => {
                 if !payload.is_empty() {
@@ -1540,6 +1546,14 @@ impl<'a> AuthenticatorService<'a> {
         if !self.store.supports_large_blobs() || self.config.get_info.max_msg_size <= 64 {
             return Ctap2Response::error(Ctap2Status::InvalidCommand);
         }
+        let now = Instant::now();
+        if self.large_blob_writes.get(&channel).is_some_and(|state| {
+            state
+                .pin_uv_auth_token_expires_at
+                .is_some_and(|expires_at| now >= expires_at)
+        }) {
+            self.large_blob_writes.remove(&channel);
+        }
         let Some(CborValue::Map(fields)) = value else {
             return Ctap2Response::error(Ctap2Status::CborUnexpectedType);
         };
@@ -1656,6 +1670,7 @@ impl<'a> AuthenticatorService<'a> {
             .iter()
             .any(|(name, enabled)| name == "alwaysUv" && *enabled);
         let auth_required = pin_configured || always_uv;
+        let mut pin_uv_auth_token_expires_at = None;
         if auth_required {
             let Some(auth) = pin_auth else {
                 return Ctap2Response::error(Ctap2Status::PinUvAuthTokenRequired);
@@ -1671,20 +1686,28 @@ impl<'a> AuthenticatorService<'a> {
             auth_message.extend_from_slice(&[0x0c, 0x00]);
             auth_message.extend_from_slice(&(offset as u32).to_le_bytes());
             auth_message.extend_from_slice(&Sha256::digest(set));
-            let authorized = self.client_pin.authorize_permission(
+            let authorization = self.client_pin.authorize_permission(
                 channel,
                 &auth_message,
                 auth,
                 protocol,
                 PIN_UV_PERMISSION_LARGE_BLOB_WRITE,
             );
-            if let Err(status) = authorized {
-                return Ctap2Response::error(if status == Ctap2Status::UnauthorizedPermission {
-                    Ctap2Status::PinAuthInvalid
-                } else {
-                    status
-                });
-            }
+            pin_uv_auth_token_expires_at = match authorization {
+                Ok(expires_at) => Some(expires_at),
+                Err(status) => {
+                    if status == Ctap2Status::PinUvAuthTokenRequired {
+                        self.large_blob_writes.remove(&channel);
+                    }
+                    return Ctap2Response::error(
+                        if status == Ctap2Status::UnauthorizedPermission {
+                            Ctap2Status::PinAuthInvalid
+                        } else {
+                            status
+                        },
+                    );
+                }
+            };
         }
 
         let offset = offset as usize;
@@ -1709,6 +1732,7 @@ impl<'a> AuthenticatorService<'a> {
                     expected_length,
                     bytes: Zeroizing::new(Vec::with_capacity(expected_length)),
                     expires_at: Instant::now() + LARGE_BLOB_WRITE_TIMEOUT,
+                    pin_uv_auth_token_expires_at,
                 },
             );
         }
