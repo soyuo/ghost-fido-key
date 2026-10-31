@@ -263,6 +263,18 @@ pub(crate) fn register_make_credential_with_uv_and_presence_callback(
             CborValue::Bool(cred_blob.is_some()),
         ));
     }
+    if request.min_pin_length
+        && store
+            .pin_state()
+            .min_pin_length_rp_ids()
+            .iter()
+            .any(|rp_id| rp_id == &request.rp.id)
+    {
+        extension_values.push((
+            CborValue::Text("minPinLength".into()),
+            CborValue::Unsigned(u64::from(store.pin_state().min_pin_length())),
+        ));
+    }
     let extensions = (!extension_values.is_empty()).then_some(CborValue::Map(extension_values));
     let response = match encode_make_credential_response_with_extensions_and_large_blob_key(
         request.rp_id_hash(),

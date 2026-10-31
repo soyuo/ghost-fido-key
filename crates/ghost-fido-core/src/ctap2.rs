@@ -622,6 +622,7 @@ pub struct MakeCredentialRequest {
     pub enforce_credential_protection_policy: bool,
     pub large_blob_key: bool,
     pub cred_blob: Option<CredentialBlob>,
+    pub min_pin_length: bool,
 }
 
 impl fmt::Debug for MakeCredentialRequest {
@@ -645,6 +646,7 @@ impl fmt::Debug for MakeCredentialRequest {
             )
             .field("large_blob_key", &self.large_blob_key)
             .field("cred_blob", &self.cred_blob.as_ref().map(|_| "[REDACTED]"))
+            .field("min_pin_length", &self.min_pin_length)
             .finish()
     }
 }
@@ -765,7 +767,7 @@ impl MakeCredentialRequest {
             return Err(MakeCredentialError::InvalidParameter(4));
         }
         let options = options.unwrap_or_default();
-        let extensions = extensions.unwrap_or((false, None, false, false, None));
+        let extensions = extensions.unwrap_or((false, None, false, false, None, false));
         if extensions.3 && options.resident_key != Some(true) {
             return Err(MakeCredentialError::InvalidOption);
         }
@@ -781,6 +783,7 @@ impl MakeCredentialRequest {
             enforce_credential_protection_policy: extensions.2,
             large_blob_key: extensions.3,
             cred_blob: extensions.4,
+            min_pin_length: extensions.5,
         })
     }
 
@@ -996,6 +999,7 @@ fn parse_make_credential_extensions(
         bool,
         bool,
         Option<CredentialBlob>,
+        bool,
     ),
     MakeCredentialError,
 > {
@@ -1007,6 +1011,7 @@ fn parse_make_credential_extensions(
     let mut enforce_policy = None;
     let mut large_blob_key = None;
     let mut cred_blob = None;
+    let mut min_pin_length = None;
     for (key, value) in entries {
         let CborValue::Text(key) = key else {
             continue;
@@ -1062,6 +1067,18 @@ fn parse_make_credential_extensions(
                 };
                 cred_blob = Some(CredentialBlob::new(bytes));
             }
+            "minPinLength" => {
+                if min_pin_length.is_some() {
+                    return Err(MakeCredentialError::InvalidParameter(6));
+                }
+                let CborValue::Bool(value) = value else {
+                    return Err(MakeCredentialError::UnexpectedType(6));
+                };
+                if !value {
+                    return Err(MakeCredentialError::InvalidParameter(6));
+                }
+                min_pin_length = Some(true);
+            }
             _ => {}
         }
     }
@@ -1071,6 +1088,7 @@ fn parse_make_credential_extensions(
         enforce_policy.unwrap_or(false),
         large_blob_key.unwrap_or(false),
         cred_blob,
+        min_pin_length.unwrap_or(false),
     ))
 }
 
@@ -1380,6 +1398,9 @@ pub struct GetInfoProfile {
     pub options: Vec<(String, bool)>,
     pub max_msg_size: u64,
     pub pin_uv_auth_protocols: Vec<u64>,
+    pub force_pin_change: bool,
+    pub min_pin_length: Option<u8>,
+    pub max_rp_ids_for_set_min_pin_length: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1479,6 +1500,21 @@ pub fn encode_get_info(profile: &GetInfoProfile) -> Result<Vec<u8>, GetInfoError
         fields.push((
             CborValue::Unsigned(0x0b),
             CborValue::Unsigned(crate::credentials::MAX_SERIALIZED_LARGE_BLOB_ARRAY as u64),
+        ));
+    }
+    if profile.force_pin_change {
+        fields.push((CborValue::Unsigned(0x0c), CborValue::Bool(true)));
+    }
+    if let Some(min_pin_length) = profile.min_pin_length {
+        fields.push((
+            CborValue::Unsigned(0x0d),
+            CborValue::Unsigned(u64::from(min_pin_length)),
+        ));
+    }
+    if let Some(max_rp_ids) = profile.max_rp_ids_for_set_min_pin_length {
+        fields.push((
+            CborValue::Unsigned(0x10),
+            CborValue::Unsigned(u64::from(max_rp_ids)),
         ));
     }
     if profile

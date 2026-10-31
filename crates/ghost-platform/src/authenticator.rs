@@ -11,13 +11,15 @@ use zeroize::{Zeroize, Zeroizing};
 use ghost_fido_core::{
     CborValue, CredentialId, CredentialStore, Ctap2Command, Ctap2Request, Ctap2Response,
     Ctap2Status, GetAssertionRequest, GetInfoError, GetInfoHandler, GetInfoProfile,
-    MAX_SERIALIZED_LARGE_BLOB_ARRAY, MakeCredentialRequest, PIN_ENCRYPTED_SIZE, PIN_HASH_SIZE,
-    PIN_UV_AUTH_PROTOCOL, PIN_UV_AUTH_PROTOCOL_TWO, PinKeyAgreement, PinUvAuthProtocol,
-    PinUvAuthSharedSecret, client_pin_hash, decode_cbor, encode_cbor,
+    MAX_RP_IDS_FOR_MIN_PIN_LENGTH, MAX_SERIALIZED_LARGE_BLOB_ARRAY, MakeCredentialRequest,
+    PIN_ENCRYPTED_SIZE, PIN_HASH_SIZE, PIN_UV_AUTH_PROTOCOL, PIN_UV_AUTH_PROTOCOL_TWO,
+    PinKeyAgreement, PinUvAuthProtocol, PinUvAuthSharedSecret, client_pin_hash, decode_cbor,
+    encode_cbor,
 };
 
 const PIN_PROTOCOL_TIMEOUT: Duration = Duration::from_secs(30);
 const PIN_UV_PERMISSION_LARGE_BLOB_WRITE: u8 = 0x10;
+const PIN_UV_PERMISSION_AUTHENTICATOR_CONFIG: u8 = 0x20;
 
 use crate::{
     GetAssertionExecutionError, KeyCreationPolicy, KeyReference, KeyStore,
@@ -354,6 +356,162 @@ impl ClientPinHandler {
         }
     }
 
+    fn handle_config(
+        &mut self,
+        channel: u32,
+        value: Option<CborValue>,
+        store: &mut CredentialStore,
+        always_uv: bool,
+    ) -> Ctap2Response {
+        let Some(CborValue::Map(fields)) = value else {
+            return Ctap2Response::error(Ctap2Status::CborUnexpectedType);
+        };
+        if has_duplicate_cbor_keys(&fields) {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        }
+        let subcommand = match field(&fields, 1) {
+            Some(CborValue::Unsigned(subcommand)) => *subcommand,
+            Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
+            None => return Ctap2Response::error(Ctap2Status::MissingParameter),
+        };
+        let Ok(subcommand) = u8::try_from(subcommand) else {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        };
+        if subcommand != 3 {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        }
+
+        let params = match field(&fields, 2) {
+            Some(CborValue::Map(params)) => Some(params),
+            Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
+            None => None,
+        };
+        if params.is_some_and(|params| has_duplicate_cbor_keys(params)) {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        }
+        let params_fields = params.cloned().unwrap_or_default();
+        let auth = match field(&fields, 4) {
+            Some(CborValue::Bytes(auth)) => Some(auth.as_slice()),
+            Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
+            None => None,
+        };
+        let protocol_id = match field(&fields, 3) {
+            Some(CborValue::Unsigned(value)) => match u8::try_from(*value) {
+                Ok(value) => Some(value),
+                Err(_) => return Ctap2Response::error(Ctap2Status::InvalidParameter),
+            },
+            Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
+            None => None,
+        };
+        let auth_required = store.pin_state().verifier().is_some() || always_uv;
+        if auth_required && auth.is_none() {
+            return Ctap2Response::error(Ctap2Status::PinUvAuthTokenRequired);
+        }
+        if auth.is_some() != protocol_id.is_some() {
+            return Ctap2Response::error(if auth.is_some() {
+                Ctap2Status::MissingParameter
+            } else {
+                Ctap2Status::InvalidParameter
+            });
+        }
+        if let (Some(auth), Some(protocol_id)) = (auth, protocol_id) {
+            let Some(protocol) = PinUvAuthProtocol::from_id(u64::from(protocol_id)) else {
+                return Ctap2Response::error(Ctap2Status::InvalidParameter);
+            };
+            if auth.len() != protocol.auth_parameter_size() {
+                return Ctap2Response::error(Ctap2Status::InvalidParameter);
+            }
+            let params_value = CborValue::Map(params_fields.clone());
+            let encoded_params = if params.is_some() {
+                match encode_cbor(&params_value) {
+                    Ok(encoded) => encoded,
+                    Err(_) => return Ctap2Response::error(Ctap2Status::Other),
+                }
+            } else {
+                Vec::new()
+            };
+            let mut message = Vec::with_capacity(34 + encoded_params.len());
+            message.extend_from_slice(&[0xff; 32]);
+            message.extend_from_slice(&[0x0d, subcommand]);
+            message.extend_from_slice(&encoded_params);
+            if self
+                .authorize_permission(
+                    channel,
+                    &message,
+                    auth,
+                    protocol,
+                    PIN_UV_PERMISSION_AUTHENTICATOR_CONFIG,
+                )
+                .is_err()
+            {
+                return Ctap2Response::error(Ctap2Status::PinAuthInvalid);
+            }
+        }
+
+        if field(&params_fields, 4).is_some() {
+            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+        }
+        let new_min_pin_length = match field(&params_fields, 1) {
+            Some(CborValue::Unsigned(value)) => match u8::try_from(*value) {
+                Ok(value) => Some(value),
+                Err(_) => return Ctap2Response::error(Ctap2Status::InvalidParameter),
+            },
+            Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
+            None => None,
+        };
+        let min_pin_length_rp_ids = match field(&params_fields, 2) {
+            Some(CborValue::Array(values)) => {
+                if values.len() > MAX_RP_IDS_FOR_MIN_PIN_LENGTH {
+                    return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                }
+                let mut rp_ids = Vec::with_capacity(values.len());
+                for value in values {
+                    let CborValue::Text(rp_id) = value else {
+                        return Ctap2Response::error(Ctap2Status::CborUnexpectedType);
+                    };
+                    if rp_id.is_empty()
+                        || rp_id.len() > 253
+                        || rp_ids.iter().any(|existing| existing == rp_id)
+                    {
+                        return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                    }
+                    rp_ids.push(rp_id.clone());
+                }
+                Some(rp_ids)
+            }
+            Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
+            None => None,
+        };
+        let force_pin_change = match field(&params_fields, 3) {
+            Some(CborValue::Bool(value)) => *value,
+            Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
+            None => false,
+        };
+        if force_pin_change && store.pin_state().verifier().is_none() {
+            return Ctap2Response::error(Ctap2Status::PinNotSet);
+        }
+        let min_pin_length = new_min_pin_length.unwrap_or(store.pin_state().min_pin_length());
+        if min_pin_length < store.pin_state().min_pin_length() {
+            return Ctap2Response::error(Ctap2Status::PinPolicyViolation);
+        }
+
+        match store.set_min_pin_policy(min_pin_length, min_pin_length_rp_ids, force_pin_change) {
+            Ok(newly_forced) => {
+                if newly_forced {
+                    self.clear_all();
+                }
+                Ctap2Response {
+                    status: Ctap2Status::Success,
+                    payload: Vec::new(),
+                }
+            }
+            Err(ghost_fido_core::CredentialError::InvalidPinState) => {
+                Ctap2Response::error(Ctap2Status::InvalidParameter)
+            }
+            Err(_) => Ctap2Response::error(Ctap2Status::Other),
+        }
+    }
+
     fn record_pin_mismatch(&mut self, store: &mut CredentialStore) -> Ctap2Status {
         let retries = store.pin_state().retries().saturating_sub(1);
         self.consecutive_pin_mismatches = self.consecutive_pin_mismatches.saturating_add(1);
@@ -459,8 +617,12 @@ impl ClientPinHandler {
         let Ok(pin) = pin else {
             return Ctap2Response::error(Ctap2Status::PinPolicyViolation);
         };
+        let code_points = match pin_code_point_length(&pin) {
+            Some(length) if length >= store.pin_state().min_pin_length() => length,
+            _ => return Ctap2Response::error(Ctap2Status::PinPolicyViolation),
+        };
         let verifier = client_pin_hash(&pin);
-        match store.set_pin_verifier(Some(*verifier)) {
+        match store.set_pin_verifier_with_length(Some(*verifier), Some(code_points)) {
             Ok(()) => Ctap2Response::error(Ctap2Status::Success),
             Err(_) => Ctap2Response::error(Ctap2Status::Other),
         }
@@ -528,8 +690,12 @@ impl ClientPinHandler {
         let Ok(pin) = decrypted else {
             return Ctap2Response::error(Ctap2Status::PinPolicyViolation);
         };
+        let code_points = match pin_code_point_length(&pin) {
+            Some(length) if length >= store.pin_state().min_pin_length() => length,
+            _ => return Ctap2Response::error(Ctap2Status::PinPolicyViolation),
+        };
         let new_verifier = client_pin_hash(&pin);
-        match store.set_pin_verifier(Some(*new_verifier)) {
+        match store.set_pin_verifier_with_length(Some(*new_verifier), Some(code_points)) {
             Ok(()) => {
                 // CTAP requires a successful changePIN to revoke tokens on every channel.
                 // Clearing drops each entry, whose Drop implementation zeroizes its token.
@@ -567,7 +733,10 @@ impl ClientPinHandler {
         // CTAP ignores undefined permission bits, while defined but unsupported
         // permissions must still be rejected below.
         let permissions = (requested_permissions & 0x7f) as u8;
-        if permissions & !(0x07 | PIN_UV_PERMISSION_LARGE_BLOB_WRITE) != 0 {
+        if permissions
+            & !(0x07 | PIN_UV_PERMISSION_LARGE_BLOB_WRITE | PIN_UV_PERMISSION_AUTHENTICATOR_CONFIG)
+            != 0
+        {
             return Ctap2Response::error(Ctap2Status::UnauthorizedPermission);
         }
         let relying_party_id = match field(fields, 10) {
@@ -593,6 +762,9 @@ impl ClientPinHandler {
         let Some(verifier) = store.pin_state().verifier().copied().map(Zeroizing::new) else {
             return Ctap2Response::error(Ctap2Status::PinNotSet);
         };
+        if store.pin_state().force_pin_change() {
+            return Ctap2Response::error(Ctap2Status::PinPolicyViolation);
+        }
         if store.pin_state().retries() == 0 {
             return Ctap2Response::error(Ctap2Status::PinBlocked);
         }
@@ -668,6 +840,18 @@ fn field(fields: &[(CborValue, CborValue)], key: u64) -> Option<&CborValue> {
         .iter()
         .find(|(candidate, _)| *candidate == CborValue::Unsigned(key))
         .map(|(_, value)| value)
+}
+
+fn has_duplicate_cbor_keys(fields: &[(CborValue, CborValue)]) -> bool {
+    fields
+        .iter()
+        .enumerate()
+        .any(|(index, (key, _))| fields[..index].iter().any(|(previous, _)| previous == key))
+}
+
+fn pin_code_point_length(pin: &[u8]) -> Option<u8> {
+    let pin = std::str::from_utf8(pin).ok()?;
+    u8::try_from(pin.chars().count()).ok()
 }
 
 fn uint_field(fields: &[(CborValue, CborValue)], key: u64) -> Option<u64> {
@@ -900,6 +1084,12 @@ impl<'a> AuthenticatorService<'a> {
                 let mut profile = self.config.get_info.clone();
                 let pin_is_set = self.store.pin_state().verifier().is_some();
                 let protected_storage_available = self.store.has_protected_storage();
+                profile.min_pin_length =
+                    protected_storage_available.then(|| self.store.pin_state().min_pin_length());
+                profile.force_pin_change =
+                    protected_storage_available && self.store.pin_state().force_pin_change();
+                profile.max_rp_ids_for_set_min_pin_length =
+                    protected_storage_available.then_some(MAX_RP_IDS_FOR_MIN_PIN_LENGTH as u8);
                 let large_blobs_available =
                     self.store.supports_large_blobs() && profile.max_msg_size > 64;
                 let credential_management_ready =
@@ -919,6 +1109,13 @@ impl<'a> AuthenticatorService<'a> {
                 profile
                     .options
                     .push(("largeBlobs".into(), large_blobs_available));
+                profile
+                    .options
+                    .retain(|(name, _)| name != "setMinPINLength" && name != "authnrCfg");
+                if protected_storage_available {
+                    profile.options.push(("setMinPINLength".into(), true));
+                    profile.options.push(("authnrCfg".into(), true));
+                }
                 for (name, value) in &mut profile.options {
                     if name == "pinUvAuthToken" {
                         *value = false;
@@ -940,11 +1137,13 @@ impl<'a> AuthenticatorService<'a> {
                         && extension != "credProtect"
                         && extension != "credBlob"
                         && extension != "largeBlobKey"
+                        && extension != "minPinLength"
                 });
                 if protected_storage_available {
                     profile.extensions.push("hmac-secret".into());
                     profile.extensions.push("credProtect".into());
                     profile.extensions.push("credBlob".into());
+                    profile.extensions.push("minPinLength".into());
                 }
                 if large_blobs_available {
                     profile.extensions.push("largeBlobKey".into());
@@ -1005,6 +1204,9 @@ impl<'a> AuthenticatorService<'a> {
                     return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
                 }
                 if typed.cred_blob.is_some() && !self.store.has_protected_storage() {
+                    return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
+                }
+                if typed.min_pin_length && !self.store.has_protected_storage() {
                     return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
                 }
                 let user_verified = match self.verify_pin_authorization(
@@ -1149,6 +1351,20 @@ impl<'a> AuthenticatorService<'a> {
             Ctap2Command::ClientPin => {
                 Ok(self.client_pin.handle(channel, decoded_payload, self.store))
             }
+            Ctap2Command::Config => {
+                if !self.store.has_protected_storage() {
+                    return Ok(Ctap2Response::error(Ctap2Status::InvalidCommand));
+                }
+                let always_uv = self
+                    .config
+                    .get_info
+                    .options
+                    .iter()
+                    .any(|(name, enabled)| name == "alwaysUv" && *enabled);
+                Ok(self
+                    .client_pin
+                    .handle_config(channel, decoded_payload, self.store, always_uv))
+            }
             Ctap2Command::CredentialManagement => {
                 Ok(self.handle_credential_management(channel, decoded_payload))
             }
@@ -1223,7 +1439,6 @@ impl<'a> AuthenticatorService<'a> {
                 }
                 Ok(Ctap2Response::error(Ctap2Status::Success))
             }
-            _ => Ok(Ctap2Response::error(Ctap2Status::InvalidCommand)),
         }
     }
 

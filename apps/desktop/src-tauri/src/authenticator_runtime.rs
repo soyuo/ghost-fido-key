@@ -127,6 +127,9 @@ pub fn run(
             ],
             max_msg_size: 7609,
             pin_uv_auth_protocols: Vec::new(),
+            force_pin_change: false,
+            min_pin_length: None,
+            max_rp_ids_for_set_min_pin_length: None,
         };
         let config = AuthenticatorServiceConfig {
             get_info: profile,

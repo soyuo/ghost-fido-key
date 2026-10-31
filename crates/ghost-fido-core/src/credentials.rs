@@ -13,8 +13,8 @@ use zeroize::{Zeroize, Zeroizing};
 
 use crate::cbor::{CborError, CborLimits, CborValue, decode_with_limits, encode as encode_cbor};
 
-const STORAGE_SCHEMA_VERSION: i64 = 15;
-const PIN_STATE_SCHEMA_VERSION: i64 = 8;
+const STORAGE_SCHEMA_VERSION: i64 = 16;
+const PIN_STATE_SCHEMA_VERSION: i64 = 9;
 const CREDENTIAL_RECORD_SCHEMA_VERSION: i64 = 9;
 const RESET_JOURNAL_SCHEMA_VERSION: i64 = 9;
 const RESET_METADATA_KEY_CLEANUP_SCHEMA_VERSION: i64 = 11;
@@ -29,6 +29,9 @@ const PIN_STATE_AAD_V1: &[u8] = b"ghost-fido/pin-state/v1";
 const LARGE_BLOB_ARRAY_AAD_V1: &[u8] = b"ghost-fido/large-blob-array/v1";
 const RESET_JOURNAL_AAD_V1: &[u8] = b"ghost-fido/reset-journal/v1";
 const PIN_RETRY_LIMIT: u8 = 8;
+pub const DEFAULT_MIN_PIN_LENGTH: u8 = 4;
+pub const MAX_MIN_PIN_LENGTH: u8 = 63;
+pub const MAX_RP_IDS_FOR_MIN_PIN_LENGTH: usize = 8;
 const MAX_PERSISTED_RECORDS: usize = 4096;
 const MAX_PERSISTED_BYTES: usize = 16 * 1024 * 1024;
 const MAX_PROTECTED_BYTES: usize = MAX_PERSISTED_BYTES + 4096;
@@ -367,6 +370,10 @@ impl Default for CredentialStore {
 pub struct PinState {
     verifier: Option<[u8; 16]>,
     retries: u8,
+    min_pin_length: u8,
+    pin_code_point_length: Option<u8>,
+    force_pin_change: bool,
+    min_pin_length_rp_ids: Vec<String>,
 }
 
 impl Default for PinState {
@@ -374,6 +381,10 @@ impl Default for PinState {
         Self {
             verifier: None,
             retries: PIN_RETRY_LIMIT,
+            min_pin_length: DEFAULT_MIN_PIN_LENGTH,
+            pin_code_point_length: None,
+            force_pin_change: false,
+            min_pin_length_rp_ids: Vec::new(),
         }
     }
 }
@@ -384,6 +395,12 @@ impl fmt::Debug for PinState {
             .debug_struct("PinState")
             .field("pin_is_set", &self.verifier.is_some())
             .field("retries", &self.retries)
+            .field("min_pin_length", &self.min_pin_length)
+            .field("force_pin_change", &self.force_pin_change)
+            .field(
+                "min_pin_length_rp_id_count",
+                &self.min_pin_length_rp_ids.len(),
+            )
             .finish()
     }
 }
@@ -405,6 +422,55 @@ impl PinState {
     #[must_use]
     pub const fn retries(&self) -> u8 {
         self.retries
+    }
+
+    #[must_use]
+    pub const fn min_pin_length(&self) -> u8 {
+        self.min_pin_length
+    }
+
+    #[must_use]
+    pub const fn pin_code_point_length(&self) -> Option<u8> {
+        self.pin_code_point_length
+    }
+
+    #[must_use]
+    pub const fn force_pin_change(&self) -> bool {
+        self.force_pin_change
+    }
+
+    #[must_use]
+    pub fn min_pin_length_rp_ids(&self) -> &[String] {
+        &self.min_pin_length_rp_ids
+    }
+
+    pub fn validate(&self) -> Result<(), CredentialError> {
+        if self.retries > PIN_RETRY_LIMIT
+            || (self.verifier.is_none() && self.retries != PIN_RETRY_LIMIT)
+            || !(DEFAULT_MIN_PIN_LENGTH..=MAX_MIN_PIN_LENGTH).contains(&self.min_pin_length)
+            || (self.verifier.is_none()
+                && (self.pin_code_point_length.is_some() || self.force_pin_change))
+            || self.pin_code_point_length.is_some_and(|length| {
+                length > MAX_MIN_PIN_LENGTH || length < DEFAULT_MIN_PIN_LENGTH
+            })
+            || (self.verifier.is_some()
+                && !self.force_pin_change
+                && (self
+                    .pin_code_point_length
+                    .is_some_and(|length| length < self.min_pin_length)
+                    || (self.pin_code_point_length.is_none()
+                        && self.min_pin_length > DEFAULT_MIN_PIN_LENGTH)))
+            || self.min_pin_length_rp_ids.len() > MAX_RP_IDS_FOR_MIN_PIN_LENGTH
+        {
+            return Err(CredentialError::InvalidPinState);
+        }
+        let mut seen = BTreeSet::new();
+        for rp_id in &self.min_pin_length_rp_ids {
+            if rp_id.is_empty() || rp_id.len() > MAX_RP_ID_BYTES || !seen.insert(rp_id) {
+                return Err(CredentialError::InvalidPinState);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1511,11 +1577,7 @@ impl CredentialStore {
 
     /// Persists PIN verifier and retry state through the credential protector.
     pub fn set_pin_state(&mut self, pin_state: PinState) -> Result<(), CredentialError> {
-        if pin_state.retries > PIN_RETRY_LIMIT
-            || (pin_state.verifier.is_none() && pin_state.retries != PIN_RETRY_LIMIT)
-        {
-            return Err(CredentialError::InvalidPinState);
-        }
+        pin_state.validate()?;
         self.persist_pin_state(&pin_state)?;
         self.pin_state = pin_state;
         Ok(())
@@ -1523,18 +1585,85 @@ impl CredentialStore {
 
     /// Persists a new retry count before the corresponding protocol response is sent.
     pub fn set_pin_retries(&mut self, retries: u8) -> Result<(), CredentialError> {
-        self.set_pin_state(PinState {
-            verifier: self.pin_state.verifier,
-            retries,
-        })
+        let mut next = self.pin_state.clone();
+        next.retries = retries;
+        self.set_pin_state(next)
     }
 
     /// Replaces the verifier and restores the protocol retry budget.
     pub fn set_pin_verifier(&mut self, verifier: Option<[u8; 16]>) -> Result<(), CredentialError> {
-        self.set_pin_state(PinState {
-            verifier,
-            retries: PIN_RETRY_LIMIT,
-        })
+        // This legacy API cannot know the replacement PIN's length. Keep it
+        // unknown rather than carrying metadata from the previous PIN.
+        let length = None;
+        self.set_pin_verifier_with_length(verifier, length)
+    }
+
+    /// Stores a PIN verifier and its Unicode code-point length after successful PIN setup/change.
+    pub fn set_pin_verifier_with_length(
+        &mut self,
+        verifier: Option<[u8; 16]>,
+        pin_code_point_length: Option<u8>,
+    ) -> Result<(), CredentialError> {
+        let mut next = self.pin_state.clone();
+        next.verifier = verifier;
+        next.retries = PIN_RETRY_LIMIT;
+        next.pin_code_point_length = if next.verifier.is_some() {
+            pin_code_point_length
+        } else {
+            None
+        };
+        if next.verifier.is_none() {
+            next.force_pin_change = false;
+        } else if let Some(length) = pin_code_point_length {
+            // A successfully installed PIN must satisfy the active policy.
+            if length < next.min_pin_length {
+                return Err(CredentialError::InvalidPinState);
+            }
+            next.force_pin_change = false;
+        } else {
+            // Legacy callers cannot report the PIN length. Preserve their
+            // behavior at the default policy, but require a known-compliant
+            // change before using a PIN under a higher minimum.
+            next.force_pin_change |= next.min_pin_length > DEFAULT_MIN_PIN_LENGTH;
+        }
+        self.set_pin_state(next)
+    }
+
+    /// Atomically raises minimum-PIN policy and optionally replaces its RP allowlist.
+    pub fn set_min_pin_policy(
+        &mut self,
+        min_pin_length: u8,
+        min_pin_length_rp_ids: Option<Vec<String>>,
+        force_pin_change: bool,
+    ) -> Result<bool, CredentialError> {
+        if force_pin_change && self.pin_state.verifier.is_none() {
+            return Err(CredentialError::InvalidPinState);
+        }
+        if !(DEFAULT_MIN_PIN_LENGTH..=MAX_MIN_PIN_LENGTH).contains(&min_pin_length)
+            || min_pin_length < self.pin_state.min_pin_length
+        {
+            return Err(CredentialError::InvalidPinState);
+        }
+        let mut next = self.pin_state.clone();
+        if let Some(rp_ids) = min_pin_length_rp_ids.filter(|ids| !ids.is_empty()) {
+            if rp_ids.len() > MAX_RP_IDS_FOR_MIN_PIN_LENGTH {
+                return Err(CredentialError::InvalidPinState);
+            }
+            next.min_pin_length_rp_ids = rp_ids;
+        }
+        next.min_pin_length = min_pin_length;
+        let minimum_increased = min_pin_length > self.pin_state.min_pin_length;
+        let current_pin_too_short = minimum_increased
+            && next.verifier.is_some()
+            && next
+                .pin_code_point_length
+                .is_none_or(|length| length < min_pin_length);
+        let should_force_change =
+            next.verifier.is_some() && (force_pin_change || current_pin_too_short);
+        let newly_forced = should_force_change && !next.force_pin_change;
+        next.force_pin_change |= should_force_change;
+        self.set_pin_state(next)?;
+        Ok(newly_forced)
     }
 
     #[must_use]
@@ -2665,12 +2794,28 @@ fn initialize_pin_state(
 }
 
 fn encode_pin_state(state: &PinState) -> Result<Zeroizing<Vec<u8>>, CredentialError> {
+    state.validate()?;
     let value = Zeroizing::new(CborValue::Array(vec![
         state
             .verifier
             .as_ref()
             .map_or(CborValue::Null, |bytes| CborValue::Bytes(bytes.to_vec())),
         CborValue::Unsigned(u64::from(state.retries)),
+        CborValue::Unsigned(u64::from(state.min_pin_length)),
+        state
+            .pin_code_point_length
+            .map_or(CborValue::Null, |length| {
+                CborValue::Unsigned(u64::from(length))
+            }),
+        CborValue::Bool(state.force_pin_change),
+        CborValue::Array(
+            state
+                .min_pin_length_rp_ids
+                .iter()
+                .cloned()
+                .map(CborValue::Text)
+                .collect(),
+        ),
     ]));
     encode_cbor(&value)
         .map(Zeroizing::new)
@@ -2682,9 +2827,9 @@ fn decode_pin_state(bytes: &[u8]) -> Result<PinState, CredentialError> {
         decode_with_limits(
             bytes,
             CborLimits {
-                max_depth: 2,
-                max_items: 4,
-                max_bytes: 64,
+                max_depth: 3,
+                max_items: 32,
+                max_bytes: 4096,
             },
         )
         .map_err(|_| CredentialError::ProtectedDataInvalid)?,
@@ -2692,7 +2837,10 @@ fn decode_pin_state(bytes: &[u8]) -> Result<PinState, CredentialError> {
     let CborValue::Array(fields) = &*value else {
         return Err(CredentialError::ProtectedDataInvalid);
     };
-    let [verifier, CborValue::Unsigned(retries)] = fields.as_slice() else {
+    if fields.len() != 2 && fields.len() != 6 {
+        return Err(CredentialError::ProtectedDataInvalid);
+    }
+    let [verifier, CborValue::Unsigned(retries), rest @ ..] = fields.as_slice() else {
         return Err(CredentialError::ProtectedDataInvalid);
     };
     let verifier = match verifier {
@@ -2706,7 +2854,56 @@ fn decode_pin_state(bytes: &[u8]) -> Result<PinState, CredentialError> {
     if retries > PIN_RETRY_LIMIT || (verifier.is_none() && retries != PIN_RETRY_LIMIT) {
         return Err(CredentialError::ProtectedDataInvalid);
     }
-    Ok(PinState { verifier, retries })
+    let state = if rest.is_empty() {
+        // Older protected records did not store PIN length. Keep it unknown so
+        // a later policy increase conservatively requires a PIN change.
+        PinState {
+            verifier,
+            retries,
+            min_pin_length: DEFAULT_MIN_PIN_LENGTH,
+            pin_code_point_length: None,
+            force_pin_change: false,
+            min_pin_length_rp_ids: Vec::new(),
+        }
+    } else {
+        let [
+            CborValue::Unsigned(min_pin_length),
+            pin_code_point_length,
+            CborValue::Bool(force_pin_change),
+            CborValue::Array(rp_ids),
+        ] = rest
+        else {
+            return Err(CredentialError::ProtectedDataInvalid);
+        };
+        let min_pin_length =
+            u8::try_from(*min_pin_length).map_err(|_| CredentialError::ProtectedDataInvalid)?;
+        let pin_code_point_length = match pin_code_point_length {
+            CborValue::Null => None,
+            CborValue::Unsigned(length) => {
+                Some(u8::try_from(*length).map_err(|_| CredentialError::ProtectedDataInvalid)?)
+            }
+            _ => return Err(CredentialError::ProtectedDataInvalid),
+        };
+        let rp_ids = rp_ids
+            .iter()
+            .map(|rp_id| match rp_id {
+                CborValue::Text(rp_id) => Ok(rp_id.clone()),
+                _ => Err(CredentialError::ProtectedDataInvalid),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        PinState {
+            verifier,
+            retries,
+            min_pin_length,
+            pin_code_point_length,
+            force_pin_change: *force_pin_change,
+            min_pin_length_rp_ids: rp_ids,
+        }
+    };
+    state
+        .validate()
+        .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+    Ok(state)
 }
 
 fn read_protected_payload(connection: &Connection) -> Result<Vec<u8>, CredentialError> {
