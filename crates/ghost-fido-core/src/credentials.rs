@@ -1030,14 +1030,10 @@ impl CredentialStore {
         if conflicting_cleanup_pending {
             return Err(CredentialError::ProviderKeyCleanupPending);
         }
-        let journal_payload: Option<Vec<u8>> = transaction
-            .query_row(
-                "SELECT payload FROM credential_deletion_journal WHERE singleton = 1",
-                [],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|_| CredentialError::StorageFailure)?;
+        let journal_payload = read_protected_table_payload(
+            &transaction,
+            ProtectedPayloadTable::CredentialDeletionJournal,
+        )?;
         let current_records = read_credential_records(&transaction, backend.protector.as_ref())?;
         let Some(journal_payload) = journal_payload else {
             if current_records
@@ -1408,14 +1404,8 @@ impl CredentialStore {
                 return Err(CredentialError::ProtectedDataInvalid);
             }
 
-            let protected_reset = transaction
-                .query_row(
-                    "SELECT payload FROM reset_journal WHERE singleton = 1",
-                    [],
-                    |row| row.get::<_, Vec<u8>>(0),
-                )
-                .optional()
-                .map_err(|_| CredentialError::StorageFailure)?;
+            let protected_reset =
+                read_protected_table_payload(&transaction, ProtectedPayloadTable::ResetJournal)?;
             let metadata_key_cleanup_pending = metadata_key_cleanup_pending != 0;
             let pending_reset_keys = if metadata_key_cleanup_pending {
                 None
@@ -2145,13 +2135,9 @@ fn read_pin_state(
     transaction: &Transaction<'_>,
     protector: &dyn CredentialProtector,
 ) -> Result<PinState, CredentialError> {
-    let protected: Vec<u8> = transaction
-        .query_row(
-            "SELECT payload FROM pin_state WHERE singleton = 1",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+    let protected = read_protected_table_payload(transaction, ProtectedPayloadTable::PinState)
+        .map_err(|_| CredentialError::ProtectedDataInvalid)?
+        .ok_or(CredentialError::ProtectedDataInvalid)?;
     validate_protected_payload(&protected)?;
     let plaintext = protector
         .unprotect(&protected, PIN_STATE_AAD_V1)
@@ -2163,13 +2149,10 @@ fn read_large_blob_array(
     transaction: &Transaction<'_>,
     protector: &dyn CredentialProtector,
 ) -> Result<Zeroizing<Vec<u8>>, CredentialError> {
-    let protected: Vec<u8> = transaction
-        .query_row(
-            "SELECT payload FROM large_blob_state WHERE singleton = 1",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|_| CredentialError::ProtectedDataInvalid)?;
+    let protected =
+        read_protected_table_payload(transaction, ProtectedPayloadTable::LargeBlobState)
+            .map_err(|_| CredentialError::ProtectedDataInvalid)?
+            .ok_or(CredentialError::ProtectedDataInvalid)?;
     validate_protected_payload(&protected)?;
     let plaintext = Zeroizing::new(
         protector
@@ -2242,14 +2225,8 @@ fn initialize_large_blob_array(
             .map_err(|_| CredentialError::StorageFailure)?;
     }
 
-    let payload: Option<Vec<u8>> = transaction
-        .query_row(
-            "SELECT payload FROM large_blob_state WHERE singleton = 1",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|_| CredentialError::StorageFailure)?;
+    let payload =
+        read_protected_table_payload(&transaction, ProtectedPayloadTable::LargeBlobState)?;
     let array = match payload {
         Some(_payload) if metadata_key_cleanup_pending => {
             Zeroizing::new(INITIAL_LARGE_BLOB_ARRAY.to_vec())
@@ -2297,14 +2274,8 @@ fn read_provider_key_journal(
     transaction: &Transaction<'_>,
     protector: &dyn CredentialProtector,
 ) -> Result<Option<KeyHandle>, CredentialError> {
-    let payload: Option<Vec<u8>> = transaction
-        .query_row(
-            "SELECT payload FROM provider_key_journal WHERE singleton = 1",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|_| CredentialError::StorageFailure)?;
+    let payload =
+        read_protected_table_payload(transaction, ProtectedPayloadTable::ProviderKeyJournal)?;
     let Some(payload) = payload else {
         return Ok(None);
     };
@@ -2322,14 +2293,10 @@ fn read_credential_deletion_journal(
     protector: &dyn CredentialProtector,
     records: &BTreeMap<CredentialId, CredentialRecord>,
 ) -> Result<Option<(CredentialId, KeyHandle)>, CredentialError> {
-    let payload = transaction
-        .query_row(
-            "SELECT payload FROM credential_deletion_journal WHERE singleton = 1",
-            [],
-            |row| row.get::<_, Vec<u8>>(0),
-        )
-        .optional()
-        .map_err(|_| CredentialError::StorageFailure)?;
+    let payload = read_protected_table_payload(
+        transaction,
+        ProtectedPayloadTable::CredentialDeletionJournal,
+    )?;
     let Some(payload) = payload else {
         return Ok(None);
     };
@@ -2500,14 +2467,8 @@ fn initialize_provider_key_journal(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| CredentialError::StorageFailure)?;
-    let payload = transaction
-        .query_row(
-            "SELECT payload FROM provider_key_journal WHERE singleton = 1",
-            [],
-            |row| row.get::<_, Vec<u8>>(0),
-        )
-        .optional()
-        .map_err(|_| CredentialError::StorageFailure)?;
+    let payload =
+        read_protected_table_payload(&transaction, ProtectedPayloadTable::ProviderKeyJournal)?;
     transaction
         .commit()
         .map_err(|_| CredentialError::StorageFailure)?;
@@ -2567,14 +2528,10 @@ fn initialize_credential_deletion_journal(
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| CredentialError::StorageFailure)?;
-    let payload = transaction
-        .query_row(
-            "SELECT payload FROM credential_deletion_journal WHERE singleton = 1",
-            [],
-            |row| row.get::<_, Vec<u8>>(0),
-        )
-        .optional()
-        .map_err(|_| CredentialError::StorageFailure)?;
+    let payload = read_protected_table_payload(
+        &transaction,
+        ProtectedPayloadTable::CredentialDeletionJournal,
+    )?;
     transaction
         .commit()
         .map_err(|_| CredentialError::StorageFailure)?;
@@ -2655,14 +2612,8 @@ fn initialize_reset_journal(
     if cleanup_pending != 0 {
         return Err(CredentialError::ResetInProgress);
     }
-    let protected = transaction
-        .query_row(
-            "SELECT payload FROM reset_journal WHERE singleton = 1",
-            [],
-            |row| row.get::<_, Vec<u8>>(0),
-        )
-        .optional()
-        .map_err(|_| CredentialError::StorageFailure)?;
+    let protected =
+        read_protected_table_payload(&transaction, ProtectedPayloadTable::ResetJournal)?;
     let pending = match protected {
         Some(protected) => {
             validate_protected_payload(&protected)?;
@@ -2739,14 +2690,7 @@ fn initialize_pin_state(
             );",
         )
         .map_err(|_| CredentialError::StorageFailure)?;
-    let payload = transaction
-        .query_row(
-            "SELECT payload FROM pin_state WHERE singleton = 1",
-            [],
-            |row| row.get::<_, Vec<u8>>(0),
-        )
-        .optional()
-        .map_err(|_| CredentialError::StorageFailure)?;
+    let payload = read_protected_table_payload(&transaction, ProtectedPayloadTable::PinState)?;
     let state = match payload {
         Some(protected) => {
             validate_protected_payload(&protected)?;
@@ -2894,16 +2838,50 @@ fn decode_pin_state(bytes: &[u8]) -> Result<PinState, CredentialError> {
     Ok(state)
 }
 
-fn read_protected_payload(connection: &Connection) -> Result<Vec<u8>, CredentialError> {
+#[derive(Clone, Copy)]
+enum ProtectedPayloadTable {
+    CredentialStore,
+    PinState,
+    LargeBlobState,
+    ResetJournal,
+    ProviderKeyJournal,
+    CredentialDeletionJournal,
+}
+
+impl ProtectedPayloadTable {
+    fn name(self) -> &'static str {
+        match self {
+            Self::CredentialStore => "credential_store",
+            Self::PinState => "pin_state",
+            Self::LargeBlobState => "large_blob_state",
+            Self::ResetJournal => "reset_journal",
+            Self::ProviderKeyJournal => "provider_key_journal",
+            Self::CredentialDeletionJournal => "credential_deletion_journal",
+        }
+    }
+}
+
+fn read_protected_table_payload(
+    connection: &Connection,
+    table: ProtectedPayloadTable,
+) -> Result<Option<Vec<u8>>, CredentialError> {
+    let table_name = table.name();
     let payload_size: Option<i64> = connection
         .query_row(
-            "SELECT length(payload) FROM credential_store WHERE singleton = 1",
+            // SQLite columns can contain TEXT despite BLOB affinity. The CASE must remain lazy so
+            // length() is never evaluated on an untrusted TEXT value before rejecting its type.
+            &format!(
+                "SELECT CASE WHEN typeof(payload) = 'blob' THEN length(payload) ELSE -1 END \
+                 FROM {table_name} WHERE singleton = 1"
+            ),
             [],
             |row| row.get(0),
         )
         .optional()
         .map_err(|_| CredentialError::StorageFailure)?;
-    let payload_size = payload_size.ok_or(CredentialError::ProtectedDataInvalid)?;
+    let Some(payload_size) = payload_size else {
+        return Ok(None);
+    };
     if payload_size <= 0
         || usize::try_from(payload_size).map_or(true, |size| size > MAX_PROTECTED_BYTES)
     {
@@ -2911,7 +2889,7 @@ fn read_protected_payload(connection: &Connection) -> Result<Vec<u8>, Credential
     }
     let payload: Option<Vec<u8>> = connection
         .query_row(
-            "SELECT payload FROM credential_store WHERE singleton = 1",
+            &format!("SELECT payload FROM {table_name} WHERE singleton = 1"),
             [],
             |row| row.get(0),
         )
@@ -2923,7 +2901,12 @@ fn read_protected_payload(connection: &Connection) -> Result<Vec<u8>, Credential
     {
         return Err(CredentialError::ProtectedDataInvalid);
     }
-    Ok(payload)
+    Ok(Some(payload))
+}
+
+fn read_protected_payload(connection: &Connection) -> Result<Vec<u8>, CredentialError> {
+    read_protected_table_payload(connection, ProtectedPayloadTable::CredentialStore)?
+        .ok_or(CredentialError::ProtectedDataInvalid)
 }
 
 fn validate_protected_payload(payload: &[u8]) -> Result<(), CredentialError> {
