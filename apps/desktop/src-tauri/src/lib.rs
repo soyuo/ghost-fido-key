@@ -713,8 +713,9 @@ impl DesktopVerificationProvider {
         };
         let name = relying_party_name
             .as_deref()
-            .map(|name| format!("{name} ({relying_party_id})"))
-            .unwrap_or(relying_party_id);
+            .map(display_safe_text)
+            .map(|name| format!("{name} ({})", display_safe_text(&relying_party_id)))
+            .unwrap_or_else(|| display_safe_text(&relying_party_id));
         let message = format!(
             "{name} is requesting: {action}. Continue only if you initiated this action. {}",
             if action == "Use software key" {
@@ -868,8 +869,8 @@ impl UserVerification for DesktopVerificationProvider {
         let request_id = Uuid::new_v4().to_string();
         let prompt = ApprovalPrompt {
             request_id: request_id.clone(),
-            relying_party_id: request.relying_party_id.clone(),
-            relying_party_name: request.relying_party_name.clone(),
+            relying_party_id: display_safe_text(&request.relying_party_id),
+            relying_party_name: request.relying_party_name.as_deref().map(display_safe_text),
             action: match request.action {
                 VerificationAction::RegisterCredential => "Register credential",
                 VerificationAction::SoftwareKeyFallback => "Use software key",
@@ -1054,6 +1055,35 @@ fn confirm_native_action(app: &AppHandle, title: &str, message: &str) -> Result<
     } else {
         Err("Action cancelled by the user.".into())
     }
+}
+
+const MAX_DISPLAY_TEXT_CHARS: usize = 256;
+
+fn display_safe_text(value: &str) -> String {
+    let mut safe = String::new();
+    for (index, character) in value.chars().enumerate() {
+        if index == MAX_DISPLAY_TEXT_CHARS {
+            safe.push('…');
+            break;
+        }
+        if character.is_control()
+            || matches!(
+                character,
+                '\u{061C}'
+                    | '\u{200E}'
+                    | '\u{200F}'
+                    | '\u{2028}'
+                    | '\u{2029}'
+                    | '\u{202A}'..='\u{202E}'
+                    | '\u{2066}'..='\u{206F}'
+            )
+        {
+            safe.push_str(&format!("\\u{{{:04X}}}", character as u32));
+        } else {
+            safe.push(character);
+        }
+    }
+    safe
 }
 
 #[tauri::command]
@@ -1454,9 +1484,15 @@ fn list_credentials(
             .into_iter()
             .map(|credential| CredentialSummary {
                 creation_order: credential.creation_order,
-                relying_party_id: credential.relying_party_id,
-                user_name: credential.user_name,
-                user_display_name: credential.user_display_name,
+                relying_party_id: credential
+                    .relying_party_id
+                    .as_deref()
+                    .map(display_safe_text),
+                user_name: credential.user_name.as_deref().map(display_safe_text),
+                user_display_name: credential
+                    .user_display_name
+                    .as_deref()
+                    .map(display_safe_text),
                 key_protection: match credential.key_metadata.protection {
                     ghost_fido_core::CredentialKeyProtection::HardwareBacked => "Hardware-backed",
                     ghost_fido_core::CredentialKeyProtection::OsProtected => "OS-protected",
@@ -1488,6 +1524,8 @@ fn delete_credential(
             .as_deref()
             .or(credential.user_name.as_deref())
             .unwrap_or("unknown user");
+        let relying_party = display_safe_text(relying_party);
+        let user = display_safe_text(user);
         confirm_native_action(
             &app,
             "Delete credential",
