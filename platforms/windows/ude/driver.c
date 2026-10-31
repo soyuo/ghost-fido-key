@@ -360,6 +360,15 @@ GhostFidoHasConfiguredIdentity(VOID)
             GHOST_FIDO_PRODUCT_ID < 0xffff);
 }
 
+static VOID
+GhostFidoFreeDeviceInit(_Inout_ PGHOST_FIDO_DEVICE_CONTEXT Context)
+{
+    if (Context->DeviceInit != NULL) {
+        UdecxUsbDeviceInitFree(Context->DeviceInit);
+        Context->DeviceInit = NULL;
+    }
+}
+
 static NTSTATUS
 GhostFidoCreateEndpoint(_In_ WDFDEVICE Device,
                         _In_ UDECXUSBDEVICE UsbDevice,
@@ -436,6 +445,8 @@ GhostFidoCreateAndPlugInVirtualDevice(_In_ WDFDEVICE Device)
         return STATUS_NOT_SUPPORTED;
     }
 
+    // A failed pre-create attempt must not be overwritten on the next attach.
+    GhostFidoFreeDeviceInit(context);
     context->DeviceInit = UdecxUsbDeviceInitAllocate(Device);
     if (context->DeviceInit == NULL) {
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -453,6 +464,7 @@ GhostFidoCreateAndPlugInVirtualDevice(_In_ WDFDEVICE Device)
         context->DeviceInit, (PUCHAR)GhostFidoDeviceDescriptor,
         sizeof(GhostFidoDeviceDescriptor));
     if (!NT_SUCCESS(status)) {
+        GhostFidoFreeDeviceInit(context);
         return status;
     }
 
@@ -460,6 +472,7 @@ GhostFidoCreateAndPlugInVirtualDevice(_In_ WDFDEVICE Device)
         context->DeviceInit, (PUCHAR)GhostFidoConfigurationDescriptor,
         sizeof(GhostFidoConfigurationDescriptor));
     if (!NT_SUCCESS(status)) {
+        GhostFidoFreeDeviceInit(context);
         return status;
     }
 
@@ -467,6 +480,7 @@ GhostFidoCreateAndPlugInVirtualDevice(_In_ WDFDEVICE Device)
     status = UdecxUsbDeviceCreate(&context->DeviceInit, &attributes,
                                   &context->UsbDevice);
     if (!NT_SUCCESS(status)) {
+        GhostFidoFreeDeviceInit(context);
         return status;
     }
 
@@ -523,10 +537,7 @@ GhostFidoDestroyVirtualDevice(_In_ WDFDEVICE Device)
     }
     context->VirtualDevicePluggedIn = FALSE;
 
-    if (context->DeviceInit != NULL) {
-        UdecxUsbDeviceInitFree(context->DeviceInit);
-        context->DeviceInit = NULL;
-    }
+    GhostFidoFreeDeviceInit(context);
     KeFlushQueuedDpcs();
     GhostFidoResetReportQueues(Device);
     return STATUS_SUCCESS;
