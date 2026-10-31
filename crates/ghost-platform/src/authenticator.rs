@@ -1286,7 +1286,7 @@ impl<'a> AuthenticatorService<'a> {
                 let mut on_user_presence = || {
                     self.client_pin.clear_user_presence_permissions(channel);
                 };
-                crate::registration::register_make_credential_with_uv_and_presence_callback(
+                match crate::registration::register_make_credential_with_uv_and_presence_callback(
                     &typed,
                     self.store,
                     self.key_store,
@@ -1297,8 +1297,13 @@ impl<'a> AuthenticatorService<'a> {
                     self.config.request_timeout,
                     user_verified,
                     &mut on_user_presence,
-                )
-                .map_err(AuthenticatorServiceError::MakeCredential)
+                ) {
+                    Ok(response) => Ok(response),
+                    Err(MakeCredentialExecutionError::Credential(
+                        CredentialError::StorageFull | CredentialError::RecordLimitExceeded,
+                    )) => Ok(Ctap2Response::error(Ctap2Status::KeyStoreFull)),
+                    Err(error) => Err(AuthenticatorServiceError::MakeCredential(error)),
+                }
             }
             Ctap2Command::GetAssertion => {
                 let pin_auth = match parse_pin_auth(decoded_payload.as_ref(), 6, 7) {
