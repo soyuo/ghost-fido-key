@@ -1,22 +1,30 @@
 # Ghost FIDO Key
 
-Cross-platform software FIDO2 authenticator scaffold. The shared application
-backend is Rust, with a Tauri 2 desktop shell using React and TypeScript. A
-native virtual-HID adapter is required for each supported operating system.
+Cross-platform software FIDO2 authenticator prototype. The shared application
+backend is Rust, with a Tauri 2 desktop shell using React and TypeScript. The
+repository includes Linux and Windows virtual-HID adapter paths and a macOS
+CoreHID bridge.
 
 ## Current status
 
-This repository contains the initial Rust workspace, platform boundary, and
-desktop UI scaffold. It does not yet implement CTAP, credentials, cryptography,
-persistence, or virtual HID drivers. The current platform backend deliberately
-reports unavailable and fails closed.
+The workspace implements the CTAP authenticator, credential and key storage,
+desktop approval flow, and Linux/Windows virtual-HID integration paths. The
+macOS CoreHID bridge remains unavailable until assigned product identifiers
+and a signed virtual-HID entitlement are configured.
+
+Target installation, virtual-HID report exchange, and browser WebAuthn
+interoperability have not been demonstrated for the required platform matrix.
+No OS/browser combination is currently declared supported. See the
+[platform and browser support matrix](docs/support-matrix.md) for evidence and
+remaining validation requirements; code presence and CI builds alone do not
+establish support.
 
 ## Workspace layout
 
 - `apps/ghost-fido`: development entry point.
 - `apps/desktop`: Tauri 2 desktop shell and React/TypeScript UI.
 - `crates/ghost-fido-core`: platform-independent product and protocol domain.
-- `crates/ghost-platform`: OS boundary for future virtual HID adapters.
+- `crates/ghost-platform`: OS boundary and virtual-HID adapters.
 - `resources/`: design notes and implementation plan.
 
 ## Build and run
@@ -38,11 +46,14 @@ npm install
 npm run tauri dev
 ```
 
-## Planned platform adapters
+## Platform adapter status
 
-- Linux: evaluate the UHID userspace interface and its device permissions.
-- Windows: implement and package a native virtual USB/HID driver.
-- macOS: validate the supported virtual HID mechanism and required Apple
-  entitlements before committing to distribution.
+- Linux: the UHID adapter and package permission path are implemented; target
+  installation and report exchange remain unverified.
+- Windows: the UDE integration and driver package path are implemented; the
+  unsigned package has not been installed or runtime-validated on a target.
+- macOS: the CoreHID bridge is present but remains unavailable pending assigned
+  product identifiers and the signed virtual-HID entitlement.
 
-Each adapter must be implemented and validated on its target operating system.
+Each platform still requires target-device and browser validation before it can
+be declared supported.
