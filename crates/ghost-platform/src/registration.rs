@@ -173,8 +173,8 @@ pub(crate) fn register_make_credential_with_uv_and_presence_callback(
             return Err(MakeCredentialExecutionError::Randomness);
         }
         Some(HmacSecretMaterial::new(
-            *hmac_secret_with_uv,
-            *hmac_secret_without_uv,
+            hmac_secret_with_uv,
+            hmac_secret_without_uv,
         ))
     } else {
         None
@@ -184,7 +184,7 @@ pub(crate) fn register_make_credential_with_uv_and_presence_callback(
         if getrandom::fill(&mut bytes[..]).is_err() {
             return Err(MakeCredentialExecutionError::Randomness);
         }
-        Some(LargeBlobKey::new(*bytes))
+        Some(LargeBlobKey::new(bytes))
     } else {
         None
     };
