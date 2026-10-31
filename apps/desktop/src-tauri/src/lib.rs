@@ -71,6 +71,8 @@ struct DesktopVerificationProvider {
     session_locked: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(target_os = "windows")]
     session_monitor_available: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(target_os = "windows")]
+    windows_session_lock_transition: Mutex<WindowsSessionLockTransition>,
     #[cfg(target_os = "linux")]
     session_locked: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(target_os = "linux")]
@@ -84,6 +86,13 @@ struct DesktopVerificationProvider {
 #[cfg(target_os = "linux")]
 #[derive(Default)]
 struct LinuxSessionLockTransition {
+    generation: u64,
+    pending: bool,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Default)]
+struct WindowsSessionLockTransition {
     generation: u64,
     pending: bool,
 }
@@ -484,12 +493,14 @@ impl DesktopVerificationProvider {
             return false;
         }
 
+        let Some(generation) = self.session_lock_generation() else {
+            self.set_session_monitor_available(false);
+            return false;
+        };
         match crate::windows_session_lock::active_desktop_is_locked() {
             Ok(locked) => {
-                if self.session_locked.load(Ordering::Acquire) != locked {
-                    self.set_session_locked(locked);
-                }
-                self.session_monitor_available.load(Ordering::Acquire)
+                self.apply_windows_session_lock_snapshot(locked, generation) == Some(true)
+                    && self.session_monitor_available.load(Ordering::Acquire)
                     && !locked
                     && !self.session_locked.load(Ordering::Acquire)
             }
@@ -515,11 +526,67 @@ impl DesktopVerificationProvider {
     fn set_session_locked(&self, locked: bool) {
         use std::sync::atomic::Ordering;
 
-        self.session_locked.store(locked, Ordering::Release);
+        let locked = match self.windows_session_lock_transition.lock() {
+            Ok(mut transition) => {
+                transition.generation = transition.generation.wrapping_add(1);
+                transition.pending = locked;
+                self.session_locked.store(locked, Ordering::Release);
+                locked
+            }
+            Err(_) => {
+                self.session_monitor_available
+                    .store(false, Ordering::Release);
+                self.session_locked.store(true, Ordering::Release);
+                true
+            }
+        };
+        self.publish_windows_session_lock_state(locked);
+    }
+
+    #[cfg(target_os = "windows")]
+    fn publish_windows_session_lock_state(&self, locked: bool) {
         if locked {
             self.cancel_pending();
         }
         let _ = self.app.emit("session-lock-state", locked);
+    }
+
+    #[cfg(target_os = "windows")]
+    fn session_lock_generation(&self) -> Option<u64> {
+        self.windows_session_lock_transition
+            .lock()
+            .ok()
+            .map(|transition| transition.generation)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn apply_windows_session_lock_snapshot(
+        &self,
+        locked: bool,
+        expected_generation: u64,
+    ) -> Option<bool> {
+        use std::sync::atomic::Ordering;
+
+        let Ok(mut transition) = self.windows_session_lock_transition.lock() else {
+            self.set_session_monitor_available(false);
+            return None;
+        };
+        if transition.generation != expected_generation {
+            return Some(false);
+        }
+        transition.generation = transition.generation.wrapping_add(1);
+        let next_locked = if locked {
+            transition.pending = false;
+            true
+        } else {
+            transition.pending
+        };
+        let changed = self.session_locked.swap(next_locked, Ordering::AcqRel) != next_locked;
+        drop(transition);
+        if changed {
+            self.publish_windows_session_lock_state(next_locked);
+        }
+        Some(true)
     }
 
     #[cfg(target_os = "windows")]
@@ -1554,6 +1621,10 @@ pub fn run() {
                     session_locked: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     #[cfg(target_os = "windows")]
                     session_monitor_available: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    #[cfg(target_os = "windows")]
+                    windows_session_lock_transition: Mutex::new(
+                        WindowsSessionLockTransition::default(),
+                    ),
                     #[cfg(target_os = "linux")]
                     session_locked: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     #[cfg(target_os = "linux")]

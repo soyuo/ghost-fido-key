@@ -94,6 +94,10 @@ pub(crate) fn install<R: Runtime>(
         context: context as usize,
         destroyed,
     };
+    let Some(generation) = verification.session_lock_generation() else {
+        hook.uninstall();
+        return Err("Windows session lock transition state is unavailable.".into());
+    };
     let locked = match active_desktop_is_locked() {
         Ok(locked) => locked,
         Err(error) => {
@@ -101,7 +105,13 @@ pub(crate) fn install<R: Runtime>(
             return Err(error);
         }
     };
-    verification.set_session_locked(locked);
+    if verification
+        .apply_windows_session_lock_snapshot(locked, generation)
+        .is_none()
+    {
+        hook.uninstall();
+        return Err("Windows session lock transition state is unavailable.".into());
+    }
     verification.set_session_monitor_available(true);
 
     Ok(hook)
