@@ -231,7 +231,10 @@ pub fn run(
                                             break;
                                         }
                                     }
-                                    Err(error) => runtime_error = Some(error.to_string()),
+                                    Err(error) => {
+                                        runtime_error = Some(error.to_string());
+                                        break;
+                                    }
                                 }
                             }
                         }
