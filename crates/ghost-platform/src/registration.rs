@@ -115,16 +115,11 @@ pub(crate) fn register_make_credential_with_uv_and_presence_callback(
     {
         return Ok(Ctap2Response::error(Ctap2Status::UnsupportedAlgorithm));
     }
-    if (request.options.user_verification == Some(true) && !user_verified)
-        || request.options.user_presence == Some(false)
-    {
-        return Ok(Ctap2Response::error(
-            if request.options.user_verification == Some(true) {
-                Ctap2Status::PinUvAuthTokenRequired
-            } else {
-                Ctap2Status::UnsupportedOption
-            },
-        ));
+    if request.options.user_presence == Some(false) {
+        return Ok(Ctap2Response::error(Ctap2Status::InvalidOption));
+    }
+    if request.options.user_verification == Some(true) && !user_verified {
+        return Ok(Ctap2Response::error(Ctap2Status::PinUvAuthTokenRequired));
     }
 
     if request.has_excluded_credential_requiring_uv(store) && !user_verified {
