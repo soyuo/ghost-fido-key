@@ -172,6 +172,10 @@ jobs:
       - name: Check Rust workspace
         run: cargo check --workspace --locked
 
+      - name: Test desktop library
+        if: runner.os == 'Linux' || runner.os == 'Windows'
+        run: cargo test --package ghost-fido-desktop --lib --locked
+
       - name: Link macOS desktop application with CoreHID bridge
         if: runner.os == 'macOS'
         run: cargo build --package ghost-fido-desktop --locked
