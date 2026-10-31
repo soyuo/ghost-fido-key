@@ -654,7 +654,7 @@ impl CredentialStore {
         let large_blob_array = if pending_reset_keys.is_some() || metadata_key_cleanup_pending {
             Zeroizing::new(INITIAL_LARGE_BLOB_ARRAY.to_vec())
         } else {
-            Zeroizing::new(large_blob_array)
+            large_blob_array
         };
         if pending_reset_keys.is_some() {
             records.clear();
@@ -1369,7 +1369,7 @@ impl CredentialStore {
         }
         let current = read_large_blob_array(&transaction, backend.protector.as_ref())?;
         if current.as_slice() != self.large_blob_array.as_slice() {
-            self.large_blob_array = Zeroizing::new(current);
+            self.large_blob_array = current;
             return Err(CredentialError::StorageFailure);
         }
         write_large_blob_array(&transaction, &protected)?;
@@ -1548,7 +1548,7 @@ impl CredentialStore {
             .unwrap_or(0);
         self.records = records;
         self.pin_state = pin_state;
-        self.large_blob_array = Zeroizing::new(large_blob_array);
+        self.large_blob_array = large_blob_array;
         self.pending_reset_keys = None;
         self.metadata_key_cleanup_pending = false;
         self.pending_provider_key = None;
@@ -2162,7 +2162,7 @@ fn read_pin_state(
 fn read_large_blob_array(
     transaction: &Transaction<'_>,
     protector: &dyn CredentialProtector,
-) -> Result<Vec<u8>, CredentialError> {
+) -> Result<Zeroizing<Vec<u8>>, CredentialError> {
     let protected: Vec<u8> = transaction
         .query_row(
             "SELECT payload FROM large_blob_state WHERE singleton = 1",
@@ -2179,9 +2179,9 @@ fn read_large_blob_array(
     if !(17..=MAX_SERIALIZED_LARGE_BLOB_ARRAY).contains(&plaintext.len())
         || !valid_serialized_large_blob_array(&plaintext)
     {
-        return Ok(INITIAL_LARGE_BLOB_ARRAY.to_vec());
+        return Ok(Zeroizing::new(INITIAL_LARGE_BLOB_ARRAY.to_vec()));
     }
-    Ok(plaintext.to_vec())
+    Ok(Zeroizing::new(plaintext.to_vec()))
 }
 
 fn valid_serialized_large_blob_array(array: &[u8]) -> bool {
@@ -2214,7 +2214,7 @@ fn initialize_large_blob_array(
     protector: &dyn CredentialProtector,
     schema_version: i64,
     metadata_key_cleanup_pending: bool,
-) -> Result<Vec<u8>, CredentialError> {
+) -> Result<Zeroizing<Vec<u8>>, CredentialError> {
     let transaction = connection
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|_| CredentialError::StorageFailure)?;
@@ -2251,7 +2251,9 @@ fn initialize_large_blob_array(
         .optional()
         .map_err(|_| CredentialError::StorageFailure)?;
     let array = match payload {
-        Some(_payload) if metadata_key_cleanup_pending => INITIAL_LARGE_BLOB_ARRAY.to_vec(),
+        Some(_payload) if metadata_key_cleanup_pending => {
+            Zeroizing::new(INITIAL_LARGE_BLOB_ARRAY.to_vec())
+        }
         Some(payload) => {
             validate_protected_payload(&payload)?;
             let plaintext = Zeroizing::new(
@@ -2262,11 +2264,11 @@ fn initialize_large_blob_array(
             if !(17..=MAX_SERIALIZED_LARGE_BLOB_ARRAY).contains(&plaintext.len())
                 || !valid_serialized_large_blob_array(&plaintext)
             {
-                return Ok(INITIAL_LARGE_BLOB_ARRAY.to_vec());
+                return Ok(Zeroizing::new(INITIAL_LARGE_BLOB_ARRAY.to_vec()));
             }
-            plaintext.to_vec()
+            Zeroizing::new(plaintext.to_vec())
         }
-        None if metadata_key_cleanup_pending => INITIAL_LARGE_BLOB_ARRAY.to_vec(),
+        None if metadata_key_cleanup_pending => Zeroizing::new(INITIAL_LARGE_BLOB_ARRAY.to_vec()),
         None if schema_version < STORAGE_SCHEMA_VERSION => {
             let protected = protector
                 .protect(&INITIAL_LARGE_BLOB_ARRAY, LARGE_BLOB_ARRAY_AAD_V1)
@@ -2278,7 +2280,7 @@ fn initialize_large_blob_array(
                     params![protected],
                 )
                 .map_err(|_| CredentialError::StorageFailure)?;
-            INITIAL_LARGE_BLOB_ARRAY.to_vec()
+            Zeroizing::new(INITIAL_LARGE_BLOB_ARRAY.to_vec())
         }
         None => return Err(CredentialError::ProtectedDataInvalid),
     };
