@@ -59,7 +59,9 @@ matching credential without a continuation or `numberOfCredentials`.
 
 Each response commits the next signature counter before it is returned. The
 user entity is limited to the user handle when user verification was not
-performed; stored name and display-name hints are not returned. The service's
+performed; stored name and display-name hints are not returned. A stored empty
+CTAP user identifier is preserved as an empty byte string in the user entity.
+The service's
 `handle_on_channel` entry point must receive the originating CTAPHID channel for
 independent concurrent continuation sequences. The legacy `handle` entry point
 uses one reserved channel for callers without transport channel context.
