@@ -288,6 +288,7 @@ pub enum CredentialError {
     ResetInProgress,
     ProviderKeyCleanupPending,
     StorageFailure,
+    StorageFull,
     ProtectedDataInvalid,
     InvalidPinState,
     UnsupportedSchemaVersion(i64),
@@ -1831,7 +1832,7 @@ impl CredentialStore {
         let transaction = backend
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(|_| CredentialError::StorageFailure)?;
+            .map_err(map_sqlite_storage_error)?;
         let reset_pending: bool = transaction
             .query_row(
                 "SELECT EXISTS (SELECT 1 FROM reset_journal WHERE singleton = 1)",
@@ -1889,11 +1890,9 @@ impl CredentialStore {
         if created_key.is_some() {
             transaction
                 .execute("DELETE FROM provider_key_journal WHERE singleton = 1", [])
-                .map_err(|_| CredentialError::StorageFailure)?;
+                .map_err(map_sqlite_storage_error)?;
         }
-        transaction
-            .commit()
-            .map_err(|_| CredentialError::StorageFailure)?;
+        transaction.commit().map_err(map_sqlite_storage_error)?;
         Ok(merged_records)
     }
 
@@ -2128,11 +2127,19 @@ fn write_payload(transaction: &Transaction<'_>, payload: &[u8]) -> Result<(), Cr
             "UPDATE credential_store SET payload = ?1 WHERE singleton = 1",
             params![payload],
         )
-        .map_err(|_| CredentialError::StorageFailure)?;
+        .map_err(map_sqlite_storage_error)?;
     if updated != 1 {
         return Err(CredentialError::ProtectedDataInvalid);
     }
     Ok(())
+}
+
+fn map_sqlite_storage_error(error: rusqlite::Error) -> CredentialError {
+    if error.sqlite_error_code() == Some(rusqlite::ErrorCode::DiskFull) {
+        CredentialError::StorageFull
+    } else {
+        CredentialError::StorageFailure
+    }
 }
 
 fn read_credential_records(
