@@ -224,6 +224,12 @@ impl WindowsUdeBackend {
                 read_u32(8)
             )));
         }
+        if read_u32(12) > UDE_PROTOCOL_MINOR {
+            return Err(UdeQueryError::Protocol(format!(
+                "unsupported UDE protocol minor version {} (maximum supported is {UDE_PROTOCOL_MINOR})",
+                read_u32(12)
+            )));
+        }
         if read_u32(28) != 0 || read_u32(32) != 0 {
             return Err(UdeQueryError::Protocol(
                 "driver status reserved fields must be zero".to_owned(),
