@@ -407,44 +407,46 @@ impl ClientPinHandler {
         if auth_required && auth.is_none() {
             return Ctap2Response::error(Ctap2Status::PinUvAuthTokenRequired);
         }
-        if auth.is_some() != protocol_id.is_some() {
+        if auth_required && auth.is_some() != protocol_id.is_some() {
             return Ctap2Response::error(if auth.is_some() {
                 Ctap2Status::MissingParameter
             } else {
                 Ctap2Status::InvalidParameter
             });
         }
-        if let (Some(auth), Some(protocol_id)) = (auth, protocol_id) {
-            let Some(protocol) = PinUvAuthProtocol::from_id(u64::from(protocol_id)) else {
-                return Ctap2Response::error(Ctap2Status::InvalidParameter);
-            };
-            if auth.len() != protocol.auth_parameter_size() {
-                return Ctap2Response::error(Ctap2Status::InvalidParameter);
-            }
-            let params_value = CborValue::Map(params_fields.clone());
-            let encoded_params = if params.is_some() {
-                match encode_cbor(&params_value) {
-                    Ok(encoded) => encoded,
-                    Err(_) => return Ctap2Response::error(Ctap2Status::Other),
+        if auth_required {
+            if let (Some(auth), Some(protocol_id)) = (auth, protocol_id) {
+                let Some(protocol) = PinUvAuthProtocol::from_id(u64::from(protocol_id)) else {
+                    return Ctap2Response::error(Ctap2Status::InvalidParameter);
+                };
+                if auth.len() != protocol.auth_parameter_size() {
+                    return Ctap2Response::error(Ctap2Status::InvalidParameter);
                 }
-            } else {
-                Vec::new()
-            };
-            let mut message = Vec::with_capacity(34 + encoded_params.len());
-            message.extend_from_slice(&[0xff; 32]);
-            message.extend_from_slice(&[0x0d, subcommand]);
-            message.extend_from_slice(&encoded_params);
-            if self
-                .authorize_permission(
-                    channel,
-                    &message,
-                    auth,
-                    protocol,
-                    PIN_UV_PERMISSION_AUTHENTICATOR_CONFIG,
-                )
-                .is_err()
-            {
-                return Ctap2Response::error(Ctap2Status::PinAuthInvalid);
+                let params_value = CborValue::Map(params_fields.clone());
+                let encoded_params = if params.is_some() {
+                    match encode_cbor(&params_value) {
+                        Ok(encoded) => encoded,
+                        Err(_) => return Ctap2Response::error(Ctap2Status::Other),
+                    }
+                } else {
+                    Vec::new()
+                };
+                let mut message = Vec::with_capacity(34 + encoded_params.len());
+                message.extend_from_slice(&[0xff; 32]);
+                message.extend_from_slice(&[0x0d, subcommand]);
+                message.extend_from_slice(&encoded_params);
+                if self
+                    .authorize_permission(
+                        channel,
+                        &message,
+                        auth,
+                        protocol,
+                        PIN_UV_PERMISSION_AUTHENTICATOR_CONFIG,
+                    )
+                    .is_err()
+                {
+                    return Ctap2Response::error(Ctap2Status::PinAuthInvalid);
+                }
             }
         }
 
