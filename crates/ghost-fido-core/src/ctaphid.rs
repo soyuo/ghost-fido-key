@@ -340,6 +340,52 @@ impl CtapHidSession {
         report: &[u8],
         now: Instant,
     ) -> Result<SessionEvent, FrameError> {
+        let channel = report
+            .get(..4)
+            .map(|bytes| u32::from_be_bytes(bytes.try_into().expect("four bytes")));
+        let had_pending_message =
+            channel.is_some_and(|channel| self.pending.contains_key(&channel));
+        let transaction_in_flight = channel.is_some_and(|channel| {
+            self.transaction_channel == Some(channel) && !had_pending_message
+        });
+
+        match self.receive_unexpired_inner(report, now) {
+            Ok(event) => Ok(event),
+            Err(error) => {
+                let Some(channel) =
+                    channel.filter(|channel| *channel != 0 && self.channels.is_active(*channel))
+                else {
+                    return Err(error);
+                };
+                if transaction_in_flight {
+                    return Err(error);
+                }
+
+                let code = match error {
+                    FrameError::InvalidCommand(_) => CtapHidErrorCode::InvalidCommand,
+                    FrameError::InvalidReportLength(_) | FrameError::PayloadTooLarge(_) => {
+                        CtapHidErrorCode::InvalidLength
+                    }
+                    FrameError::InvalidSequence { .. }
+                    | FrameError::UnexpectedContinuation
+                    | FrameError::IncompleteMessage => CtapHidErrorCode::InvalidSequence,
+                    FrameError::InvalidChannel => CtapHidErrorCode::InvalidChannel,
+                };
+                let response = encode_error(channel, code)?;
+                self.pending.remove(&channel);
+                if self.transaction_channel == Some(channel) {
+                    self.transaction_channel = None;
+                }
+                Ok(SessionEvent::Response(response))
+            }
+        }
+    }
+
+    fn receive_unexpired_inner(
+        &mut self,
+        report: &[u8],
+        now: Instant,
+    ) -> Result<SessionEvent, FrameError> {
         ensure_report(report)?;
         let channel = u32::from_be_bytes(report[..4].try_into().expect("four bytes"));
         if channel == 0 {
@@ -400,6 +446,10 @@ impl CtapHidSession {
             {
                 self.pending.remove(&channel);
             } else {
+                self.pending.remove(&channel);
+                if self.transaction_channel == Some(channel) {
+                    self.transaction_channel = None;
+                }
                 return Ok(SessionEvent::Response(encode_error(
                     channel,
                     CtapHidErrorCode::InvalidSequence,
