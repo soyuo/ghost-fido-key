@@ -9,8 +9,8 @@ use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
 
 use ghost_fido_core::{
-    CborValue, CredentialId, CredentialStore, Ctap2Command, Ctap2Request, Ctap2Response,
-    Ctap2Status, GetAssertionRequest, GetInfoError, GetInfoHandler, GetInfoProfile,
+    CborValue, CredentialError, CredentialId, CredentialStore, Ctap2Command, Ctap2Request,
+    Ctap2Response, Ctap2Status, GetAssertionRequest, GetInfoError, GetInfoHandler, GetInfoProfile,
     MAX_RP_IDS_FOR_MIN_PIN_LENGTH, MAX_SERIALIZED_LARGE_BLOB_ARRAY, MakeCredentialRequest,
     PIN_ENCRYPTED_SIZE, PIN_HASH_SIZE, PIN_UV_AUTH_PROTOCOL, PIN_UV_AUTH_PROTOCOL_TWO,
     PinKeyAgreement, PinUvAuthProtocol, PinUvAuthSharedSecret, client_pin_hash, decode_cbor,
@@ -2144,7 +2144,13 @@ impl<'a> AuthenticatorService<'a> {
                         .update_user_labels(&id, user_id, name, display_name)
                     {
                         Ok(()) => Ctap2Response::error(Ctap2Status::Success),
-                        Err(_) => Ctap2Response::error(Ctap2Status::InvalidParameter),
+                        Err(CredentialError::StorageFull) => {
+                            Ctap2Response::error(Ctap2Status::KeyStoreFull)
+                        }
+                        Err(CredentialError::NotFound | CredentialError::UserLabelTooLong) => {
+                            Ctap2Response::error(Ctap2Status::InvalidParameter)
+                        }
+                        Err(_) => Ctap2Response::error(Ctap2Status::Other),
                     }
                 }
             }

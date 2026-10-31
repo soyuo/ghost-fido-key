@@ -63,6 +63,7 @@ pub enum Ctap2Status {
     MissingParameter = 0x14,
     CredentialExcluded = 0x19,
     LargeBlobStorageFull = 0x18,
+    KeyStoreFull = 0x28,
     UnsupportedAlgorithm = 0x26,
     OperationDenied = 0x27,
     UnsupportedOption = 0x2b,
