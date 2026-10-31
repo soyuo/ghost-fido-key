@@ -958,6 +958,9 @@ fn validate_pin_parameter_types(
             require_bytes(6)
         }
         5 => {
+            if field(fields, 9).is_some() || field(fields, 10).is_some() {
+                return Err(Ctap2Status::InvalidParameter);
+            }
             require_key_agreement()?;
             require_bytes(4)?;
             require_bytes(6)
