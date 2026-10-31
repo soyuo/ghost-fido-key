@@ -163,13 +163,13 @@ pub struct CredentialRecord {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct HmacSecretMaterial {
-    with_uv: [u8; 32],
-    without_uv: [u8; 32],
+    with_uv: Zeroizing<[u8; 32]>,
+    without_uv: Zeroizing<[u8; 32]>,
 }
 
 impl HmacSecretMaterial {
     #[must_use]
-    pub const fn new(with_uv: [u8; 32], without_uv: [u8; 32]) -> Self {
+    pub fn new(with_uv: Zeroizing<[u8; 32]>, without_uv: Zeroizing<[u8; 32]>) -> Self {
         Self {
             with_uv,
             without_uv,
@@ -177,20 +177,12 @@ impl HmacSecretMaterial {
     }
 
     #[must_use]
-    pub const fn for_uv(&self, user_verified: bool) -> &[u8; 32] {
+    pub fn for_uv(&self, user_verified: bool) -> &[u8; 32] {
         if user_verified {
             &self.with_uv
         } else {
             &self.without_uv
         }
-    }
-}
-
-impl Drop for HmacSecretMaterial {
-    fn drop(&mut self) {
-        use zeroize::Zeroize;
-        self.with_uv.zeroize();
-        self.without_uv.zeroize();
     }
 }
 
@@ -201,23 +193,17 @@ impl fmt::Debug for HmacSecretMaterial {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub struct LargeBlobKey([u8; 32]);
+pub struct LargeBlobKey(Zeroizing<[u8; 32]>);
 
 impl LargeBlobKey {
     #[must_use]
-    pub const fn new(bytes: [u8; 32]) -> Self {
+    pub fn new(bytes: Zeroizing<[u8; 32]>) -> Self {
         Self(bytes)
     }
 
     #[must_use]
-    pub const fn as_bytes(&self) -> &[u8; 32] {
+    pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
-    }
-}
-
-impl Drop for LargeBlobKey {
-    fn drop(&mut self) {
-        self.0.zeroize();
     }
 }
 
@@ -3356,9 +3342,13 @@ fn decode_hmac_secret(value: &CborValue) -> Result<Option<HmacSecretMaterial>, C
             if with_uv.len() != 32 || without_uv.len() != 32 {
                 return Err(CredentialError::ProtectedDataInvalid);
             }
+            let mut with_uv_secret = Zeroizing::new([0; 32]);
+            with_uv_secret.copy_from_slice(with_uv);
+            let mut without_uv_secret = Zeroizing::new([0; 32]);
+            without_uv_secret.copy_from_slice(without_uv);
             Ok(Some(HmacSecretMaterial::new(
-                with_uv.as_slice().try_into().expect("length checked"),
-                without_uv.as_slice().try_into().expect("length checked"),
+                with_uv_secret,
+                without_uv_secret,
             )))
         }
         _ => Err(CredentialError::ProtectedDataInvalid),
@@ -3369,7 +3359,7 @@ fn decode_large_blob_key(value: &CborValue) -> Result<Option<LargeBlobKey>, Cred
     match value {
         CborValue::Null => Ok(None),
         CborValue::Bytes(bytes) if bytes.len() == 32 => {
-            let mut key = [0; 32];
+            let mut key = Zeroizing::new([0; 32]);
             key.copy_from_slice(bytes);
             Ok(Some(LargeBlobKey::new(key)))
         }
