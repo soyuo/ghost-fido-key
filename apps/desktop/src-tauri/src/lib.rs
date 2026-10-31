@@ -654,6 +654,14 @@ impl DesktopVerificationProvider {
                 "Approval is unavailable while the Linux session is locked or unmonitored.".into(),
             );
         }
+        #[cfg(target_os = "macos")]
+        if !MacOsCoreHidBackend::session_state().is_some_and(|(_, active)| active) {
+            self.cancel_one(request_id);
+            return Err(
+                "Approval is unavailable while the macOS user session is inactive or unmonitored."
+                    .into(),
+            );
+        }
 
         let (relying_party_id, relying_party_name, action) = {
             let mut pending = self
@@ -699,7 +707,18 @@ impl DesktopVerificationProvider {
             .kind(MessageDialogKind::Warning)
             .buttons(MessageDialogButtons::OkCancel)
             .show(move |confirmed| {
-                #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+                #[cfg(target_os = "macos")]
+                let decision =
+                    if MacOsCoreHidBackend::session_state().is_some_and(|(_, active)| active) {
+                        if confirmed {
+                            VerificationDecision::Approved
+                        } else {
+                            VerificationDecision::Rejected
+                        }
+                    } else {
+                        VerificationDecision::Cancelled
+                    };
+                #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
                 let decision = if confirmed {
                     VerificationDecision::Approved
                 } else {
@@ -781,9 +800,24 @@ impl UserVerification for DesktopVerificationProvider {
             ));
         }
 
-        let request_id = Uuid::new_v4().to_string();
         #[cfg(target_os = "macos")]
-        let session_generation = MacOsCoreHidBackend::session_generation();
+        let Some((session_generation, session_active)) = MacOsCoreHidBackend::session_state()
+        else {
+            return Err(PlatformError::new(
+                PlatformErrorKind::UserVerificationUnavailable,
+                HostPlatform::MacOs,
+                "macOS user session state is unavailable",
+            ));
+        };
+        #[cfg(target_os = "macos")]
+        if !session_active {
+            return Err(PlatformError::new(
+                PlatformErrorKind::UserVerificationUnavailable,
+                HostPlatform::MacOs,
+                "macOS user session is inactive",
+            ));
+        }
+        let request_id = Uuid::new_v4().to_string();
         let prompt = ApprovalPrompt {
             request_id: request_id.clone(),
             relying_party_id: request.relying_party_id.clone(),
@@ -837,6 +871,15 @@ impl UserVerification for DesktopVerificationProvider {
                 "Linux session locked before approval could be delivered",
             ));
         }
+        #[cfg(target_os = "macos")]
+        if MacOsCoreHidBackend::session_state() != Some((session_generation, true)) {
+            self.cancel_one(&request_id);
+            return Err(PlatformError::new(
+                PlatformErrorKind::UserVerificationUnavailable,
+                HostPlatform::MacOs,
+                "macOS user session switched before approval could be delivered",
+            ));
+        }
 
         if self.app.emit("approval-request", prompt).is_err() {
             if let Ok(mut pending) = self.pending.lock() {
@@ -862,7 +905,7 @@ impl UserVerification for DesktopVerificationProvider {
             match receiver.recv_timeout(wait) {
                 Ok(decision) => {
                     #[cfg(target_os = "macos")]
-                    if MacOsCoreHidBackend::session_generation() != session_generation {
+                    if MacOsCoreHidBackend::session_state() != Some((session_generation, true)) {
                         self.cancel_one(&request_id);
                         let _ = self.app.emit("approval-cancelled", &request_id);
                         return Err(PlatformError::new(
@@ -876,7 +919,8 @@ impl UserVerification for DesktopVerificationProvider {
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     #[cfg(target_os = "macos")]
                     {
-                        if MacOsCoreHidBackend::session_generation() != session_generation {
+                        if MacOsCoreHidBackend::session_state() != Some((session_generation, true))
+                        {
                             self.cancel_one(&request_id);
                             return Err(PlatformError::new(
                                 PlatformErrorKind::UserVerificationUnavailable,
@@ -1543,6 +1587,8 @@ fn respond_approval(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(target_os = "macos")]
+    let _ = MacOsCoreHidBackend::session_state();
     #[cfg(target_os = "windows")]
     let mut session_lock_hook = None;
     #[cfg(target_os = "linux")]

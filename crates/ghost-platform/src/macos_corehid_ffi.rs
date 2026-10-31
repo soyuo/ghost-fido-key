@@ -18,6 +18,7 @@ const NO_RESOURCES: i32 = 5;
 unsafe extern "C" {
     fn ghost_fido_secure_enclave_is_available() -> i32;
     fn ghost_fido_corehid_session_generation() -> u64;
+    fn ghost_fido_corehid_session_state(generation: *mut u64, active: *mut i32) -> i32;
     fn ghost_fido_corehid_check_readiness(vendor_id: u32, product_id: u32) -> i32;
     fn ghost_fido_corehid_create(
         vendor_id: u32,
@@ -57,6 +58,14 @@ pub(super) enum BridgeError {
 pub(super) fn session_generation() -> u64 {
     // SAFETY: the Swift function returns an integer snapshot and retains no pointers.
     unsafe { ghost_fido_corehid_session_generation() }
+}
+
+pub(super) fn session_state() -> Option<(u64, bool)> {
+    let mut generation = 0;
+    let mut active = 0;
+    // SAFETY: both output pointers remain valid for the call and Swift writes only the snapshot.
+    let result = unsafe { ghost_fido_corehid_session_state(&mut generation, &mut active) };
+    (result == SUCCESS).then_some((generation, active == 1))
 }
 
 pub(super) fn check_readiness(vendor_id: u16, product_id: u16) -> Result<(), BridgeError> {

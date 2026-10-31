@@ -13,11 +13,12 @@ public func ghostFidoSecureEnclaveIsAvailable() -> Int32 {
 }
 
 /// Tracks user-session transitions only; this is not a screen-lock detector.
-private final class GhostFidoSessionGeneration: @unchecked Sendable {
-    static let shared = GhostFidoSessionGeneration()
+private final class GhostFidoUserSessionState: @unchecked Sendable {
+    static let shared = GhostFidoUserSessionState()
 
     private let lock = NSLock()
     private var value: UInt64 = 0
+    private var active = true
     private var observers: [NSObjectProtocol] = []
 
     private init() {
@@ -27,19 +28,29 @@ private final class GhostFidoSessionGeneration: @unchecked Sendable {
             object: nil,
             queue: nil
         ) { [weak self] _ in
-            self?.advance()
+            self?.setActive(false, advanceGeneration: true)
+        })
+        observers.append(center.addObserver(
+            forName: NSWorkspace.sessionDidBecomeActiveNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            self?.setActive(true, advanceGeneration: false)
         })
     }
 
-    var current: UInt64 {
+    var current: (generation: UInt64, active: Bool) {
         lock.lock()
         defer { lock.unlock() }
-        return value
+        return (value, active)
     }
 
-    private func advance() {
+    private func setActive(_ active: Bool, advanceGeneration: Bool) {
         lock.lock()
-        value &+= 1
+        if advanceGeneration {
+            value &+= 1
+        }
+        self.active = active
         lock.unlock()
     }
 }
@@ -151,10 +162,25 @@ private func processHasVirtualHIDEntitlement() -> Bool {
     return entitlements?[ghostFidoVirtualHIDEntitlement] as? Bool == true
 }
 
-/// Returns the generation advanced whenever macOS reports session switch-out.
+/// Returns the generation advanced on session switch-out.
 @_cdecl("ghost_fido_corehid_session_generation")
 public func ghostFidoCoreHIDSessionGeneration() -> UInt64 {
-    GhostFidoSessionGeneration.shared.current
+    GhostFidoUserSessionState.shared.current.generation
+}
+
+/// Returns an atomic session generation and active-state snapshot.
+@_cdecl("ghost_fido_corehid_session_state")
+public func ghostFidoCoreHIDSessionState(
+    _ generation: UnsafeMutablePointer<UInt64>?,
+    _ active: UnsafeMutablePointer<Int32>?
+) -> Int32 {
+    guard let generation, let active else {
+        return GhostFidoCoreHIDBridgeStatus.invalidArgument.rawValue
+    }
+    let snapshot = GhostFidoUserSessionState.shared.current
+    generation.pointee = snapshot.generation
+    active.pointee = snapshot.active ? 1 : 0
+    return GhostFidoCoreHIDBridgeStatus.success.rawValue
 }
 
 /// Reports readiness only when the process signature includes Apple's virtual HID entitlement.
