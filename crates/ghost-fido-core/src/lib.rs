@@ -30,8 +30,8 @@ pub use credentials::{
     CredentialBlob, CredentialError, CredentialId, CredentialKeyMetadata, CredentialKeyProtection,
     CredentialProtectionError, CredentialProtectionPolicy, CredentialProtector, CredentialRecord,
     CredentialStore, Es256PublicKey, HmacSecretMaterial, KeyHandle, LargeBlobKey,
-    MAX_CREDENTIAL_BLOB_LENGTH, MAX_SERIALIZED_LARGE_BLOB_ARRAY, ManagedCredential, PinState,
-    RpIdHash,
+    MAX_CREDENTIAL_BLOB_LENGTH, MAX_RP_IDS_FOR_MIN_PIN_LENGTH, MAX_SERIALIZED_LARGE_BLOB_ARRAY,
+    ManagedCredential, PinState, RpIdHash,
 };
 pub use ctap2::{
     Ctap2Command, Ctap2Error, Ctap2Request, Ctap2Response, Ctap2Status, GetAssertionError,

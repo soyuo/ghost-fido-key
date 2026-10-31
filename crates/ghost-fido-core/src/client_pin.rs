@@ -210,6 +210,15 @@ pub fn configure_pin(
         return Err(PinManagementError::PinBlocked);
     }
     validate_pin(new_pin).map_err(|_| PinManagementError::InvalidPin)?;
+    let new_pin_code_points = core::str::from_utf8(new_pin)
+        .map_err(|_| PinManagementError::InvalidPin)?
+        .chars()
+        .count();
+    if new_pin_code_points < usize::from(store.pin_state().min_pin_length()) {
+        return Err(PinManagementError::InvalidPin);
+    }
+    let new_pin_code_points =
+        u8::try_from(new_pin_code_points).map_err(|_| PinManagementError::InvalidPin)?;
 
     if let Some(expected_verifier) = store.pin_state().verifier() {
         let expected_verifier = Zeroizing::new(*expected_verifier);
@@ -241,7 +250,7 @@ pub fn configure_pin(
     let verifier = pin_hash(new_pin);
     // Persist a copy only in the credential store's protected payload; `verifier` is wiped on drop.
     let result = store
-        .set_pin_verifier(Some(*verifier))
+        .set_pin_verifier_with_length(Some(*verifier), Some(new_pin_code_points))
         .map_err(|_| PinManagementError::Persistence);
     result
 }

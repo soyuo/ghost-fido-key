@@ -81,3 +81,8 @@ the credential store; persistent storage requires a platform-backed
 
 Credential IDs, RP hashes, user handles, user labels, and provider key
 references are redacted from credential `Debug` output.
+
+
+## `minPinLength`
+
+The MakeCredential extension input MUST be `true`. When the RP ID is in the authenticator's configured minimum-PIN-length RP list, the authenticator includes the current minimum as signed `minPinLength` output in authenticator data. Otherwise, the output is omitted. The RP list is configured through `authenticatorConfig` and supports at most eight RP IDs. See [CTAP2 ClientPIN and minimum PIN length](ctap2-clientpin.md).
