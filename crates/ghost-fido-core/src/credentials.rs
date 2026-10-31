@@ -562,9 +562,22 @@ impl CredentialStore {
                     BTreeMap::new()
                 }
                 old_version @ (1 | 2 | 3) => {
+                    connection
+                        .busy_timeout(std::time::Duration::from_secs(30))
+                        .map_err(|_| CredentialError::StorageFailure)?;
                     let transaction = connection
                         .transaction_with_behavior(TransactionBehavior::Immediate)
                         .map_err(|_| CredentialError::StorageFailure)?;
+                    let current_version: i64 = transaction
+                        .pragma_query_value(None, "user_version", |row| row.get(0))
+                        .map_err(|_| CredentialError::StorageFailure)?;
+                    if current_version != old_version {
+                        transaction
+                            .rollback()
+                            .map_err(|_| CredentialError::StorageFailure)?;
+                        drop(connection);
+                        return Self::open(&path, protector);
+                    }
                     let protected = read_protected_payload(&transaction)?;
                     let old_aad = match old_version {
                         1 => STORAGE_AAD_V1,
@@ -588,6 +601,9 @@ impl CredentialStore {
                         .map_err(|_| CredentialError::StorageFailure)?;
                     transaction
                         .commit()
+                        .map_err(|_| CredentialError::StorageFailure)?;
+                    connection
+                        .busy_timeout(std::time::Duration::ZERO)
                         .map_err(|_| CredentialError::StorageFailure)?;
                     records
                 }
