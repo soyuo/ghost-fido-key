@@ -758,6 +758,7 @@ impl MakeCredentialRequest {
                     }
                     options = Some(parse_make_credential_options(value)?);
                 }
+                10 => return Err(MakeCredentialError::InvalidParameter(10)),
                 _ => {}
             }
         }
