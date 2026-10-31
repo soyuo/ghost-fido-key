@@ -1917,6 +1917,7 @@ impl<'a> AuthenticatorService<'a> {
                 if !self.can_start_credential_management(channel) {
                     return Ctap2Response::error(Ctap2Status::ChannelBusy);
                 }
+                self.credential_management.remove(&channel);
                 let mut groups = BTreeMap::<String, ([u8; 32], u64)>::new();
                 for record in self.store.discoverable_records() {
                     let Some(rp_id) = record.relying_party_id else {
