@@ -358,7 +358,8 @@ impl CtapHidSession {
                     return Err(error);
                 };
                 if transaction_in_flight {
-                    return Err(error);
+                    // Keep the outstanding CTAP2 response as the only outcome on this channel.
+                    return Ok(SessionEvent::Pending);
                 }
 
                 let code = match error {
