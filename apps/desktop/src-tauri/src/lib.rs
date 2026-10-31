@@ -1086,6 +1086,42 @@ fn display_safe_text(value: &str) -> String {
     safe
 }
 
+#[cfg(test)]
+mod display_safe_text_tests {
+    use super::{MAX_DISPLAY_TEXT_CHARS, display_safe_text};
+
+    #[test]
+    fn escapes_newlines_and_other_control_characters() {
+        assert_eq!(
+            display_safe_text("first\nsecond\r\t"),
+            r"first\u{000A}second\u{000D}\u{0009}"
+        );
+    }
+
+    #[test]
+    fn escapes_bidi_overrides_and_isolates() {
+        assert_eq!(
+            display_safe_text("name\u{202E}txt\u{2066}safe\u{2069}"),
+            r"name\u{202E}txt\u{2066}safe\u{2069}"
+        );
+    }
+
+    #[test]
+    fn truncates_after_the_display_character_limit() {
+        let input = "x".repeat(MAX_DISPLAY_TEXT_CHARS + 10);
+        let expected = format!("{}…", "x".repeat(MAX_DISPLAY_TEXT_CHARS));
+
+        assert_eq!(display_safe_text(&input), expected);
+    }
+
+    #[test]
+    fn preserves_ordinary_non_ascii_text() {
+        let input = "例え.example — café";
+
+        assert_eq!(display_safe_text(input), input);
+    }
+}
+
 #[tauri::command]
 fn read_diagnostic_log() -> Result<String, String> {
     audit::read_log().ok_or_else(|| "Diagnostic log is unavailable.".to_string())
