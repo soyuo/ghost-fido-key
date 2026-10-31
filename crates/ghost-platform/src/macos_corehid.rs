@@ -40,6 +40,12 @@ impl MacOsCoreHidBackend {
         crate::macos_corehid_ffi::session_generation()
     }
 
+    /// Returns an atomic native user-session generation and active-state snapshot.
+    #[must_use]
+    pub fn session_state() -> Option<(u64, bool)> {
+        crate::macos_corehid_ffi::session_state()
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self {

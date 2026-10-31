@@ -45,34 +45,40 @@ Authenticator start/approval fail closed if the monitor is unavailable or
 logind reports the session locked. `LockedHint`
 is supplied by the desktop environment, so this behavior is environment-dependent
 and does not guarantee detection on every Linux desktop. On macOS, an observed
-`NSWorkspace.sessionDidResignActiveNotification` invalidates pending approvals
-within the polling interval; this tracks user-session switch-out only and is not
-screen-lock detection. macOS still relies on the runtime's 30-second deadline
+`NSWorkspace.sessionDidResignActiveNotification` and
+`NSWorkspace.sessionDidBecomeActiveNotification` track user-session
+transitions. New approvals are blocked while inactive, and switch-out
+invalidates pending approvals within the polling interval. This is not
+screen-lock detection; macOS still relies on the runtime's 30-second deadline for a screen lock or
 when no session-switch notification is observed. The runtime deadline remains
 a fallback on every platform.
 
 For each target OS and architecture, use the local WebAuthn test RP and perform
 both cases:
 
-1. Start registration or authentication, lock the OS session before responding
-   to the desktop approval. On Windows, confirm WTS lock notification cancels
-   the request. On Linux, record whether logind's `Lock` signal cancels the
-   request and whether the desktop environment updates `LockedHint`; if no
-   signal is delivered, verify the request still expires within 30 seconds.
-   On macOS, verify that an observed user-session switch-out cancels the request;
-   separately record whether the OS lock action emits that notification. If no
-   notification is observed, remain locked until the 30-second deadline. Confirm
-   the RP receives no successful registration or assertion.
+1. Start registration or authentication, then make the platform unavailable
+   before responding to the desktop approval. On Windows, lock the OS session
+   and confirm WTS lock notification cancels the request. On Linux, record
+   whether logind's `Lock` signal cancels the request and whether the desktop
+   environment updates `LockedHint`; if no signal is delivered, verify the
+   request still expires within 30 seconds. On macOS, switch to another login
+   session and verify the inactive session cannot deliver or approve the
+   request; separately record whether the OS lock action emits a session-switch
+   notification. If no notification is observed, keep the session locked until
+   the 30-second deadline. Confirm the RP receives no successful registration
+   or assertion.
 2. Start another request, choose **Approve** so the native confirmation opens,
-   lock the OS session. On Windows, unlock and attempt to confirm if the native
-   dialog remains open; confirm the cancelled request cannot produce a
-   credential or assertion. On Linux, attempt to confirm only after logind
+   then lock or switch out of the OS session. On Windows, unlock and attempt to
+   confirm if the native dialog remains open; confirm the cancelled request
+   cannot produce a credential or assertion. On Linux, attempt to confirm only after logind
    reports the session unlocked; any request that was cancelled or expired must
    remain unable to produce a credential or assertion. On macOS, after an
    observed user-session switch-out, verify the request is cancelled and any
-   late native-dialog response is rejected. If the lock action emits no
-   session-switch notification, keep the session locked until the request
-   deadline and verify late responses are rejected.
+   late native-dialog response is rejected after switching back in. While still
+   switched out, attempt to start another request and confirm it is not
+   delivered. If the lock action emits no session-switch notification, keep the
+   session locked until the request deadline and verify late responses are
+   rejected.
 
 Record one row per target. A result on one architecture or OS does not cover the
 others.
@@ -83,8 +89,8 @@ others.
 | Ubuntu ARM64 | logind signal + `LockedHint`; 30-second fallback | Not run | Not run | None |
 | Windows x64 | Immediate WTS cancellation | Not run | Not run | None |
 | Windows ARM64 | Immediate WTS cancellation | Not run | Not run | None |
-| macOS Intel | Session switch-out notification; 30-second fallback | Not run | Not run | None |
-| macOS Apple silicon | Session switch-out notification; 30-second fallback | Not run | Not run | None |
+| macOS Intel | Block while inactive; cancel on switch-out; screen-lock timeout fallback | Not run | Not run | None |
+| macOS Apple silicon | Block while inactive; cancel on switch-out; screen-lock timeout fallback | Not run | Not run | None |
 
 Do not mark T-022 verified until both cases pass on the relevant target and the
 relying-party outcome is retained. Keep each affected support row unverified
