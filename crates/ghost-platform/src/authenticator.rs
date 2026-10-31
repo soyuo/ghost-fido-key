@@ -82,7 +82,6 @@ impl Drop for LargeBlobWriteState {
 enum CredentialManagementEntries {
     RelyingParties(Vec<(String, [u8; 32], u64)>),
     Credentials {
-        relying_party_id: String,
         records: Vec<ghost_fido_core::CredentialRecord>,
     },
 }
@@ -1832,16 +1831,20 @@ impl<'a> AuthenticatorService<'a> {
             return Ctap2Response::error(Ctap2Status::MissingParameter);
         };
         let params = field(&fields, 2);
-        let protocol = uint_field(&fields, 3).and_then(PinUvAuthProtocol::from_id);
-        let Some(auth) = byte_field(&fields, 4) else {
-            return Ctap2Response::error(Ctap2Status::PinUvAuthTokenRequired);
+        let (auth, protocol) = if matches!(subcommand, 3 | 5) {
+            (None, None)
+        } else {
+            let Some(auth) = byte_field(&fields, 4) else {
+                return Ctap2Response::error(Ctap2Status::PinUvAuthTokenRequired);
+            };
+            let Some(protocol) = uint_field(&fields, 3).and_then(PinUvAuthProtocol::from_id) else {
+                return Ctap2Response::error(Ctap2Status::InvalidParameter);
+            };
+            if auth.len() != protocol.auth_parameter_size() {
+                return Ctap2Response::error(Ctap2Status::InvalidParameter);
+            }
+            (Some(auth), Some(protocol))
         };
-        let Some(protocol) = protocol else {
-            return Ctap2Response::error(Ctap2Status::InvalidParameter);
-        };
-        if auth.len() != protocol.auth_parameter_size() {
-            return Ctap2Response::error(Ctap2Status::InvalidParameter);
-        }
         let parameter_value = params.cloned().unwrap_or(CborValue::Map(Vec::new()));
         let CborValue::Map(parameter_fields) = &parameter_value else {
             return Ctap2Response::error(Ctap2Status::CborUnexpectedType);
@@ -1869,6 +1872,9 @@ impl<'a> AuthenticatorService<'a> {
                 if params.is_some() {
                     return Ctap2Response::error(Ctap2Status::InvalidParameter);
                 }
+                let (Some(auth), Some(protocol)) = (auth, protocol) else {
+                    return Ctap2Response::error(Ctap2Status::PinUvAuthTokenRequired);
+                };
                 if let Err(status) =
                     self.client_pin
                         .authorize(channel, &auth_message, auth, protocol, 0x04, None)
@@ -1892,6 +1898,9 @@ impl<'a> AuthenticatorService<'a> {
                 if params.is_some() {
                     return Ctap2Response::error(Ctap2Status::InvalidParameter);
                 }
+                let (Some(auth), Some(protocol)) = (auth, protocol) else {
+                    return Ctap2Response::error(Ctap2Status::PinUvAuthTokenRequired);
+                };
                 let pin_uv_auth_token_expires_at = match self.client_pin.authorize(
                     channel,
                     &auth_message,
@@ -1948,15 +1957,12 @@ impl<'a> AuthenticatorService<'a> {
                 if params.is_some() {
                     return Ctap2Response::error(Ctap2Status::InvalidParameter);
                 }
-                if let Err(status) =
-                    self.client_pin
-                        .authorize(channel, &auth_message, auth, protocol, 0x04, None)
-                {
-                    return Ctap2Response::error(credential_management_global_auth_status(status));
-                }
                 self.next_credential_management_rp(channel)
             }
             4 => {
+                let (Some(auth), Some(protocol)) = (auth, protocol) else {
+                    return Ctap2Response::error(Ctap2Status::PinUvAuthTokenRequired);
+                };
                 let Some(CborValue::Bytes(rp_hash)) = field(parameter_fields, 1) else {
                     return Ctap2Response::error(Ctap2Status::MissingParameter);
                 };
@@ -2009,43 +2015,22 @@ impl<'a> AuthenticatorService<'a> {
                             expires_at: Instant::now() + CREDENTIAL_MANAGEMENT_TIMEOUT,
                             pin_uv_auth_token_expires_at,
                             position: 1,
-                            entries: CredentialManagementEntries::Credentials {
-                                relying_party_id: rp_id,
-                                records: matching,
-                            },
+                            entries: CredentialManagementEntries::Credentials { records: matching },
                         },
                     );
                 }
                 response
             }
             5 => {
-                let rp_id = match self.credential_management.get(&channel) {
-                    Some(CredentialManagementContinuation {
-                        entries:
-                            CredentialManagementEntries::Credentials {
-                                relying_party_id, ..
-                            },
-                        expires_at,
-                        ..
-                    }) if Instant::now() < *expires_at => relying_party_id.clone(),
-                    _ => return Ctap2Response::error(Ctap2Status::NoCredentials),
-                };
                 if params.is_some() {
                     return Ctap2Response::error(Ctap2Status::InvalidParameter);
-                }
-                if let Err(status) = self.client_pin.authorize(
-                    channel,
-                    &auth_message,
-                    auth,
-                    protocol,
-                    0x04,
-                    Some(&rp_id),
-                ) {
-                    return Ctap2Response::error(status);
                 }
                 self.next_credential_management_credential(channel)
             }
             6 | 7 => {
+                let (Some(auth), Some(protocol)) = (auth, protocol) else {
+                    return Ctap2Response::error(Ctap2Status::PinUvAuthTokenRequired);
+                };
                 let descriptor = match field(parameter_fields, 2) {
                     None => return Ctap2Response::error(Ctap2Status::MissingParameter),
                     Some(CborValue::Map(descriptor)) => descriptor,
