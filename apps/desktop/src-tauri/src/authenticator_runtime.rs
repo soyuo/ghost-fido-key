@@ -198,7 +198,7 @@ pub fn run(
     let mut queued_requests = VecDeque::new();
     let mut runtime_error = None;
 
-    loop {
+    'runtime: loop {
         match stop.try_recv() {
             Ok(()) | Err(TryRecvError::Disconnected) => break,
             Err(TryRecvError::Empty) => {}
@@ -411,13 +411,13 @@ pub fn run(
                     Ok(report) => {
                         if let Err(error) = backend.send_input_report(&report) {
                             runtime_error = Some(error.detail);
-                            break;
+                            break 'runtime;
                         }
                         request.last_keepalive = Instant::now();
                     }
                     Err(error) => {
                         runtime_error = Some(error.to_string());
-                        break;
+                        break 'runtime;
                     }
                 }
             }
