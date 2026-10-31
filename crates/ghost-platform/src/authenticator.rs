@@ -1030,6 +1030,14 @@ impl<'a> AuthenticatorService<'a> {
         self.store.pin_state().verifier().is_some()
     }
 
+    fn always_uv_enabled(&self) -> bool {
+        self.config
+            .get_info
+            .options
+            .iter()
+            .any(|(name, enabled)| name == "alwaysUv" && *enabled)
+    }
+
     /// Returns whether reset cleanup is pending in the credential store.
     #[must_use]
     pub fn reset_is_pending(&self) -> bool {
@@ -1108,6 +1116,14 @@ impl<'a> AuthenticatorService<'a> {
                     return Ok(Ctap2Response::error(Ctap2Status::InvalidLength));
                 }
                 let mut profile = self.config.get_info.clone();
+                let always_uv = self.always_uv_enabled();
+                if always_uv {
+                    for (name, enabled) in &mut profile.options {
+                        if name == "makeCredUvNotRqd" {
+                            *enabled = false;
+                        }
+                    }
+                }
                 let pin_is_set = self.store.pin_state().verifier().is_some();
                 let protected_storage_available = self.store.has_protected_storage();
                 profile.min_pin_length =
@@ -1240,6 +1256,7 @@ impl<'a> AuthenticatorService<'a> {
                     &typed.client_data_hash,
                     pin_auth,
                     typed.options.user_verification == Some(true),
+                    self.always_uv_enabled(),
                     0x01,
                     &typed.rp.id,
                 ) {
@@ -1304,6 +1321,7 @@ impl<'a> AuthenticatorService<'a> {
                         &typed.client_data_hash,
                         pin_auth,
                         typed.options.user_verification == Some(true),
+                        self.always_uv_enabled(),
                         0x02,
                         &typed.rp_id,
                     ) {
@@ -1383,12 +1401,7 @@ impl<'a> AuthenticatorService<'a> {
                 if !self.store.has_protected_storage() {
                     return Ok(Ctap2Response::error(Ctap2Status::InvalidCommand));
                 }
-                let always_uv = self
-                    .config
-                    .get_info
-                    .options
-                    .iter()
-                    .any(|(name, enabled)| name == "alwaysUv" && *enabled);
+                let always_uv = self.always_uv_enabled();
                 Ok(self
                     .client_pin
                     .handle_config(channel, decoded_payload, self.store, always_uv))
@@ -1683,12 +1696,7 @@ impl<'a> AuthenticatorService<'a> {
         }
 
         let pin_configured = self.store.pin_state().verifier().is_some();
-        let always_uv = self
-            .config
-            .get_info
-            .options
-            .iter()
-            .any(|(name, enabled)| name == "alwaysUv" && *enabled);
+        let always_uv = self.always_uv_enabled();
         let auth_required = pin_configured || always_uv;
         let mut pin_uv_auth_token_expires_at = None;
         if auth_required {
@@ -2237,6 +2245,7 @@ impl<'a> AuthenticatorService<'a> {
         client_data_hash: &[u8; 32],
         auth: Option<(Vec<u8>, PinUvAuthProtocol)>,
         uv_required: bool,
+        always_uv: bool,
         permission: u8,
         relying_party_id: &str,
     ) -> Result<(bool, Option<Instant>), Ctap2Status> {
@@ -2253,6 +2262,11 @@ impl<'a> AuthenticatorService<'a> {
                 Ok((true, self.client_pin.token_expiration(channel)))
             }
             None if uv_required => Err(Ctap2Status::InvalidOption),
+            None if always_uv => Err(if self.store.has_protected_storage() {
+                Ctap2Status::PinUvAuthTokenRequired
+            } else {
+                Ctap2Status::OperationDenied
+            }),
             None => Ok((false, None)),
         }
     }
