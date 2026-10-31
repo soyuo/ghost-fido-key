@@ -39,6 +39,7 @@ struct AssertionContinuation {
     request: GetAssertionRequest,
     credentials: VecDeque<CredentialId>,
     expires_at: Instant,
+    pin_uv_auth_token_expires_at: Option<Instant>,
     user_verified: bool,
     hmac_secret_shared_secret: Option<PinUvAuthSharedSecret>,
 }
@@ -51,6 +52,7 @@ impl Drop for AssertionContinuation {
 
 struct CredentialManagementContinuation {
     expires_at: Instant,
+    pin_uv_auth_token_expires_at: Option<Instant>,
     position: usize,
     entries: CredentialManagementEntries,
 }
@@ -143,6 +145,10 @@ impl ClientPinHandler {
         if let Some(token) = self.tokens.get_mut(&channel) {
             token.permissions &= PIN_UV_PERMISSION_LARGE_BLOB_WRITE;
         }
+    }
+
+    fn token_expiration(&self, channel: u32) -> Option<Instant> {
+        self.tokens.get(&channel).map(|token| token.expires_at)
     }
 
     fn expire(&mut self) {
@@ -1075,6 +1081,18 @@ impl<'a> AuthenticatorService<'a> {
         }
         self.client_pin.expire();
         let now = Instant::now();
+        self.assertion_continuations.retain(|_, state| {
+            now < state.expires_at
+                && state
+                    .pin_uv_auth_token_expires_at
+                    .map_or(true, |expires_at| now < expires_at)
+        });
+        self.credential_management.retain(|_, state| {
+            now < state.expires_at
+                && state
+                    .pin_uv_auth_token_expires_at
+                    .map_or(true, |expires_at| now < expires_at)
+        });
         self.large_blob_writes.retain(|_, state| {
             now < state.expires_at
                 && state
@@ -1217,7 +1235,7 @@ impl<'a> AuthenticatorService<'a> {
                 if typed.min_pin_length && !self.store.has_protected_storage() {
                     return Ok(Ctap2Response::error(Ctap2Status::UnsupportedOption));
                 }
-                let user_verified = match self.verify_pin_authorization(
+                let (user_verified, _) = match self.verify_pin_authorization(
                     channel,
                     &typed.client_data_hash,
                     pin_auth,
@@ -1280,14 +1298,15 @@ impl<'a> AuthenticatorService<'a> {
                 } else {
                     None
                 };
-                let user_verified = match self.verify_pin_authorization(
-                    channel,
-                    &typed.client_data_hash,
-                    pin_auth,
-                    typed.options.user_verification == Some(true),
-                    0x02,
-                    &typed.rp_id,
-                ) {
+                let (user_verified, pin_uv_auth_token_expires_at) = match self
+                    .verify_pin_authorization(
+                        channel,
+                        &typed.client_data_hash,
+                        pin_auth,
+                        typed.options.user_verification == Some(true),
+                        0x02,
+                        &typed.rp_id,
+                    ) {
                     Ok(value) => value,
                     Err(status) => {
                         if let Some(secret) = &mut hmac_secret_shared_secret {
@@ -1318,6 +1337,7 @@ impl<'a> AuthenticatorService<'a> {
                             credentials: execution.remaining_credentials.into(),
                             expires_at: Instant::now() + ASSERTION_CONTINUATION_TIMEOUT,
                             user_verified,
+                            pin_uv_auth_token_expires_at,
                             hmac_secret_shared_secret: hmac_secret_shared_secret.as_ref().cloned(),
                         },
                     );
@@ -1842,12 +1862,17 @@ impl<'a> AuthenticatorService<'a> {
                 if params.is_some() {
                     return Ctap2Response::error(Ctap2Status::InvalidParameter);
                 }
-                if let Err(status) =
-                    self.client_pin
-                        .authorize(channel, &auth_message, auth, protocol, 0x04, None)
-                {
-                    return Ctap2Response::error(status);
-                }
+                let pin_uv_auth_token_expires_at = match self.client_pin.authorize(
+                    channel,
+                    &auth_message,
+                    auth,
+                    protocol,
+                    0x04,
+                    None,
+                ) {
+                    Ok(()) => self.client_pin.token_expiration(channel),
+                    Err(status) => return Ctap2Response::error(status),
+                };
                 let mut groups = BTreeMap::<String, ([u8; 32], u64)>::new();
                 for record in self.store.discoverable_records() {
                     let Some(rp_id) = record.relying_party_id else {
@@ -1875,6 +1900,7 @@ impl<'a> AuthenticatorService<'a> {
                     channel,
                     CredentialManagementContinuation {
                         expires_at: Instant::now() + CREDENTIAL_MANAGEMENT_TIMEOUT,
+                        pin_uv_auth_token_expires_at,
                         position: 1,
                         entries: CredentialManagementEntries::RelyingParties(entries),
                     },
@@ -1900,7 +1926,7 @@ impl<'a> AuthenticatorService<'a> {
                 let Ok(rp_hash): Result<[u8; 32], _> = rp_hash.as_slice().try_into() else {
                     return Ctap2Response::error(Ctap2Status::InvalidParameter);
                 };
-                if let Err(status) = self.client_pin.authorize_rp_hash(
+                let pin_uv_auth_token_expires_at = match self.client_pin.authorize_rp_hash(
                     channel,
                     &auth_message,
                     auth,
@@ -1908,8 +1934,9 @@ impl<'a> AuthenticatorService<'a> {
                     0x04,
                     Some(rp_hash),
                 ) {
-                    return Ctap2Response::error(status);
-                }
+                    Ok(()) => self.client_pin.token_expiration(channel),
+                    Err(status) => return Ctap2Response::error(status),
+                };
                 if !self.can_start_credential_management(channel) {
                     return Ctap2Response::error(Ctap2Status::ChannelBusy);
                 }
@@ -1940,6 +1967,7 @@ impl<'a> AuthenticatorService<'a> {
                     channel,
                     CredentialManagementContinuation {
                         expires_at: Instant::now() + CREDENTIAL_MANAGEMENT_TIMEOUT,
+                        pin_uv_auth_token_expires_at,
                         position: 1,
                         entries: CredentialManagementEntries::Credentials {
                             relying_party_id: rp_id,
@@ -2211,7 +2239,7 @@ impl<'a> AuthenticatorService<'a> {
         uv_required: bool,
         permission: u8,
         relying_party_id: &str,
-    ) -> Result<bool, Ctap2Status> {
+    ) -> Result<(bool, Option<Instant>), Ctap2Status> {
         match auth {
             Some((auth, protocol)) => {
                 self.client_pin.authorize(
@@ -2222,10 +2250,10 @@ impl<'a> AuthenticatorService<'a> {
                     permission,
                     Some(relying_party_id),
                 )?;
-                Ok(true)
+                Ok((true, self.client_pin.token_expiration(channel)))
             }
             None if uv_required => Err(Ctap2Status::InvalidOption),
-            None => Ok(false),
+            None => Ok((false, None)),
         }
     }
 }
