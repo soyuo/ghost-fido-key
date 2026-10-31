@@ -2866,20 +2866,26 @@ fn read_protected_table_payload(
     table: ProtectedPayloadTable,
 ) -> Result<Option<Vec<u8>>, CredentialError> {
     let table_name = table.name();
-    let payload_size: Option<i64> = connection
+    let payload_row: Option<(i64, Option<Vec<u8>>)> = connection
         .query_row(
             // SQLite columns can contain TEXT despite BLOB affinity. The CASE must remain lazy so
             // length() is never evaluated on an untrusted TEXT value before rejecting its type.
+            // Keep the size check and payload selection in one statement so concurrent updates
+            // cannot replace a checked small value with an oversized value before materializing it.
             &format!(
-                "SELECT CASE WHEN typeof(payload) = 'blob' THEN length(payload) ELSE -1 END \
+                "SELECT CASE WHEN typeof(payload) = 'blob' THEN length(payload) ELSE -1 END, \
+                 CASE WHEN typeof(payload) = 'blob' THEN \
+                     CASE WHEN length(payload) > 0 AND length(payload) <= ?1 \
+                          THEN payload ELSE NULL END \
+                 ELSE NULL END \
                  FROM {table_name} WHERE singleton = 1"
             ),
-            [],
-            |row| row.get(0),
+            [MAX_PROTECTED_BYTES as i64],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()
         .map_err(|_| CredentialError::StorageFailure)?;
-    let Some(payload_size) = payload_size else {
+    let Some((payload_size, payload)) = payload_row else {
         return Ok(None);
     };
     if payload_size <= 0
@@ -2887,14 +2893,6 @@ fn read_protected_table_payload(
     {
         return Err(CredentialError::ProtectedDataInvalid);
     }
-    let payload: Option<Vec<u8>> = connection
-        .query_row(
-            &format!("SELECT payload FROM {table_name} WHERE singleton = 1"),
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|_| CredentialError::StorageFailure)?;
     let payload = payload.ok_or(CredentialError::ProtectedDataInvalid)?;
     if payload.len()
         != usize::try_from(payload_size).map_err(|_| CredentialError::ProtectedDataInvalid)?
