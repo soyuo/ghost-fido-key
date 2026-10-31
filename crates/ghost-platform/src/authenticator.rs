@@ -1961,6 +1961,7 @@ impl<'a> AuthenticatorService<'a> {
                 if !self.can_start_credential_management(channel) {
                     return Ctap2Response::error(Ctap2Status::ChannelBusy);
                 }
+                self.credential_management.remove(&channel);
                 let records = self.store.discoverable_records();
                 let matching = records
                     .iter()
@@ -1984,19 +1985,22 @@ impl<'a> AuthenticatorService<'a> {
                 }
                 let total = matching.len() as u64;
                 let first = matching[0].clone();
-                self.credential_management.insert(
-                    channel,
-                    CredentialManagementContinuation {
-                        expires_at: Instant::now() + CREDENTIAL_MANAGEMENT_TIMEOUT,
-                        pin_uv_auth_token_expires_at,
-                        position: 1,
-                        entries: CredentialManagementEntries::Credentials {
-                            relying_party_id: rp_id,
-                            records: matching,
+                let response = self.credential_response(&first, total);
+                if response.status == Ctap2Status::Success {
+                    self.credential_management.insert(
+                        channel,
+                        CredentialManagementContinuation {
+                            expires_at: Instant::now() + CREDENTIAL_MANAGEMENT_TIMEOUT,
+                            pin_uv_auth_token_expires_at,
+                            position: 1,
+                            entries: CredentialManagementEntries::Credentials {
+                                relying_party_id: rp_id,
+                                records: matching,
+                            },
                         },
-                    },
-                );
-                self.credential_response(&first, total)
+                    );
+                }
+                response
             }
             5 => {
                 let rp_id = match self.credential_management.get(&channel) {
@@ -2177,7 +2181,7 @@ impl<'a> AuthenticatorService<'a> {
 
     fn next_credential_management_credential(&mut self, channel: u32) -> Ctap2Response {
         let (record, total) = {
-            let Some(state) = self.credential_management.get_mut(&channel) else {
+            let Some(state) = self.credential_management.get(&channel) else {
                 return Ctap2Response::error(Ctap2Status::NoCredentials);
             };
             if Instant::now() >= state.expires_at {
@@ -2191,12 +2195,12 @@ impl<'a> AuthenticatorService<'a> {
                 self.credential_management.remove(&channel);
                 return Ctap2Response::error(Ctap2Status::NoCredentials);
             };
-            state.position += 1;
             (record, records.len() as u64)
         };
         let response = self.credential_response(&record, total);
         if response.status == Ctap2Status::Success {
             if let Some(state) = self.credential_management.get_mut(&channel) {
+                state.position += 1;
                 state.expires_at = Instant::now() + CREDENTIAL_MANAGEMENT_TIMEOUT;
             }
         }
