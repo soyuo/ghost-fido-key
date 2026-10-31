@@ -646,9 +646,6 @@ impl CredentialStore {
         }) {
             return Err(CredentialError::InvalidRelyingPartyId);
         }
-        if record.user_handle.is_empty() {
-            return Err(CredentialError::EmptyUserHandle);
-        }
         if record
             .user_name
             .as_ref()
@@ -3074,7 +3071,7 @@ fn decode_record_fields(
         )
     };
 
-    if rp_id_hash.len() != 32 || user_handle.is_empty() {
+    if rp_id_hash.len() != 32 {
         return Err(CredentialError::ProtectedDataInvalid);
     }
     if with_creation_order && creation_order == 0 {

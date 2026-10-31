@@ -465,7 +465,7 @@ pub fn encode_get_assertion_response_with_count_and_presence_and_uv_and_extensio
     if signature.len() > 128 {
         return Err(GetAssertionResponseError::SignatureTooLong(signature.len()));
     }
-    if user_handle.is_some_and(|handle| handle.is_empty() || handle.len() > 64) {
+    if user_handle.is_some_and(|handle| handle.len() > 64) {
         return Err(GetAssertionResponseError::InvalidUserHandle);
     }
     if number_of_credentials.is_some_and(|count| count < 2) {
@@ -869,7 +869,7 @@ fn parse_make_credential_user(value: CborValue) -> Result<MakeCredentialUser, Ma
                 let CborValue::Bytes(value) = value else {
                     return Err(MakeCredentialError::UnexpectedType(3));
                 };
-                if value.is_empty() || value.len() > 64 {
+                if value.len() > 64 {
                     return Err(MakeCredentialError::InvalidParameter(3));
                 }
                 id = Some(value);

@@ -1,9 +1,15 @@
 # CTAP2 MakeCredential request decoding
 
 `MakeCredentialRequest::decode` validates the required client data hash, RP and
-user entities, and ordered public key credential parameters. User handles are
-limited to 1–64 bytes as required by [WebAuthn](https://www.w3.org/TR/webauthn-3/#dom-publickeycredentialuserentity-id).
-It also decodes
+user entities, and ordered public key credential parameters. CTAP 2.2 permits
+an empty user account identifier, while noting known interoperability hurdles
+and recommending that platforms avoid sending one
+([CTAP 2.2 §6.1](https://fidoalliance.org/specs/fido-v2.2-ps-20250714/fido-client-to-authenticator-protocol-v2.2-ps-20250714.html)).
+This decoder accepts byte strings up to 64 bytes, including an empty byte
+string. The WebAuthn API separately requires a 1–64 byte user ID before it
+creates an authenticator request
+([WebAuthn Level 3](https://www.w3.org/TR/webauthn-3/#dom-publickeycredentialuserentity-id));
+this CTAP behavior does not relax that API validation. It also decodes
 the optional credential exclusion list and `rk`, `uv`, and `up` options. Schema
 failures map to CTAP2 invalid-CBOR, missing-parameter, unexpected-type, or
 invalid-parameter statuses.
