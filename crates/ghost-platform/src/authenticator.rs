@@ -1401,6 +1401,7 @@ impl<'a> AuthenticatorService<'a> {
                 if result.status != Ctap2Status::Success {
                     return Ok(Ctap2Response::error(Ctap2Status::NotAllowed));
                 }
+                continuation.expires_at = Instant::now() + ASSERTION_CONTINUATION_TIMEOUT;
                 if !continuation.credentials.is_empty() {
                     self.assertion_continuations.insert(channel, continuation);
                 }
