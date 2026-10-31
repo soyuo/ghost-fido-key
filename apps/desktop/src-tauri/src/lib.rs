@@ -87,6 +87,8 @@ struct DesktopVerificationProvider {
 #[derive(Default)]
 struct LinuxSessionLockTransition {
     generation: u64,
+    // Stable across repeated snapshots; changes for lock events and state transitions.
+    approval_epoch: u64,
     pending: bool,
 }
 
@@ -94,6 +96,8 @@ struct LinuxSessionLockTransition {
 #[derive(Default)]
 struct WindowsSessionLockTransition {
     generation: u64,
+    // Stable across repeated snapshots; changes for lock events and state transitions.
+    approval_epoch: u64,
     pending: bool,
 }
 
@@ -377,6 +381,7 @@ impl DesktopVerificationProvider {
         let locked = match self.session_lock_transition.lock() {
             Ok(mut transition) => {
                 transition.generation = transition.generation.wrapping_add(1);
+                transition.approval_epoch = transition.approval_epoch.wrapping_add(1);
                 self.session_locked.store(locked, Ordering::Release);
                 locked
             }
@@ -407,6 +412,7 @@ impl DesktopVerificationProvider {
             return;
         };
         transition.generation = transition.generation.wrapping_add(1);
+        transition.approval_epoch = transition.approval_epoch.wrapping_add(1);
         transition.pending = true;
         self.session_locked.store(true, Ordering::Release);
         drop(transition);
@@ -420,6 +426,7 @@ impl DesktopVerificationProvider {
             return;
         };
         transition.generation = transition.generation.wrapping_add(1);
+        transition.approval_epoch = transition.approval_epoch.wrapping_add(1);
         // A logind Unlock signal only clears the transition guard. The next
         // session check still reads LockedHint before authentication resumes.
         transition.pending = false;
@@ -436,6 +443,14 @@ impl DesktopVerificationProvider {
             .lock()
             .ok()
             .map(|transition| transition.generation)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn approval_lock_epoch(&self) -> Option<u64> {
+        self.session_lock_transition
+            .lock()
+            .ok()
+            .map(|transition| transition.approval_epoch)
     }
 
     #[cfg(target_os = "linux")]
@@ -465,7 +480,10 @@ impl DesktopVerificationProvider {
         } else {
             false
         };
-        self.session_locked.store(next_locked, Ordering::Release);
+        let changed = self.session_locked.swap(next_locked, Ordering::AcqRel) != next_locked;
+        if changed {
+            transition.approval_epoch = transition.approval_epoch.wrapping_add(1);
+        }
         drop(transition);
         self.publish_session_lock_state(next_locked);
         true
@@ -529,6 +547,7 @@ impl DesktopVerificationProvider {
         let locked = match self.windows_session_lock_transition.lock() {
             Ok(mut transition) => {
                 transition.generation = transition.generation.wrapping_add(1);
+                transition.approval_epoch = transition.approval_epoch.wrapping_add(1);
                 transition.pending = locked;
                 self.session_locked.store(locked, Ordering::Release);
                 locked
@@ -560,6 +579,14 @@ impl DesktopVerificationProvider {
     }
 
     #[cfg(target_os = "windows")]
+    fn approval_lock_epoch(&self) -> Option<u64> {
+        self.windows_session_lock_transition
+            .lock()
+            .ok()
+            .map(|transition| transition.approval_epoch)
+    }
+
+    #[cfg(target_os = "windows")]
     fn apply_windows_session_lock_snapshot(
         &self,
         locked: bool,
@@ -582,6 +609,9 @@ impl DesktopVerificationProvider {
             transition.pending
         };
         let changed = self.session_locked.swap(next_locked, Ordering::AcqRel) != next_locked;
+        if changed {
+            transition.approval_epoch = transition.approval_epoch.wrapping_add(1);
+        }
         drop(transition);
         if changed {
             self.publish_windows_session_lock_state(next_locked);
@@ -783,6 +813,15 @@ impl UserVerification for DesktopVerificationProvider {
         request: &VerificationRequest,
         timeout: Duration,
     ) -> Result<VerificationDecision, PlatformError> {
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        let approval_lock_epoch = self.approval_lock_epoch().ok_or_else(|| {
+            PlatformError::new(
+                PlatformErrorKind::UserVerificationUnavailable,
+                HostPlatform::current(),
+                "session lock transition state is unavailable",
+            )
+        })?;
+
         #[cfg(target_os = "windows")]
         if !self.session_protection_available() {
             return Err(PlatformError::new(
@@ -797,6 +836,15 @@ impl UserVerification for DesktopVerificationProvider {
                 PlatformErrorKind::UserVerificationUnavailable,
                 HostPlatform::current(),
                 "Linux session lock monitoring is unavailable or the session is locked",
+            ));
+        }
+
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        if self.approval_lock_epoch() != Some(approval_lock_epoch) {
+            return Err(PlatformError::new(
+                PlatformErrorKind::UserVerificationUnavailable,
+                HostPlatform::current(),
+                "session lock changed while starting the approval request",
             ));
         }
 
@@ -912,6 +960,30 @@ impl UserVerification for DesktopVerificationProvider {
                             PlatformErrorKind::UserVerificationUnavailable,
                             HostPlatform::MacOs,
                             "macOS user session switched during the approval request",
+                        ));
+                    }
+                    #[cfg(target_os = "windows")]
+                    if matches!(decision, VerificationDecision::Approved)
+                        && (!self.session_protection_available()
+                            || self.approval_lock_epoch() != Some(approval_lock_epoch))
+                    {
+                        self.cancel_one(&request_id);
+                        return Err(PlatformError::new(
+                            PlatformErrorKind::UserVerificationUnavailable,
+                            HostPlatform::current(),
+                            "Windows session lock changed during the approval request",
+                        ));
+                    }
+                    #[cfg(target_os = "linux")]
+                    if matches!(decision, VerificationDecision::Approved)
+                        && (!self.session_protection_available()
+                            || self.approval_lock_epoch() != Some(approval_lock_epoch))
+                    {
+                        self.cancel_one(&request_id);
+                        return Err(PlatformError::new(
+                            PlatformErrorKind::UserVerificationUnavailable,
+                            HostPlatform::current(),
+                            "Linux session lock changed during the approval request",
                         ));
                     }
                     return Ok(decision);
