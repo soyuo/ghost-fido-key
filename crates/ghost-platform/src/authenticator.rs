@@ -1967,16 +1967,18 @@ impl<'a> AuthenticatorService<'a> {
                 let Ok(rp_hash): Result<[u8; 32], _> = rp_hash.as_slice().try_into() else {
                     return Ctap2Response::error(Ctap2Status::InvalidParameter);
                 };
-                let pin_uv_auth_token_expires_at = match self.client_pin.authorize_rp_hash(
+                let pin_uv_auth_token_expires_at = match self.client_pin.authorize(
                     channel,
                     &auth_message,
                     auth,
                     protocol,
                     0x04,
-                    Some(rp_hash),
+                    None,
                 ) {
                     Ok(()) => self.client_pin.token_expiration(channel),
-                    Err(status) => return Ctap2Response::error(status),
+                    Err(status) => {
+                        return Ctap2Response::error(credential_management_auth_status(status));
+                    }
                 };
                 if !self.can_start_credential_management(channel) {
                     return Ctap2Response::error(Ctap2Status::ChannelBusy);
