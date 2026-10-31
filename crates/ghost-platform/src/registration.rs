@@ -196,7 +196,7 @@ pub(crate) fn register_make_credential_with_uv_and_presence_callback(
     let (created, key_handle) =
         match create_journaled_signing_key(store, key_store, key_policy, software_key_consent) {
             Ok(created) => created,
-            Err(error)
+            Err(MakeCredentialExecutionError::Platform(error))
                 if key_policy == KeyCreationPolicy::PlatformProtectedOnly
                     && error.kind == PlatformErrorKind::PlatformKeyProtectionUnavailable =>
             {
@@ -228,7 +228,7 @@ pub(crate) fn register_make_credential_with_uv_and_presence_callback(
                     Err(error) => return Err(error.into()),
                 }
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(error),
         };
     let credential_id = match CredentialId::new(credential_id_bytes.to_vec()) {
         Ok(id) => id,
@@ -357,7 +357,7 @@ fn create_journaled_signing_key(
     key_store: &dyn KeyStore,
     policy: KeyCreationPolicy,
     consent: Option<SoftwareKeyConsent>,
-) -> Result<(CreatedSigningKey, KeyHandle), PlatformError> {
+) -> Result<(CreatedSigningKey, KeyHandle), MakeCredentialExecutionError> {
     let reference = key_store.allocate_signing_key_reference(policy, consent)?;
     let key_handle = KeyHandle::new(reference.as_provider_reference().as_bytes().to_vec())
         .map_err(|error| {
@@ -369,13 +369,7 @@ fn create_journaled_signing_key(
         })?;
     store
         .begin_provider_key_creation(key_handle.clone())
-        .map_err(|error| {
-            PlatformError::new(
-                PlatformErrorKind::KeyStoreUnavailable,
-                crate::HostPlatform::current(),
-                format!("could not persist provider-key creation intent: {error:?}"),
-            )
-        })?;
+        .map_err(MakeCredentialExecutionError::Credential)?;
     match key_store.create_signing_key(&reference, SigningAlgorithm::Es256, policy, consent) {
         Ok(created) if created.reference == reference => Ok((created, key_handle)),
         Ok(created) => {
@@ -384,7 +378,8 @@ fn create_journaled_signing_key(
                 PlatformErrorKind::KeyStoreUnavailable,
                 crate::HostPlatform::current(),
                 "provider created a key under a different reference than the reserved journal",
-            ))
+            )
+            .into())
         }
         Err(error) if error.kind == PlatformErrorKind::PlatformKeyProtectionUnavailable => {
             // Providers use this result only when protection is unavailable
@@ -399,20 +394,21 @@ fn create_journaled_signing_key(
                         format!("could not clear unused provider-key intent: {journal_error:?}"),
                     )
                 })?;
-            Err(error)
+            Err(error.into())
         }
         Err(error) => match key_store.delete_key(&reference) {
             Ok(()) => match store.mark_provider_key_deleted(&key_handle) {
-                Ok(()) => Err(error),
+                Ok(()) => Err(error.into()),
                 Err(journal_error) => Err(PlatformError::new(
                     PlatformErrorKind::KeyStoreUnavailable,
                     crate::HostPlatform::current(),
                     format!(
                         "provider key was absent but its cleanup journal could not be cleared: {journal_error:?}"
                     ),
-                )),
+                )
+                .into()),
             },
-            Err(cleanup_error) => Err(cleanup_error),
+            Err(cleanup_error) => Err(cleanup_error.into()),
         },
     }
 }
