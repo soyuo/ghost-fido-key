@@ -289,7 +289,7 @@ fn sign_assertion_for_credential(
     } else {
         None
     };
-    let include_user = request.allow_list.is_none() && record.discoverable;
+    let include_user = record.discoverable;
     let next_sign_count = record
         .sign_count
         .checked_add(1)
