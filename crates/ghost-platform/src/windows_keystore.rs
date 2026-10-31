@@ -24,6 +24,72 @@ use windows::{
 #[derive(Debug, Default)]
 pub struct WindowsKeyStore;
 
+struct CngProviderHandle(Option<NCRYPT_PROV_HANDLE>);
+
+impl CngProviderHandle {
+    fn new(handle: NCRYPT_PROV_HANDLE) -> Self {
+        Self(Some(handle))
+    }
+
+    fn raw(&self) -> NCRYPT_PROV_HANDLE {
+        self.0.expect("CNG provider handle remains owned")
+    }
+
+    fn release(&mut self) -> windows::core::Result<()> {
+        let Some(handle) = self.0.take() else {
+            return Ok(());
+        };
+        // SAFETY: this wrapper owns the provider handle and releases it at most once.
+        unsafe { NCryptFreeObject(handle.into()) }
+    }
+}
+
+impl Drop for CngProviderHandle {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            // SAFETY: this wrapper owns the provider handle and releases it at most once.
+            let _ = unsafe { NCryptFreeObject(handle.into()) };
+        }
+    }
+}
+
+struct CngKeyHandle(Option<NCRYPT_KEY_HANDLE>);
+
+impl CngKeyHandle {
+    fn new(handle: NCRYPT_KEY_HANDLE) -> Self {
+        Self(Some(handle))
+    }
+
+    fn raw(&self) -> NCRYPT_KEY_HANDLE {
+        self.0.expect("CNG key handle remains owned")
+    }
+
+    fn release(&mut self) -> windows::core::Result<()> {
+        let Some(handle) = self.0.take() else {
+            return Ok(());
+        };
+        // SAFETY: this wrapper owns the key handle and releases it at most once.
+        unsafe { NCryptFreeObject(handle.into()) }
+    }
+
+    fn delete(&mut self) -> windows::core::Result<()> {
+        // SAFETY: this wrapper owns the persisted key handle.
+        unsafe { NCryptDeleteKey(self.raw(), 0) }?;
+        // NCryptDeleteKey releases the key handle on success.
+        self.0 = None;
+        Ok(())
+    }
+}
+
+impl Drop for CngKeyHandle {
+    fn drop(&mut self) {
+        if let Some(handle) = self.0.take() {
+            // SAFETY: this wrapper owns the key handle and releases it at most once.
+            let _ = unsafe { NCryptFreeObject(handle.into()) };
+        }
+    }
+}
+
 impl WindowsKeyStore {
     #[must_use]
     pub const fn new() -> Self {
@@ -89,19 +155,19 @@ impl WindowsKeyStore {
     }
 
     fn discard_incomplete_key(
-        key: NCRYPT_KEY_HANDLE,
-        provider: NCRYPT_PROV_HANDLE,
+        mut key: CngKeyHandle,
+        mut provider: CngProviderHandle,
     ) -> windows::core::Result<()> {
         // Deleting a persisted key also releases its key handle. If deletion fails,
         // release the handle explicitly, but do not permit software fallback: the
         // incomplete protected key may still remain in the provider.
-        let deletion = unsafe { NCryptDeleteKey(key, 0) };
+        let deletion = key.delete();
         let key_release = if deletion.is_err() {
-            unsafe { NCryptFreeObject(key.into()) }
+            key.release()
         } else {
             Ok(())
         };
-        let provider_release = unsafe { NCryptFreeObject(provider.into()) };
+        let provider_release = provider.release();
         deletion.and(key_release).and(provider_release)
     }
 
@@ -264,13 +330,14 @@ impl KeyStore for WindowsKeyStore {
                 "CNG key reference does not match its selected provider",
             ));
         }
-        let provider = self.open_provider(provider_name, classify_unavailable)?;
+        let mut provider =
+            CngProviderHandle::new(self.open_provider(provider_name, classify_unavailable)?);
         let wide_name = Self::key_name(reference)?;
         let mut key = NCRYPT_KEY_HANDLE(0);
         // SAFETY: provider is valid, both strings are NUL terminated, and key is a valid output pointer.
         let creation_result = unsafe {
             NCryptCreatePersistedKey(
-                provider,
+                provider.raw(),
                 &mut key,
                 NCRYPT_ECDSA_ALGORITHM,
                 PCWSTR(wide_name.as_ptr()),
@@ -279,8 +346,7 @@ impl KeyStore for WindowsKeyStore {
             )
         };
         if let Err(error) = creation_result {
-            // SAFETY: creation failed before a key handle was returned; release the provider.
-            let _ = unsafe { NCryptFreeObject(provider.into()) };
+            // The provider guard releases the handle on this error path.
             return Err(
                 if classify_unavailable && Self::is_device_not_ready(&error) {
                     Self::protection_unavailable(error)
@@ -289,11 +355,12 @@ impl KeyStore for WindowsKeyStore {
                 },
             );
         }
+        let mut key = CngKeyHandle::new(key);
         let usage = NCRYPT_ALLOW_SIGNING_FLAG.to_ne_bytes();
         // SAFETY: key is valid and the property bytes remain alive for this call.
         let configured = unsafe {
             NCryptSetProperty(
-                key.into(),
+                key.raw().into(),
                 NCRYPT_KEY_USAGE_PROPERTY,
                 &usage,
                 NCRYPT_FLAGS(0),
@@ -301,7 +368,7 @@ impl KeyStore for WindowsKeyStore {
         }
         .and_then(|_| unsafe {
             NCryptSetProperty(
-                key.into(),
+                key.raw().into(),
                 NCRYPT_ECC_CURVE_NAME_PROPERTY,
                 &wide_curve(),
                 NCRYPT_FLAGS(0),
@@ -316,7 +383,7 @@ impl KeyStore for WindowsKeyStore {
             ));
         }
         // SAFETY: key is a valid persisted CNG key handle.
-        if let Err(error) = unsafe { NCryptFinalizeKey(key, NCRYPT_FLAGS(0)) } {
+        if let Err(error) = unsafe { NCryptFinalizeKey(key.raw(), NCRYPT_FLAGS(0)) } {
             let cleanup = Self::discard_incomplete_key(key, provider);
             return Err(Self::key_setup_failure(
                 error,
@@ -324,17 +391,20 @@ impl KeyStore for WindowsKeyStore {
                 cleanup,
             ));
         }
-        let public_key = match Self::export_public_key(key) {
+        let public_key = match Self::export_public_key(key.raw()) {
             Ok(public_key) => public_key,
             Err(error) => {
-                let _ = unsafe { NCryptDeleteKey(key, 0) };
-                let _ = unsafe { NCryptFreeObject(provider.into()) };
+                if key.delete().is_err() {
+                    let _ = key.release();
+                }
+                let _ = provider.release();
                 return Err(error);
             }
         };
-        // SAFETY: CNG handles are released after the persisted key is finalized.
-        unsafe { NCryptFreeObject(key.into()) }.map_err(Self::fail)?;
-        unsafe { NCryptFreeObject(provider.into()) }.map_err(Self::fail)?;
+        let key_release = key.release();
+        let provider_release = provider.release();
+        key_release.map_err(Self::fail)?;
+        provider_release.map_err(Self::fail)?;
         Ok(CreatedSigningKey {
             reference: reference.clone(),
             metadata: KeyMetadata {
@@ -356,12 +426,13 @@ impl KeyStore for WindowsKeyStore {
             return Err(Self::fail("ES256 requires a 32-byte SHA-256 digest"));
         }
         let name = Self::key_name(key)?;
-        let provider = self.open_provider(Self::provider_for_key(key)?, false)?;
+        let mut provider =
+            CngProviderHandle::new(self.open_provider(Self::provider_for_key(key)?, false)?);
         let mut handle = NCRYPT_KEY_HANDLE(0);
         // SAFETY: provider and NUL-terminated key name are valid; handle is writable.
         unsafe {
             NCryptOpenKey(
-                provider,
+                provider.raw(),
                 &mut handle,
                 PCWSTR(name.as_ptr()),
                 CERT_KEY_SPEC(0),
@@ -369,24 +440,26 @@ impl KeyStore for WindowsKeyStore {
             )
         }
         .map_err(Self::fail)?;
+        let mut handle = CngKeyHandle::new(handle);
         let mut signature = vec![0u8; 64];
         let mut written = 0;
         // SAFETY: message and signature buffers are valid for their declared lengths.
-        unsafe {
+        let signing_result = unsafe {
             NCryptSignHash(
-                handle,
+                handle.raw(),
                 None,
                 digest,
                 Some(&mut signature),
                 &mut written,
                 NCRYPT_SILENT_FLAG,
             )
-        }
-        .map_err(Self::fail)?;
+        };
+        let key_release = handle.release();
+        let provider_release = provider.release();
+        signing_result.map_err(Self::fail)?;
+        key_release.map_err(Self::fail)?;
+        provider_release.map_err(Self::fail)?;
         signature.truncate(written as usize);
-        // SAFETY: both handles were opened successfully and are now being released.
-        unsafe { NCryptFreeObject(handle.into()) }.map_err(Self::fail)?;
-        unsafe { NCryptFreeObject(provider.into()) }.map_err(Self::fail)?;
         if signature.len() != 64 {
             return Err(Self::fail(
                 "CNG did not return a fixed-width ES256 signature",
@@ -397,12 +470,13 @@ impl KeyStore for WindowsKeyStore {
 
     fn public_key(&self, key: &KeyReference) -> Result<Es256PublicKey, PlatformError> {
         let name = Self::key_name(key)?;
-        let provider = self.open_provider(Self::provider_for_key(key)?, false)?;
+        let mut provider =
+            CngProviderHandle::new(self.open_provider(Self::provider_for_key(key)?, false)?);
         let mut handle = NCRYPT_KEY_HANDLE(0);
         // SAFETY: provider and NUL-terminated key name are valid; handle is writable.
         unsafe {
             NCryptOpenKey(
-                provider,
+                provider.raw(),
                 &mut handle,
                 PCWSTR(name.as_ptr()),
                 CERT_KEY_SPEC(0),
@@ -410,21 +484,25 @@ impl KeyStore for WindowsKeyStore {
             )
         }
         .map_err(Self::fail)?;
-        let public_key = Self::export_public_key(handle);
-        // SAFETY: both handles were opened successfully and are now being released.
-        unsafe { NCryptFreeObject(handle.into()) }.map_err(Self::fail)?;
-        unsafe { NCryptFreeObject(provider.into()) }.map_err(Self::fail)?;
-        public_key
+        let mut handle = CngKeyHandle::new(handle);
+        let public_key = Self::export_public_key(handle.raw());
+        let key_release = handle.release();
+        let provider_release = provider.release();
+        let public_key = public_key?;
+        key_release.map_err(Self::fail)?;
+        provider_release.map_err(Self::fail)?;
+        Ok(public_key)
     }
 
     fn delete_key(&self, key: &KeyReference) -> Result<(), PlatformError> {
         let name = Self::key_name(key)?;
-        let provider = self.open_provider(Self::provider_for_key(key)?, false)?;
+        let mut provider =
+            CngProviderHandle::new(self.open_provider(Self::provider_for_key(key)?, false)?);
         let mut handle = NCRYPT_KEY_HANDLE(0);
         // SAFETY: provider and NUL-terminated key name are valid; handle is writable.
         let open_result = unsafe {
             NCryptOpenKey(
-                provider,
+                provider.raw(),
                 &mut handle,
                 PCWSTR(name.as_ptr()),
                 CERT_KEY_SPEC(0),
@@ -432,18 +510,25 @@ impl KeyStore for WindowsKeyStore {
             )
         };
         if let Err(error) = open_result {
-            // SAFETY: provider was opened successfully and no key handle was returned.
-            let _ = unsafe { NCryptFreeObject(provider.into()) };
+            // Release the provider even when the key is missing or cannot be opened.
+            let _ = provider.release();
             return if Self::is_missing_key_error(&error) {
                 Ok(())
             } else {
                 Err(Self::fail(error))
             };
         }
-        // SAFETY: handle is an opened key and ownership transfers to delete.
-        unsafe { NCryptDeleteKey(handle, 0) }.map_err(Self::fail)?;
-        // SAFETY: provider was opened successfully.
-        unsafe { NCryptFreeObject(provider.into()) }.map_err(Self::fail)
+        let mut handle = CngKeyHandle::new(handle);
+        let deletion = handle.delete();
+        let key_release = if deletion.is_err() {
+            handle.release()
+        } else {
+            Ok(())
+        };
+        let provider_release = provider.release();
+        deletion.map_err(Self::fail)?;
+        key_release.map_err(Self::fail)?;
+        provider_release.map_err(Self::fail)
     }
 }
 
