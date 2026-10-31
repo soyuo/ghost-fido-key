@@ -160,9 +160,11 @@ impl MetadataKeyStore for LinuxSecretServiceKeyStore {
 
 fn decode_key(secret: Vec<u8>) -> Result<Zeroizing<[u8; KEY_SIZE]>, CredentialProtectionError> {
     let secret = Zeroizing::new(secret);
-    let key: [u8; KEY_SIZE] = secret
+    let secret_bytes: &[u8; KEY_SIZE] = secret
         .as_slice()
         .try_into()
         .map_err(|_| CredentialProtectionError::Failed)?;
-    Ok(Zeroizing::new(key))
+    let mut key = Zeroizing::new([0_u8; KEY_SIZE]);
+    key.copy_from_slice(secret_bytes);
+    Ok(key)
 }

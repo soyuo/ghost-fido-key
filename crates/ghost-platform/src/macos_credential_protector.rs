@@ -61,7 +61,7 @@ impl MetadataKeyStore for MacOsKeychainKeyStore {
     fn load_or_create_key(&self) -> Result<Zeroizing<[u8; KEY_SIZE]>, CredentialProtectionError> {
         let keychain = SecKeychain::default().map_err(|_| CredentialProtectionError::Failed)?;
         match keychain.find_generic_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT) {
-            Ok((password, _item)) => decode_key(password.as_ref().to_vec()),
+            Ok((password, _item)) => decode_key(password.as_ref()),
             Err(error) if error.code() == errSecItemNotFound => {
                 let mut generated_key = Zeroizing::new([0_u8; KEY_SIZE]);
                 getrandom::fill(generated_key.as_mut())
@@ -75,7 +75,7 @@ impl MetadataKeyStore for MacOsKeychainKeyStore {
                     Err(error) if error.code() == errSecDuplicateItem => keychain
                         .find_generic_password(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT)
                         .map_err(|_| CredentialProtectionError::Failed)
-                        .and_then(|(password, _item)| decode_key(password.as_ref().to_vec())),
+                        .and_then(|(password, _item)| decode_key(password.as_ref())),
                     Err(_) => Err(CredentialProtectionError::Failed),
                 }
             }
@@ -92,11 +92,11 @@ impl MetadataKeyStore for MacOsKeychainKeyStore {
     }
 }
 
-fn decode_key(secret: Vec<u8>) -> Result<Zeroizing<[u8; KEY_SIZE]>, CredentialProtectionError> {
-    let secret = Zeroizing::new(secret);
-    let key: [u8; KEY_SIZE] = secret
-        .as_slice()
+fn decode_key(secret: &[u8]) -> Result<Zeroizing<[u8; KEY_SIZE]>, CredentialProtectionError> {
+    let secret_bytes: &[u8; KEY_SIZE] = secret
         .try_into()
         .map_err(|_| CredentialProtectionError::Failed)?;
-    Ok(Zeroizing::new(key))
+    let mut key = Zeroizing::new([0_u8; KEY_SIZE]);
+    key.copy_from_slice(secret_bytes);
+    Ok(key)
 }
