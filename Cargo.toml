@@ -14,7 +14,7 @@ uhid-virt = { path = "vendor/uhid-virt" }
 edition = "2024"
 license = "MIT"
 version = "0.1.0"
-rust-version = "1.88"
+rust-version = "1.90"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
