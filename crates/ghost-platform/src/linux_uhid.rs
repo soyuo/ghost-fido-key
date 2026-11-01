@@ -107,9 +107,8 @@ impl LinuxUhidBackend {
 
         PlatformCapabilities {
             virtual_hid,
-            protected_key_storage: CapabilityStatus::unavailable(
-                CapabilityState::NotImplemented,
-                "Linux protected key provider is not implemented",
+            protected_key_storage: CapabilityStatus::implemented(
+                "Linux Secret Service credential protection and session-consented software signing keys are implemented; signing keys are not hardware-backed and provider readiness is checked on use",
             ),
             user_verification: CapabilityStatus::unavailable(
                 CapabilityState::NotImplemented,
