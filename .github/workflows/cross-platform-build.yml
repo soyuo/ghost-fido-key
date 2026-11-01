@@ -211,6 +211,7 @@ jobs:
             exit 1
           fi
           du -sh "$app" "$dmg"
+          bash ./.github/scripts/smoke-macos-app-bundle.sh "$app" "$dmg"
 
       - name: Verify macOS Intel development app output
         if: runner.os == 'macOS' && runner.arch == 'X64'
@@ -222,6 +223,7 @@ jobs:
             exit 1
           fi
           du -sh "$app"
+          bash ./.github/scripts/smoke-macos-app-bundle.sh "$app"
 
       - name: Upload unsigned macOS development bundles
         if: runner.os == 'macOS'
