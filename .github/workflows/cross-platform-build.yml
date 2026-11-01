@@ -176,7 +176,7 @@ jobs:
         run: cargo test --package ghost-fido-core --package ghost-platform --locked
 
       - name: Test desktop library
-        if: runner.os == 'Linux' || runner.os == 'Windows'
+        if: runner.os == 'Linux' || runner.os == 'Windows' || runner.os == 'macOS'
         run: cargo test --package ghost-fido-desktop --lib --locked
 
       - name: Link macOS desktop application with CoreHID bridge
