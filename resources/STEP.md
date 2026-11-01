@@ -60,9 +60,9 @@
 - `ghost-platform`의 Linux adapter는 `UHID_CREATE2`/`UHID_START`/`UHID_DESTROY` lifecycle과 FIDO Alliance `0xF1D0/0x01`, 64-byte report descriptor를 사용한다. 실제 CTAPHID framing은 공통 core가 소유한다.
 - Linux 배포 시 root 실행을 요구하지 않는다. 대상 Ubuntu LTS의 `/dev/uhid` 소유권·ACL·udev 경로를 확인하고 최소 권한 설치·제거 절차를 기록한다.
 - Windows에서 UdeCx/KMDF 기반 가상 USB/HID 경로를 검증한다. 개발 키트, 관리자 권한, 서명, 설치·제거, 재부팅과 배포 조건을 조사한다.
-- `platforms/windows/ude`의 native scaffold와 Rust control boundary를 먼저 연결한다. signed driver readiness를 확인하기 전에는 `Available`을 반환하지 않는다.
+- `platforms/windows/ude`의 UdeCx/KMDF driver와 Rust control boundary 연결은 구현됐다. signed driver 설치·readiness와 실제 장치 lifecycle을 확인하기 전에는 지원 완료로 표시하지 않는다.
 - macOS에서 CoreHID virtual device API와 필요한 entitlement를 확인한다. entitlement 요청 가능성, 코드 서명, 배포 및 브라우저에서 보이는 장치 여부를 먼저 확인한다.
-- `platforms/macos/corehid` Swift lifecycle scaffold와 Rust status boundary를 연결한다. entitlement가 실제 signed build에서 확인되기 전에는 `Available`을 반환하지 않는다.
+- `platforms/macos/corehid`의 Swift lifecycle과 Rust status boundary 연결은 구현됐다. 배포 서명 build의 entitlement·장치 lifecycle을 확인하고 브라우저 동작을 검증하기 전에는 지원 완료로 표시하지 않는다.
 - 각 OS에서 장치 열거 이후 Chrome/Edge 등 테스트 대상 브라우저가 FIDO authenticator를 발견하고 HID report를 교환하는지 확인한다.
 - USB/IP, UdeCx, UHID, CoreHID 등의 경로를 각각 해당 OS 내 구현으로 평가한다. 한 OS용 transport를 다른 OS의 공통 해법으로 가정하지 않는다.
 - 장치 API나 배포 권한을 확보할 수 없는 필수 플랫폼·아키텍처는 v1 차단 항목으로 보고한다. 사용자 승인 없이 v1 필수 범위에서 제외하지 않는다.
