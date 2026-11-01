@@ -26,7 +26,7 @@ Protocol 2 follows CTAP2.1/2.2 §6.5.7:
 - Prefix encrypted data with a fresh random 16-byte IV; do not add padding. Reject malformed ciphertext lengths.
 - Use the full 32-byte HMAC-SHA-256 result and a 32-byte `pinUvAuthToken`.
 
-ClientPIN `keyAgreement` accepts the required P-256 COSE key fields and `alg` only. Recognized optional COSE_Key labels `kid` (2), `key_ops` (4), and `base IV` (5) are rejected as required by the CTAP profile; other unrecognized map labels remain ignored under CTAP §8.
+ClientPIN `keyAgreement` accepts the required P-256 COSE key fields and `alg` only. Recognized optional COSE_Key labels `kid` (2), `key_ops` (4), `base IV` (5), and the EC2 private-key parameter `d` (-4) are rejected as required by the CTAP profile; other unrecognized map labels remain ignored under CTAP §8.
 
 Both protocols keep the PIN verifier as the first 16 bytes of SHA-256(PIN); plaintext PINs and tokens are never persisted. PIN input is the decrypted 64-byte right-zero-padded value. Remove trailing zero bytes, require valid UTF-8, at least four Unicode code points, and at most 63 UTF-8 bytes. Retry state must be durable and protected with the same OS-backed credential protector. Invalid current-PIN attempts consume a retry before returning an error; a correct current PIN during `changePIN` restores the retry count before the replacement PIN is decrypted and validated.
 
