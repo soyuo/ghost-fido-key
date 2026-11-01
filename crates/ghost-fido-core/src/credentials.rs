@@ -161,6 +161,17 @@ pub struct CredentialRecord {
     pub sign_count: u32,
 }
 
+impl Drop for CredentialRecord {
+    fn drop(&mut self) {
+        self.id.0.zeroize();
+        self.rp_id_hash.zeroize();
+        self.relying_party_id.zeroize();
+        self.user_handle.zeroize();
+        self.user_name.zeroize();
+        self.user_display_name.zeroize();
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct HmacSecretMaterial {
     with_uv: Zeroizing<[u8; 32]>,
@@ -236,7 +247,7 @@ impl fmt::Debug for CredentialBlob {
 }
 
 /// Safe local-management projection of one credential record.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ManagedCredential {
     pub creation_order: u64,
     pub relying_party_id: Option<String>,
@@ -244,6 +255,28 @@ pub struct ManagedCredential {
     pub user_display_name: Option<String>,
     pub key_metadata: CredentialKeyMetadata,
     pub discoverable: bool,
+}
+
+impl Drop for ManagedCredential {
+    fn drop(&mut self) {
+        self.relying_party_id.zeroize();
+        self.user_name.zeroize();
+        self.user_display_name.zeroize();
+    }
+}
+
+impl fmt::Debug for ManagedCredential {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ManagedCredential")
+            .field("creation_order", &self.creation_order)
+            .field("relying_party_id", &"[REDACTED]")
+            .field("user_name", &"[REDACTED]")
+            .field("user_display_name", &"[REDACTED]")
+            .field("key_metadata", &self.key_metadata)
+            .field("discoverable", &self.discoverable)
+            .finish()
+    }
 }
 
 impl fmt::Debug for CredentialRecord {

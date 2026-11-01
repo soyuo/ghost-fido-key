@@ -1928,13 +1928,15 @@ impl<'a> AuthenticatorService<'a> {
                 self.credential_management.remove(&channel);
                 let mut groups = BTreeMap::<String, ([u8; 32], u64)>::new();
                 for record in self.store.discoverable_records() {
-                    let Some(rp_id) = record.relying_party_id else {
+                    let Some(rp_id) = record.relying_party_id.as_deref() else {
                         return Ctap2Response::error(Ctap2Status::Other);
                     };
                     if <[u8; 32]>::from(Sha256::digest(rp_id.as_bytes())) != record.rp_id_hash {
                         return Ctap2Response::error(Ctap2Status::Other);
                     }
-                    let entry = groups.entry(rp_id).or_insert((record.rp_id_hash, 0));
+                    let entry = groups
+                        .entry(rp_id.to_owned())
+                        .or_insert((record.rp_id_hash, 0));
                     if entry.0 != record.rp_id_hash {
                         return Ctap2Response::error(Ctap2Status::Other);
                     }
