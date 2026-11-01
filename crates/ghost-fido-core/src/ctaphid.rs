@@ -716,7 +716,8 @@ pub fn encode_continuations(
         return Err(FrameError::PayloadTooLarge(payload.len()));
     }
     let mut reports = Vec::new();
-    let mut offset = 0;
+    // The initial report already carries the first INIT_PAYLOAD_SIZE bytes.
+    let mut offset = payload.len().min(INIT_PAYLOAD_SIZE);
     let mut sequence = 0u8;
     while offset < payload.len() {
         let copy_len = (payload.len() - offset).min(CONTINUATION_PAYLOAD_SIZE);
@@ -736,5 +737,247 @@ fn ensure_report(report: &[u8]) -> Result<(), FrameError> {
         Ok(())
     } else {
         Err(FrameError::InvalidReportLength(report.len()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ctap2::Ctap2Command;
+
+    fn channel(report: &[u8; HID_REPORT_SIZE]) -> u32 {
+        u32::from_be_bytes(report[..4].try_into().expect("four-byte channel"))
+    }
+
+    fn init_session(session: &mut CtapHidSession, now: Instant, timeout: Duration) -> u32 {
+        let nonce = *b"12345678";
+        let request = encode_initialization(BROADCAST_CHANNEL, CtapHidCommand::Init, &nonce)
+            .expect("valid broadcast INIT");
+        let SessionEvent::Response(response) = session.receive(&request, now).expect("INIT") else {
+            panic!("INIT must return one report");
+        };
+        assert_eq!(response[4], CtapHidCommand::Init.wire());
+        assert_eq!(&response[7..15], &nonce);
+        let assigned = u32::from_be_bytes(response[15..19].try_into().expect("assigned CID"));
+        assert_ne!(assigned, 0);
+        assert_ne!(assigned, BROADCAST_CHANNEL);
+        assert_eq!(&response[19..24], &[2, 1, 0, 0, 0x04]);
+        // The caller-supplied timeout is used by the session's allocator.
+        let _ = timeout;
+        assigned
+    }
+
+    #[test]
+    fn framing_round_trips_boundary_and_maximum_payloads() {
+        let channel = 0x0102_0304;
+        for length in [
+            0,
+            INIT_PAYLOAD_SIZE - 1,
+            INIT_PAYLOAD_SIZE,
+            INIT_PAYLOAD_SIZE + 1,
+            116,
+            MAX_PAYLOAD_SIZE,
+        ] {
+            let payload: Vec<u8> = (0..length)
+                .map(|index| u8::try_from(index % 251).expect("value is within byte range"))
+                .collect();
+            let first = encode_initialization(channel, CtapHidCommand::Ping, &payload)
+                .expect("valid initialization report");
+            let mut reports = vec![first];
+            reports.extend(
+                encode_continuations(channel, &payload).expect("valid continuation reports"),
+            );
+            assert!(reports.iter().all(|report| report.len() == HID_REPORT_SIZE));
+
+            let mut assembler = CtapHidAssembler::start(&reports[0]).expect("valid first report");
+            let mut complete = if assembler.is_complete() {
+                Some(CtapHidMessage {
+                    channel: assembler.channel,
+                    command: assembler.command,
+                    payload: core::mem::take(&mut assembler.payload),
+                })
+            } else {
+                None
+            };
+            for report in reports.iter().skip(1) {
+                complete = assembler.push_continuation(report).expect("valid sequence");
+            }
+            let message = complete.expect("payload should be complete");
+            assert_eq!(message.channel, channel);
+            assert_eq!(message.command, CtapHidCommand::Ping);
+            assert_eq!(message.payload, payload);
+        }
+    }
+
+    #[test]
+    fn assembler_rejects_bad_report_channel_command_and_sequence() {
+        let first = encode_initialization(7, CtapHidCommand::Ping, &[1; INIT_PAYLOAD_SIZE + 1])
+            .expect("valid first report");
+        assert!(matches!(
+            CtapHidAssembler::start(&first[..63]),
+            Err(FrameError::InvalidReportLength(63))
+        ));
+
+        let mut zero_channel = first;
+        zero_channel[..4].fill(0);
+        assert_eq!(
+            CtapHidAssembler::start(&zero_channel),
+            Err(FrameError::InvalidChannel)
+        );
+
+        let mut invalid_command = first;
+        invalid_command[4] = 0x01;
+        assert_eq!(
+            CtapHidAssembler::start(&invalid_command),
+            Err(FrameError::InvalidCommand(0x01))
+        );
+
+        let mut assembler = CtapHidAssembler::start(&first).expect("valid first report");
+        let mut continuation = [0; HID_REPORT_SIZE];
+        continuation[..4].copy_from_slice(&7_u32.to_be_bytes());
+        continuation[5] = 1;
+        continuation[4] = 1;
+        assert_eq!(
+            assembler.push_continuation(&continuation),
+            Err(FrameError::InvalidSequence {
+                expected: 0,
+                actual: 1
+            })
+        );
+        continuation[4] = 0;
+        continuation[..4].copy_from_slice(&8_u32.to_be_bytes());
+        assert_eq!(
+            assembler.push_continuation(&continuation),
+            Err(FrameError::InvalidChannel)
+        );
+        assert_eq!(
+            assembler.push_continuation(&[0; 63]),
+            Err(FrameError::InvalidReportLength(63))
+        );
+    }
+
+    #[test]
+    fn allocator_expires_releases_and_rejects_exhaustion() {
+        let now = Instant::now();
+        let mut allocator = CtapHidChannelAllocator::new(1);
+        let (channel, response) = allocator
+            .initialize(b"abcdefgh", now, Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(&response[..8], b"abcdefgh");
+        assert_eq!(
+            u32::from_be_bytes(response[8..12].try_into().unwrap()),
+            channel
+        );
+        assert_eq!(
+            allocator.allocate(now, Duration::from_secs(5)),
+            Err(ChannelError::Exhausted)
+        );
+        assert_eq!(
+            allocator.expire(now + Duration::from_secs(5)),
+            vec![channel]
+        );
+        assert!(!allocator.is_active(channel));
+
+        let next = allocator
+            .allocate(now + Duration::from_secs(5), Duration::from_secs(5))
+            .unwrap();
+        assert!(allocator.release(next));
+        assert!(!allocator.release(next));
+        assert_eq!(
+            allocator.initialize(b"short", now, Duration::from_secs(1)),
+            Err(ChannelError::InvalidNonceLength(5))
+        );
+    }
+
+    #[test]
+    fn session_serializes_ctap_requests_and_frames_response() {
+        let now = Instant::now();
+        let timeout = Duration::from_secs(10);
+        let mut session = CtapHidSession::new(2, timeout);
+        let cid = init_session(&mut session, now, timeout);
+        let request =
+            encode_initialization(cid, CtapHidCommand::Cbor, &[Ctap2Command::GetInfo as u8])
+                .expect("valid CBOR report");
+        assert!(matches!(
+            session.receive(&request, now).expect("CTAP2 request"),
+            SessionEvent::Ctap2Request { channel, .. } if channel == cid
+        ));
+
+        let other = init_session(&mut session, now, timeout);
+        let busy = encode_initialization(other, CtapHidCommand::Ping, &[]).expect("valid PING");
+        let SessionEvent::Response(busy_response) =
+            session.receive(&busy, now).expect("busy response")
+        else {
+            panic!("busy channel must receive one error report");
+        };
+        assert_eq!(busy_response[4], CtapHidCommand::Error.wire());
+        assert_eq!(busy_response[7], CtapHidErrorCode::ChannelBusy as u8);
+
+        let response = session
+            .respond_ctap2(cid, Ctap2Status::Success, &[0xa0])
+            .expect("active CID");
+        assert_eq!(response.len(), 1);
+        assert_eq!(channel(&response[0]), cid);
+        assert_eq!(response[0][4], CtapHidCommand::Cbor.wire());
+        assert_eq!(&response[0][7..9], &[Ctap2Status::Success.wire(), 0xa0]);
+
+        let ping = encode_initialization(other, CtapHidCommand::Ping, b"ok").expect("valid PING");
+        let SessionEvent::Response(ping_response) = session.receive(&ping, now).expect("PING echo")
+        else {
+            panic!("single-report PING must return one report");
+        };
+        assert_eq!(&ping_response[7..9], b"ok");
+    }
+
+    #[test]
+    fn session_cancels_resynchronizes_and_cleans_expired_channels() {
+        let now = Instant::now();
+        let timeout = Duration::from_secs(5);
+        let mut session = CtapHidSession::new(1, timeout);
+        let cid = init_session(&mut session, now, timeout);
+        let cbor = encode_initialization(cid, CtapHidCommand::Cbor, &[Ctap2Command::GetInfo as u8])
+            .expect("valid CBOR report");
+        assert!(matches!(
+            session.receive(&cbor, now),
+            Ok(SessionEvent::Ctap2Request { .. })
+        ));
+
+        let cancel = encode_initialization(cid, CtapHidCommand::Cancel, &[]).expect("valid CANCEL");
+        assert_eq!(
+            session.receive(&cancel, now),
+            Ok(SessionEvent::Cancelled(cid))
+        );
+        // The application completes the cancelled CTAP2 operation with its cancellation status.
+        session
+            .respond_ctap2(cid, Ctap2Status::KeepaliveCancel, &[])
+            .expect("finish cancelled request");
+
+        let nonce = b"resync!!";
+        let resync = encode_initialization(cid, CtapHidCommand::Init, nonce).expect("valid resync");
+        let SessionEvent::Resynchronized {
+            channel: actual,
+            response,
+        } = session.receive(&resync, now).expect("resync")
+        else {
+            panic!("active-channel INIT must resynchronize");
+        };
+        assert_eq!(actual, cid);
+        assert_eq!(&response[7..15], nonce);
+
+        let fragment =
+            encode_initialization(cid, CtapHidCommand::Ping, &[9; INIT_PAYLOAD_SIZE + 1])
+                .expect("fragmented PING");
+        assert_eq!(session.receive(&fragment, now), Ok(SessionEvent::Pending));
+        let continuation = encode_continuations(cid, &[9; INIT_PAYLOAD_SIZE + 1]).unwrap()[0];
+        let (expired, event) = session
+            .receive_with_expired(&continuation, now + timeout)
+            .expect("expiry then report");
+        assert_eq!(expired, vec![cid]);
+        assert!(matches!(event, SessionEvent::Response(_)));
+        assert!(
+            session
+                .respond_ctap2(cid, Ctap2Status::Success, &[])
+                .is_err()
+        );
     }
 }
