@@ -76,8 +76,15 @@ Secure Enclave availability, Secret Service runtime access, or packaged
 application behavior. Those platform and runtime checks remain separate
 release requirements.
 
-The native macOS runners also produce `.app` and `.dmg` bundles for their own
-architectures. The Windows x64 and ARM64 runners produce NSIS setup executables
+The native macOS runners produce `.app` bundles for their own architectures;
+the Apple silicon runner also produces a `.dmg`. CI validates each app's bundle
+identifier and executable, copies it into a temporary Applications directory,
+and verifies removal. On Apple silicon it also mounts the DMG, copies and
+validates the contained app, unmounts the image, and verifies removal. These
+checks do not sign or notarize the bundles or launch the app. They do not
+validate CoreHID, virtual-device behavior, or browser interoperability.
+
+The Windows x64 and ARM64 runners produce NSIS setup executables
 and silently install and remove them in the ephemeral runner's user scope,
 checking that the desktop executable is present between those operations. These
 unsigned development artifacts are retained by the workflow for seven days;
