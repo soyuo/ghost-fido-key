@@ -513,10 +513,12 @@ fn parse_peer_key(value: &CborValue) -> Result<PublicKey, PinCryptoError> {
     let CborValue::Map(fields) = value else {
         return Err(PinCryptoError::InvalidPeerKey);
     };
-    if fields
-        .iter()
-        .any(|(key, _)| matches!(key, CborValue::Unsigned(2 | 4 | 5)))
-    {
+    if fields.iter().any(|(key, _)| {
+        matches!(
+            key,
+            CborValue::Unsigned(2 | 4 | 5) | CborValue::Negative(-4)
+        )
+    }) {
         return Err(PinCryptoError::InvalidPeerKey);
     }
     let get = |key: &CborValue| {
