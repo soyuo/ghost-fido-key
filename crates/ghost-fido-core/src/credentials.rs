@@ -132,6 +132,12 @@ impl KeyHandle {
     }
 }
 
+impl Drop for KeyHandle {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
 impl fmt::Debug for KeyHandle {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("KeyHandle([REDACTED])")
