@@ -291,6 +291,10 @@ jobs:
           fi
           echo "package=$package" >> "$GITHUB_OUTPUT"
 
+      - name: Smoke-test Debian package install and removal
+        if: runner.os == 'Linux'
+        run: sudo bash ./.github/scripts/smoke-linux-deb-package.sh "${{ steps.verify-debian-package.outputs.package }}"
+
       - name: Upload unsigned Linux Debian development package
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v7
