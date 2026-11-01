@@ -95,11 +95,11 @@ for all of the following:
    limitations recorded alongside the result.
 
 The current Linux dependency audit retains two GTK 0.18 graph warnings: the
-unsound GLib advisory, tracked by
+unsound GLib advisory, deferred in
 [issue #191](https://github.com/soyuo/ghost-fido-key/issues/191), and an
-unmaintained `proc-macro-error` dependency. The GLib finding remains a security
-release gate; passing the current build workflow does not resolve either
-warning.
+unmaintained `proc-macro-error` dependency. Closing the tracking issue does not
+resolve either warning. The GLib finding remains a security release gate;
+passing the current build workflow does not resolve either warning.
 
 ## Evidence sources
 

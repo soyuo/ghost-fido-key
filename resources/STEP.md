@@ -14,7 +14,7 @@
 - 타사 VID/PID, 제조사, AAGUID, 인증서 또는 attestation을 사칭하지 않는다. 하드웨어 인증기와 동등한 보안을 보장한다고 주장하지 않는다.
 - `DUPLICATE.md`의 코드는 라이선스와 보안 상태를 확인하기 전까지 참고 자료로만 취급한다.
 
-## 현재 구현 및 검증 상태 (2026-10-31)
+## 현재 구현 및 검증 상태 (2026-11-01)
 
 이 표는 단계의 완료 선언이 아니라 현재 확인된 진행 상황이다. 소스 코드가 있거나 CI 빌드가 통과한 사실만으로 실제 OS 장치 동작, 서명된 설치, 브라우저 WebAuthn 수용을 완료 처리하지 않는다.
 
@@ -28,11 +28,11 @@
 | 6. macOS 가상 HID | CoreHID 경로가 있으며 필요한 entitlement가 확인되지 않으면 사용 불가 상태로 남는다. | 배포 서명·entitlement가 적용된 장치와 브라우저 검증이 필요하다. |
 | 7–10. 공통 프로토콜, 인증기, 키 보호, 승인과 UI | CTAPHID/CBOR, CTAP2, 저장소/provider, 승인 runtime 및 Tauri UI 구현이 있다. CI와 코드 수준 검증은 개별 OS 인수 시험을 대신하지 않는다. | 보안·lifecycle 기준과 실제 플랫폼 동작을 각 관련 인수 절차로 확인해야 한다. |
 | 11. 브라우저 상호운용 | 테스트 RP와 결과 기록 절차가 문서화되어 있다. | [지원 매트릭스](../docs/support-matrix.md)의 OS·브라우저 조합은 모두 `Not verified`이며 WebAuthn 결과 증거가 필요하다. |
-| 12. 보안·안정성·호환성 | CI 및 회귀 수정은 계속 누적되고 있다. | [T-022 세션 잠금 시험](../docs/security-acceptance.md#t-022-login-session-lock-during-authentication)의 여섯 대상 행이 모두 `Not run`이다. |
+| 12. 보안·안정성·호환성 | T-022 잠금 취소 구현은 [PR #228](https://github.com/soyuo/ghost-fido-key/pull/228)에 병합됐다. | [T-022 세션 잠금 시험](../docs/security-acceptance.md#t-022-login-session-lock-during-authentication)의 여섯 대상 행은 실행 증거가 없어 모두 `Not run`이며, 나중에 대상별로 기록해야 한다. |
 | 13. 패키징과 배포 | 플랫폼별 빌드 경로와 개발용 패키지 구성이 있다. | 서명된 배포물의 설치·업데이트·제거 증거가 없어 완료되지 않았다. |
 | 14. v1 완료 판정 | 출시 기준은 이 계획과 지원 문서에 정의되어 있다. | 지원 대상의 장치·브라우저·보안·배포 인수 증거가 확보될 때까지 미완료다. |
 
-현재 미해결 출시 항목은 [T-022 대상 장비 시험 이슈 #227](https://github.com/soyuo/ghost-fido-key/issues/227)과 안정된 Tauri GTK/WebKitGTK 경로를 기다리는 [GLib 의존성 이슈 #191](https://github.com/soyuo/ghost-fido-key/issues/191)이다. 따라서 현재 지원 가능한 OS·브라우저 조합은 선언하지 않는다.
+코드 구현과 대상 검증의 상태를 구분한다. T-022 구현은 완료됐지만 대상별 실행 증거는 나중에 수집하도록 [이슈 #227](https://github.com/soyuo/ghost-fido-key/issues/227)에서 연기했다. Linux의 안정된 Tauri GTK/WebKitGTK 경로도 [이슈 #191](https://github.com/soyuo/ghost-fido-key/issues/191)에서 연기했으며 GLib 보안 advisory는 해결되지 않았다. 두 이슈를 닫아도 각각의 검증 항목이나 Linux 보안 출시 gate가 완료되는 것은 아니다. 따라서 현재 지원 가능한 OS·브라우저 조합은 선언하지 않는다.
 
 ## 0단계: 범위와 지원 기준선 확정
 

@@ -48,8 +48,10 @@ crate version metadata, or describe them as fixed. A source search found no
 locked `tauri`, `tauri-runtime-wry`, `wry`, `tao`, `muda`, `gtk`, `webkit2gtk`,
 and `glib` sources. That limits known use in the current application, but does
 not remove the unsound API from the dependency graph or resolve the advisory.
-The GLib issue is tracked for this project in
-[issue #191](https://github.com/soyuo/ghost-fido-key/issues/191).
+The GLib remediation was deferred in
+[issue #191](https://github.com/soyuo/ghost-fido-key/issues/191). The issue's
+closure does not resolve the advisory; Linux remains behind this security
+release gate until the locked graph uses a patched stable dependency path.
 
 `cargo audit` is configured to report these warning categories without failing
 the workflow. Do not enable `--deny unsound` until the unsound dependency has
