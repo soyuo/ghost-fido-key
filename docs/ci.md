@@ -38,9 +38,10 @@ uses gtk-rs-core 0.22, as confirmed in the
 but it is not compatible with this Tauri 2 graph.
 
 Tauri's upstream [GTK4/WebKitGTK 6 migration](https://github.com/tauri-apps/tauri/pull/14684)
-remains an in-progress Tauri 3 breaking change; the related
-[Wry WebKitGTK 6 port](https://github.com/tauri-apps/wry/pull/1530) is still a
-draft. Until a compatible maintained Tauri release and macro stack are
+remains an in-progress Tauri 3 breaking change. Wry separately tracks the
+`gtk4-rs`/`webkit6` transition in [issue #1474](https://github.com/tauri-apps/wry/issues/1474);
+its related [WebKitGTK 6 port PR #1530](https://github.com/tauri-apps/wry/pull/1530)
+is still a draft. Until a compatible maintained Tauri release and macro stack are
 available, keep both findings visible; do not ignore either warning, alter
 crate version metadata, or describe them as fixed. A source search found no
 `VariantStrIter` or `array_iter_str` call sites in this repository or the
