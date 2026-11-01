@@ -248,7 +248,7 @@ v1에서는 다음을 필수 지원하지 않는다.
 | 데스크톱 UI | Tauri 2, React, TypeScript, Rust backend |
 | 플랫폼 HID | Linux UHID, Windows UdeCx/KMDF, macOS CoreHID 후보; 각각 독립 검증 |
 | 키 보관 | 플랫폼별 `KeyStore` provider; 하드웨어 보호 수준을 기능별로 보고 |
-| 승인 및 확인 | 공통 승인 정책과 OS별 사용자 확인 provider |
+| 승인 및 확인 | 앱 내 UP 승인과 CTAP PIN 기반 UV; OS 기본 UV는 선택적 후속 기능 |
 | 메타데이터 저장 | SQLite 후보, 개인 키 원문 저장 금지 |
 | 통신 직렬화 | CBOR |
 | 진단 및 테스트 | Rust tooling, Tauri tooling, OS별 SDK 및 WebAuthn 테스트 환경 |
@@ -324,7 +324,7 @@ FIDO2 구현은 등록 요청과 인증 요청뿐 아니라 장치 정보, PIN, 
 │ & Verification │ │ Storage        │
 │                │ │                │
 │ PIN / Approval │ │ SQLite / CNG   │
-│ Windows Hello  │ │ TPM Metadata   │
+│ Optional OS UV │ │ TPM Metadata   │
 └────────────────┘ └───────┬────────┘
                            │ Sign
                            ▼
@@ -772,15 +772,11 @@ v1에서는 TPM 개인 키를 일반 파일 형태로 내보내는 기능을 제
 
 ### 11.2 사용자 확인(User Verification)
 
-사용자 확인을 위해 다음 기능을 고려한다.
+v1은 CTAP ClientPIN을 암호학적 사용자 검증(User Verification, UV) 경로로 지원한다. PIN 검증이 성공한 요청에만 CTAP UV 상태를 설정한다. PIN 사용자 검증은 앱 내 요청 승인(User Presence, UP)과 별도 절차로 처리한다.
 
-- FIDO PIN
-- Windows Hello 연동
-- 추가적인 애플리케이션 잠금
+Windows Hello 등 OS 기본 사용자 검증 연동은 선택적인 후속 기능이며 v1 코드 완료의 필수 조건이 아니다. 해당 기능을 구현해 광고할 때는 실제 동작이 CTAP UV 요구사항을 충족하는지 별도로 검증한다.
 
-Windows Hello를 사용할 경우 실제 구현이 CTAP의 UV 요구사항을 충족하는지 별도 검증한다.
-
-단순히 앱 잠금을 해제했다는 이유만으로 CTAP 사용자 확인이 완료된 것으로 표시해서는 안 된다.
+앱 잠금 해제나 앱 내 승인만으로는 CTAP 사용자 검증이 완료된 것으로 표시해서는 안 된다. 앱 내 승인은 UP 처리에만 사용한다.
 
 ### 11.3 승인 보안 정책
 
@@ -1287,7 +1283,7 @@ virtual-fido/
 3. Rust 공통 core와 Tauri UI, OS adapter 경계를 구현한다.
 4. 각 지원 OS의 가상 HID와 lifecycle을 구현한다.
 5. 공통 CTAPHID, CBOR, CTAP2와 credential 흐름을 구현한다.
-6. OS별 키 저장소, 사용자 확인, UI 승인과 데이터 보호를 통합한다.
+6. OS별 키 저장소, CTAP PIN 기반 사용자 검증(UV), UI 사용자 존재 승인(UP)과 데이터 보호를 통합한다. OS 기본 UV는 선택 기능으로 별도 구현한다.
 7. 각 OS·브라우저 조합에서 WebAuthn 상호운용, 안정성, 보안, 설치·업데이트·제거를 검증한다.
 8. 검증된 플랫폼만 지원 대상으로 공개한다.
 
@@ -1446,7 +1442,7 @@ Windows 가상 USB 호스트 컨트롤러 및 장치 구현을 위한 참고 자
 | 패스키 생성 | 지원 |
 | 패스키 인증 | 지원 |
 | 사용자 존재 확인 | 앱 내 명시적 승인 |
-| 사용자 검증 | PIN과 OS별 사용자 확인 기능을 분리 검증 |
+| 사용자 검증 | v1은 CTAP ClientPIN 지원; OS 기본 사용자 검증 연동은 선택적 후속 기능이며 구현 시 별도 검증 |
 | 개인 키 저장 | OS별 보호 키 저장소, 가용성과 보장 수준 표시 |
 | 암호화 메타데이터 | SQLite 후보 + OS별 보호 기능 |
 | 키 저장 우선순위 | 플랫폼 보호 저장소 우선; hardware-backed 여부와 exportability를 노출 |
