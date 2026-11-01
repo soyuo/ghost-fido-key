@@ -162,6 +162,56 @@ pub fn encode_response(status: Ctap2Status, payload: &[u8]) -> Vec<u8> {
     response
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_request_requires_command_byte() {
+        assert_eq!(Ctap2Request::decode(&[]), Err(Ctap2Error::EmptyRequest));
+    }
+
+    #[test]
+    fn command_request_rejects_unknown_command() {
+        assert_eq!(
+            Ctap2Request::decode(&[0xff]),
+            Err(Ctap2Error::UnsupportedCommand(0xff))
+        );
+    }
+
+    #[test]
+    fn selection_accepts_empty_payload_but_other_commands_require_cbor() {
+        let selection = Ctap2Request::decode(&[Ctap2Command::Selection as u8])
+            .expect("selection has no CBOR payload");
+        assert_eq!(selection.command(), Ctap2Command::Selection);
+        assert!(selection.payload().is_empty());
+
+        assert!(matches!(
+            Ctap2Request::decode(&[Ctap2Command::GetInfo as u8, 0xff]),
+            Err(Ctap2Error::InvalidCbor(_))
+        ));
+    }
+
+    #[test]
+    fn typed_make_credential_and_assertion_report_missing_required_fields() {
+        let empty_map = encode(&CborValue::Map(Vec::new())).expect("empty map encodes");
+        assert_eq!(
+            MakeCredentialRequest::decode(&empty_map),
+            Err(MakeCredentialError::MissingParameter(4))
+        );
+        assert_eq!(
+            GetAssertionRequest::decode(&empty_map),
+            Err(GetAssertionError::MissingParameter(1))
+        );
+    }
+
+    #[test]
+    fn response_prefixes_wire_status_and_preserves_payload() {
+        let response = encode_response(Ctap2Status::Success, &[0xa1, 0x01, 0x02]);
+        assert_eq!(response, [Ctap2Status::Success.wire(), 0xa1, 0x01, 0x02]);
+    }
+}
+
 #[must_use]
 pub fn encode_es256_cose_public_key(public_key: &Es256PublicKey) -> Result<Vec<u8>, CborError> {
     encode(&CborValue::Map(vec![
