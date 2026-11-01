@@ -14,6 +14,26 @@
 - 타사 VID/PID, 제조사, AAGUID, 인증서 또는 attestation을 사칭하지 않는다. 하드웨어 인증기와 동등한 보안을 보장한다고 주장하지 않는다.
 - `DUPLICATE.md`의 코드는 라이선스와 보안 상태를 확인하기 전까지 참고 자료로만 취급한다.
 
+## 현재 구현 및 검증 상태 (2026-10-31)
+
+이 표는 단계의 완료 선언이 아니라 현재 확인된 진행 상황이다. 소스 코드가 있거나 CI 빌드가 통과한 사실만으로 실제 OS 장치 동작, 서명된 설치, 브라우저 WebAuthn 수용을 완료 처리하지 않는다.
+
+| 단계 | 현재 확인된 상태 | 완료 기준 상태 |
+| --- | --- | --- |
+| 0. 범위와 지원 기준선 | 멀티플랫폼 범위, 아키텍처 명세와 [지원 매트릭스](../docs/support-matrix.md)가 있다. | 기준 문서는 마련됐지만 OS·브라우저 조합은 검증 전까지 지원으로 표시하지 않는다. |
+| 1. OS별 가상 HID 실현 가능성 | Linux UHID, Windows UDE, macOS CoreHID 구현 경로와 플랫폼 문서가 있다. | 서명·권한·entitlement가 적용된 장치에서 브라우저 WebAuthn까지 확인한 증거가 없다. |
+| 2–3. workspace, 앱 골격과 플랫폼 추상화 | Rust workspace, Tauri 앱, 공통 플랫폼 계약 및 다중 OS/아키텍처 CI 빌드가 있다. | 대상 OS에서 앱 실행과 backend lifecycle을 검증한 기록은 별도로 필요하다. |
+| 4. Linux 가상 HID | UHID 어댑터와 패키지·권한 경로가 구현되어 있다. | 대상 배포판에서 설치, 장치 lifecycle 및 브라우저 흐름을 검증해야 한다. |
+| 5. Windows 가상 HID | UDE 제어 경로와 x64/ARM64 드라이버 빌드가 있다. | 서명된 드라이버 설치, 장치 lifecycle 및 브라우저 흐름을 검증해야 한다. |
+| 6. macOS 가상 HID | CoreHID 경로가 있으며 필요한 entitlement가 확인되지 않으면 사용 불가 상태로 남는다. | 배포 서명·entitlement가 적용된 장치와 브라우저 검증이 필요하다. |
+| 7–10. 공통 프로토콜, 인증기, 키 보호, 승인과 UI | CTAPHID/CBOR, CTAP2, 저장소/provider, 승인 runtime 및 Tauri UI 구현이 있다. CI와 코드 수준 검증은 개별 OS 인수 시험을 대신하지 않는다. | 보안·lifecycle 기준과 실제 플랫폼 동작을 각 관련 인수 절차로 확인해야 한다. |
+| 11. 브라우저 상호운용 | 테스트 RP와 결과 기록 절차가 문서화되어 있다. | [지원 매트릭스](../docs/support-matrix.md)의 OS·브라우저 조합은 모두 `Not verified`이며 WebAuthn 결과 증거가 필요하다. |
+| 12. 보안·안정성·호환성 | CI 및 회귀 수정은 계속 누적되고 있다. | [T-022 세션 잠금 시험](../docs/security-acceptance.md#t-022-login-session-lock-during-authentication)의 여섯 대상 행이 모두 `Not run`이다. |
+| 13. 패키징과 배포 | 플랫폼별 빌드 경로와 개발용 패키지 구성이 있다. | 서명된 배포물의 설치·업데이트·제거 증거가 없어 완료되지 않았다. |
+| 14. v1 완료 판정 | 출시 기준은 이 계획과 지원 문서에 정의되어 있다. | 지원 대상의 장치·브라우저·보안·배포 인수 증거가 확보될 때까지 미완료다. |
+
+현재 미해결 출시 항목은 [T-022 대상 장비 시험 이슈 #227](https://github.com/soyuo/ghost-fido-key/issues/227)과 안정된 Tauri GTK/WebKitGTK 경로를 기다리는 [GLib 의존성 이슈 #191](https://github.com/soyuo/ghost-fido-key/issues/191)이다. 따라서 현재 지원 가능한 OS·브라우저 조합은 선언하지 않는다.
+
 ## 0단계: 범위와 지원 기준선 확정
 
 ### 0단계 작업
