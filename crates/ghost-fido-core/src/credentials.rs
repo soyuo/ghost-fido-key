@@ -1386,9 +1386,7 @@ impl CredentialStore {
             return Err(CredentialError::StorageFailure);
         }
         write_large_blob_array(&transaction, &protected)?;
-        transaction
-            .commit()
-            .map_err(|_| CredentialError::StorageFailure)?;
+        transaction.commit().map_err(map_sqlite_storage_error)?;
         self.large_blob_array = Zeroizing::new(array.to_vec());
         Ok(())
     }
@@ -2208,7 +2206,7 @@ fn write_large_blob_array(
             "UPDATE large_blob_state SET payload = ?1 WHERE singleton = 1",
             params![payload],
         )
-        .map_err(|_| CredentialError::StorageFailure)?;
+        .map_err(map_sqlite_storage_error)?;
     if updated != 1 {
         return Err(CredentialError::ProtectedDataInvalid);
     }
