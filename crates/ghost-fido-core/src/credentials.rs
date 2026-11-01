@@ -870,6 +870,8 @@ impl CredentialStore {
         }
         let mut next_records = self.records.clone();
         let record = next_records.get_mut(id).ok_or(CredentialError::NotFound)?;
+        record.user_name.zeroize();
+        record.user_display_name.zeroize();
         record.user_name = name;
         record.user_display_name = display_name;
         self.records = self.persist(&next_records)?;
