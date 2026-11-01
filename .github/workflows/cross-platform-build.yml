@@ -25,6 +25,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  minimum-rust:
+    name: Test core on Rust 1.88
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust 1.88
+        uses: dtolnay/rust-toolchain@1.88.0
+
+      - name: Test core on the declared minimum Rust version
+        run: cargo test --package ghost-fido-core --locked
+
   native-build:
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
