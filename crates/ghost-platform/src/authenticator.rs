@@ -389,12 +389,10 @@ impl ClientPinHandler {
             Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
             None => return Ctap2Response::error(Ctap2Status::MissingParameter),
         };
-        let Ok(subcommand) = u8::try_from(subcommand) else {
-            return Ctap2Response::error(Ctap2Status::InvalidParameter);
-        };
         if subcommand != 3 {
-            return Ctap2Response::error(Ctap2Status::InvalidParameter);
+            return Ctap2Response::error(Ctap2Status::InvalidSubcommand);
         }
+        let subcommand = subcommand as u8;
 
         let params = match field(&fields, 2) {
             Some(CborValue::Map(params)) => Some(params),
