@@ -552,7 +552,7 @@ impl VirtualHidBackend for WindowsUdeBackend {
                             "timed out waiting for a UDE output report",
                         ));
                     }
-                    thread::sleep(Duration::from_millis(2).min(timeout - elapsed));
+                    thread::sleep(Duration::from_millis(2).min(timeout.saturating_sub(elapsed)));
                 }
                 Err(UdeQueryError::Ioctl { code, detail })
                     if code == ERROR_DEVICE_NOT_CONNECTED_HRESULT =>
