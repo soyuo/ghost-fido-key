@@ -66,11 +66,15 @@ plus `libdbus-1-dev` and `libclang-dev`, required by the Rust workspace's Linux
 Secret Service and HID builds.
 
 These jobs prove that the selected host toolchains compile the workspace and
-frontend, and that Debian packages can be built for the listed Linux
-architectures. They do not prove virtual HID enumeration, browser FIDO discovery,
-WebAuthn registration or assertion, signed driver installation, Secure Enclave
-availability, Secret Service runtime access, or packaged application behavior.
-Those platform and runtime checks remain separate release requirements.
+frontend, and that Debian packages can be built, installed, and removed on the
+ephemeral Ubuntu runners for the listed Linux architectures. The Linux package
+smoke check verifies the desktop executable and UHID udev rule; package hooks
+may reload udev rules on the disposable runner. It does not create or exercise
+a `/dev/uhid` device. These checks do not prove virtual HID enumeration, browser
+FIDO discovery, WebAuthn registration or assertion, signed driver installation,
+Secure Enclave availability, Secret Service runtime access, or packaged
+application behavior. Those platform and runtime checks remain separate
+release requirements.
 
 The native macOS runners also produce `.app` and `.dmg` bundles for their own
 architectures. The Windows x64 and ARM64 runners produce NSIS setup executables

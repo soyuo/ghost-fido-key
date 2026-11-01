@@ -29,7 +29,7 @@
 | 7–10. 공통 프로토콜, 인증기, 키 보호, 승인과 UI | CTAPHID/CBOR, CTAP2, 저장소/provider, 승인 runtime 및 Tauri UI 구현이 있다. CI와 코드 수준 검증은 개별 OS 인수 시험을 대신하지 않는다. | 보안·lifecycle 기준과 실제 플랫폼 동작을 각 관련 인수 절차로 확인해야 한다. |
 | 11. 브라우저 상호운용 | 테스트 RP와 결과 기록 절차가 문서화되어 있다. | [지원 매트릭스](../docs/support-matrix.md)의 OS·브라우저 조합은 모두 `Not verified`이며 WebAuthn 결과 증거가 필요하다. |
 | 12. 보안·안정성·호환성 | T-022 잠금 취소 구현은 [PR #228](https://github.com/soyuo/ghost-fido-key/pull/228)에 병합됐다. | [T-022 세션 잠금 시험](../docs/security-acceptance.md#t-022-login-session-lock-during-authentication)의 여섯 대상 행은 실행 증거가 없어 모두 `Not run`이며, 나중에 대상별로 기록해야 한다. |
-| 13. 패키징과 배포 | 플랫폼별 빌드 경로와 개발용 패키지 구성이 있다. | 서명된 배포물의 설치·업데이트·제거 증거가 없어 완료되지 않았다. |
+| 13. 패키징과 배포 | 플랫폼별 빌드 경로와 개발용 패키지 구성이 있다. Windows NSIS와 Linux Debian 개발 패키지의 CI 설치·제거 smoke check도 추가됐다. | 개발용 패키지의 CI 설치 경로만 확인하며, 서명된 배포물과 업데이트·장치 정리의 실제 대상 검증이 없어 완료되지 않았다. |
 | 14. v1 완료 판정 | 출시 기준은 이 계획과 지원 문서에 정의되어 있다. | 지원 대상의 장치·브라우저·보안·배포 인수 증거가 확보될 때까지 미완료다. |
 
 코드 구현과 대상 검증의 상태를 구분한다. T-022 구현은 완료됐지만 대상별 실행 증거는 나중에 수집하도록 [이슈 #227](https://github.com/soyuo/ghost-fido-key/issues/227)에서 연기했다. Linux의 안정된 Tauri GTK/WebKitGTK 경로도 [이슈 #191](https://github.com/soyuo/ghost-fido-key/issues/191)에서 연기했으며 GLib 보안 advisory는 해결되지 않았다. 두 이슈를 닫아도 각각의 검증 항목이나 Linux 보안 출시 gate가 완료되는 것은 아니다. 따라서 현재 지원 가능한 OS·브라우저 조합은 선언하지 않는다.
