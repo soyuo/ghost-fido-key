@@ -248,6 +248,14 @@ jobs:
           }
           $installer | Select-Object FullName, Length
 
+      - name: Smoke-test Windows NSIS install and removal
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -LiteralPath 'target/release/bundle/nsis' -Filter '*.exe' -File | Select-Object -First 1
+          if ($null -eq $installer) { throw 'Windows x64 NSIS installer was not found.' }
+          ./.github/scripts/smoke-windows-nsis-installer.ps1 -InstallerPath $installer.FullName
+
       - name: Upload unsigned Windows desktop development installer
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v7
@@ -352,6 +360,13 @@ jobs:
           }
           $app | Select-Object FullName, Length
           $installer | Select-Object FullName, Length
+
+      - name: Smoke-test Windows ARM64 NSIS install and removal
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -LiteralPath 'target/release/bundle/nsis' -Filter '*.exe' -File -Recurse | Select-Object -First 1
+          if ($null -eq $installer) { throw 'Windows ARM64 NSIS installer was not found.' }
+          ./.github/scripts/smoke-windows-nsis-installer.ps1 -InstallerPath $installer.FullName
 
       - name: Upload unsigned Windows ARM64 desktop development installer
         uses: actions/upload-artifact@v7

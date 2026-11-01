@@ -73,9 +73,13 @@ availability, Secret Service runtime access, or packaged application behavior.
 Those platform and runtime checks remain separate release requirements.
 
 The native macOS runners also produce `.app` and `.dmg` bundles for their own
-architectures. The Windows x64 runner produces an NSIS setup executable. These
+architectures. The Windows x64 and ARM64 runners produce NSIS setup executables
+and silently install and remove them in the ephemeral runner's user scope,
+checking that the desktop executable is present between those operations. These
 unsigned development artifacts are retained by the workflow for seven days;
 they are not signed or notarized, and the Windows UDE driver packages are
-separate artifacts. CI checks package creation and expected output files only;
-it does not install or launch these bundles, validate driver installation, or
-establish platform support.
+separate artifacts. The Windows installer smoke check does not install or start
+the UDE driver or start the desktop application, and does not establish
+platform support. CI checks package creation and installer install/remove
+mechanics only; it does not validate driver installation, application runtime,
+or browser interoperability.
