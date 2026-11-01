@@ -49,20 +49,26 @@ for later validation, not a supported or release-ready product.
 
 ## Build and run
 
-Install the Rust stable toolchain, then run the CLI diagnostic:
+For the desktop app, read the [local development and run guide](docs/development.md)
+before installing dependencies. It lists the host prerequisites, first-run
+commands, expected startup state, and platform-specific blockers.
+
+Install the Rust stable toolchain, then run the CLI diagnostic if you only need
+to check the shared Rust workspace:
 
 ```sh
 cargo run -p ghost-fido
 ```
 
-This command only prints scaffold status. A successful build does not indicate
-that a virtual security key is available.
+This command only prints diagnostic status; it does not start the desktop app
+or create a virtual security key.
 
-To develop the desktop app, install the platform prerequisites in
-[`apps/desktop/README.md`](apps/desktop/README.md), then run from `apps/desktop`:
+To start the desktop app, install the platform prerequisites and use the
+first-run procedure in [`docs/development.md`](docs/development.md). The short
+form, from `apps/desktop`, is:
 
 ```sh
-npm install
+npm ci
 npm run tauri dev
 ```
 
