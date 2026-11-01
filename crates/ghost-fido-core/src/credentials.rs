@@ -104,6 +104,12 @@ impl CredentialId {
     }
 }
 
+impl Drop for CredentialId {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
 impl fmt::Debug for CredentialId {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("CredentialId([REDACTED])")
@@ -163,7 +169,6 @@ pub struct CredentialRecord {
 
 impl Drop for CredentialRecord {
     fn drop(&mut self) {
-        self.id.0.zeroize();
         self.rp_id_hash.zeroize();
         self.relying_party_id.zeroize();
         self.user_handle.zeroize();
