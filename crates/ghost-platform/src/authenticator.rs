@@ -1831,10 +1831,15 @@ impl<'a> AuthenticatorService<'a> {
         {
             return Ctap2Response::error(Ctap2Status::InvalidParameter);
         }
-        let Some(subcommand) = uint_field(&fields, 1).and_then(|value| u8::try_from(value).ok())
-        else {
-            return Ctap2Response::error(Ctap2Status::MissingParameter);
+        let subcommand = match field(&fields, 1) {
+            None => return Ctap2Response::error(Ctap2Status::MissingParameter),
+            Some(CborValue::Unsigned(value)) => *value,
+            Some(_) => return Ctap2Response::error(Ctap2Status::CborUnexpectedType),
         };
+        if !(1..=7).contains(&subcommand) {
+            return Ctap2Response::error(Ctap2Status::InvalidSubcommand);
+        }
+        let subcommand = subcommand as u8;
         let params = field(&fields, 2);
         let (auth, protocol) = if matches!(subcommand, 3 | 5) {
             (None, None)
@@ -2159,7 +2164,7 @@ impl<'a> AuthenticatorService<'a> {
                     }
                 }
             }
-            _ => Ctap2Response::error(Ctap2Status::InvalidParameter),
+            _ => Ctap2Response::error(Ctap2Status::InvalidSubcommand),
         }
     }
 
