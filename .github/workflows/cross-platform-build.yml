@@ -172,6 +172,9 @@ jobs:
       - name: Check Rust workspace
         run: cargo check --workspace --locked
 
+      - name: Test core and platform crates
+        run: cargo test --package ghost-fido-core --package ghost-platform --locked
+
       - name: Test desktop library
         if: runner.os == 'Linux' || runner.os == 'Windows'
         run: cargo test --package ghost-fido-desktop --lib --locked
