@@ -35,6 +35,13 @@ provider, or hardware copy.
 
 ## T-022: Login-session lock during authentication
 
+**Execution status: deferred.** The cancellation implementation is present, but
+no target result is claimed. When a target is available, start the local RP as
+described in [`tools/webauthn-test-rp/README.md`](../tools/webauthn-test-rp/README.md),
+run Case 1 and then Case 2 below, and retain the RP result with the OS build,
+architecture, browser/app/driver versions, and evidence reference. Update only
+the row for the target actually tested; keep every other row `Not run`.
+
 The desktop requires an explicit in-app approval followed by a native
 confirmation before a signing request is approved. On Windows, the main window
 registers for this login session's WTS lock notifications. A lock cancels all

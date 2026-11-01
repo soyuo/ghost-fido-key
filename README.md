@@ -19,6 +19,26 @@ No OS/browser combination is currently declared supported. See the
 remaining validation requirements; code presence and CI builds alone do not
 establish support.
 
+## Implementation and deferred validation
+
+The CTAP/authenticator core, desktop approval lifecycle, and Linux UHID and
+Windows UDE implementation paths are present. The T-022 lock-cancellation
+behavior was implemented in [PR #228](https://github.com/soyuo/ghost-fido-key/pull/228).
+Its target-machine acceptance run is deferred; the procedure and all six target
+rows remain in [`docs/security-acceptance.md`](docs/security-acceptance.md) and
+are still `Not run`. When ready, start the loopback RP using the commands in
+[`tools/webauthn-test-rp/README.md`](tools/webauthn-test-rp/README.md), execute
+both T-022 cases on each target, and record the observed RP outcome and evidence
+in the procedure and [support matrix](docs/support-matrix.md). Closing the
+tracking issue does not mean those tests passed or make a platform supported.
+
+Linux retains the known unsound `glib 0.18.5` dependency advisory because the
+stable Tauri/Wry dependency path has not moved to a patched GLib release. This
+dependency work is deferred in
+[issue #191](https://github.com/soyuo/ghost-fido-key/issues/191); the advisory
+remains a Linux security release gate. This repository is implementation-ready
+for later validation, not a supported or release-ready product.
+
 ## Workspace layout
 
 - `apps/ghost-fido`: development entry point.
