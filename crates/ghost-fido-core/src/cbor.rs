@@ -3,6 +3,9 @@
 use core::fmt;
 use zeroize::{Zeroize, Zeroizing};
 
+/// CTAP2 limits nested CBOR maps and arrays to four levels.
+pub const CTAP2_MAX_NESTING_DEPTH: usize = 4;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CborValue {
     Unsigned(u64),
@@ -84,7 +87,7 @@ pub struct CborLimits {
 impl Default for CborLimits {
     fn default() -> Self {
         Self {
-            max_depth: 16,
+            max_depth: CTAP2_MAX_NESTING_DEPTH,
             max_items: 128,
             max_bytes: 8192,
         }
@@ -261,11 +264,11 @@ fn bounded_len(value: u64, limit: usize, bytes: bool) -> Result<usize, CborError
 #[must_use]
 pub fn encode(value: &CborValue) -> Result<Vec<u8>, CborError> {
     let mut output = Zeroizing::new(Vec::new());
-    encode_into(value, &mut output)?;
+    encode_into(value, &mut output, 0)?;
     Ok(std::mem::take(&mut *output))
 }
 
-fn encode_into(value: &CborValue, output: &mut Vec<u8>) -> Result<(), CborError> {
+fn encode_into(value: &CborValue, output: &mut Vec<u8>, depth: usize) -> Result<(), CborError> {
     match value {
         CborValue::Unsigned(value) => write_argument(output, 0, *value),
         CborValue::Negative(value) => {
@@ -281,16 +284,22 @@ fn encode_into(value: &CborValue, output: &mut Vec<u8>) -> Result<(), CborError>
             output.extend_from_slice(value.as_bytes());
         }
         CborValue::Array(values) => {
+            if depth >= CTAP2_MAX_NESTING_DEPTH {
+                return Err(CborError::DepthExceeded);
+            }
             write_argument(output, 4, values.len() as u64);
             for value in values {
-                encode_into(value, output)?;
+                encode_into(value, output, depth + 1)?;
             }
         }
         CborValue::Map(values) => {
+            if depth >= CTAP2_MAX_NESTING_DEPTH {
+                return Err(CborError::DepthExceeded);
+            }
             let mut entries = Vec::with_capacity(values.len());
             for (key, value) in values {
                 let mut encoded_key = Zeroizing::new(Vec::new());
-                encode_into(key, &mut encoded_key)?;
+                encode_into(key, &mut encoded_key, depth + 1)?;
                 entries.push((encoded_key, value));
             }
             entries.sort_by(|(left, _), (right, _)| compare_map_keys(left, right));
@@ -303,7 +312,7 @@ fn encode_into(value: &CborValue, output: &mut Vec<u8>) -> Result<(), CborError>
             write_argument(output, 5, values.len() as u64);
             for (encoded_key, value) in entries {
                 output.extend_from_slice(&encoded_key);
-                encode_into(value, output)?;
+                encode_into(value, output, depth + 1)?;
             }
         }
         CborValue::Bool(value) => output.push(if *value { 0xf5 } else { 0xf4 }),
@@ -331,5 +340,76 @@ fn write_argument(output: &mut Vec<u8>, major: u8, value: u64) {
         26 => output.extend_from_slice(&(value as u32).to_be_bytes()),
         27 => output.extend_from_slice(&value.to_be_bytes()),
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CTAP2_MAX_NESTING_DEPTH, CborError, CborValue, decode, encode};
+
+    fn nested_arrays(depth: usize) -> CborValue {
+        (0..depth).fold(CborValue::Unsigned(0), |value, _| {
+            CborValue::Array(vec![value])
+        })
+    }
+
+    fn nested_maps(depth: usize) -> CborValue {
+        (0..depth).fold(CborValue::Unsigned(0), |value, _| {
+            CborValue::Map(vec![(CborValue::Text("a".into()), value)])
+        })
+    }
+
+    fn nested_array_bytes(depth: usize) -> Vec<u8> {
+        let mut bytes = vec![0x81; depth];
+        bytes.push(0);
+        bytes
+    }
+
+    fn nested_map_bytes(depth: usize) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(depth * 3 + 1);
+        for _ in 0..depth {
+            bytes.extend_from_slice(&[0xa1, 0x61, b'a']);
+        }
+        bytes.push(0);
+        bytes
+    }
+
+    #[test]
+    fn decoder_accepts_four_nested_array_and_map_levels() {
+        let arrays = nested_array_bytes(CTAP2_MAX_NESTING_DEPTH);
+        assert_eq!(decode(&arrays), Ok(nested_arrays(CTAP2_MAX_NESTING_DEPTH)));
+
+        let maps = encode(&nested_maps(CTAP2_MAX_NESTING_DEPTH)).unwrap();
+        assert_eq!(decode(&maps), Ok(nested_maps(CTAP2_MAX_NESTING_DEPTH)));
+    }
+
+    #[test]
+    fn decoder_rejects_five_nested_array_and_map_levels() {
+        assert_eq!(
+            decode(&nested_array_bytes(CTAP2_MAX_NESTING_DEPTH + 1)),
+            Err(CborError::DepthExceeded)
+        );
+        assert_eq!(
+            decode(&nested_map_bytes(CTAP2_MAX_NESTING_DEPTH + 1)),
+            Err(CborError::DepthExceeded)
+        );
+    }
+
+    #[test]
+    fn encoder_accepts_four_nested_array_and_map_levels() {
+        assert!(encode(&nested_arrays(CTAP2_MAX_NESTING_DEPTH)).is_ok());
+        assert!(encode(&nested_maps(CTAP2_MAX_NESTING_DEPTH)).is_ok());
+    }
+
+    #[test]
+    fn encoder_rejects_five_nested_array_and_map_levels() {
+        assert_eq!(
+            encode(&nested_arrays(CTAP2_MAX_NESTING_DEPTH + 1)),
+            Err(CborError::DepthExceeded)
+        );
+        assert_eq!(
+            encode(&nested_maps(CTAP2_MAX_NESTING_DEPTH + 1)),
+            Err(CborError::DepthExceeded)
+        );
     }
 }
