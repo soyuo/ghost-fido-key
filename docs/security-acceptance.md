@@ -27,8 +27,11 @@ serialization clears both its temporary CBOR value tree and encoded payload
 after protection during saves, reset initialization, and schema migration. On
 Windows, the copied DPAPI result and the OS-allocated DPAPI output buffer are
 wiped before release. This covers these transient buffers; it does not erase
-credential records held by the active store or guarantee erasure of every
-compiler, OS, provider, or hardware copy.
+credential records held by the active store. Dropped credential records clear
+their credential ID, RP hash/ID, user handle, and user labels, and dropped
+management projections clear their copied RP/user labels. This is best-effort
+cleanup only; it does not guarantee erasure of every compiler, allocator, OS,
+provider, or hardware copy.
 
 ## T-022: Login-session lock during authentication
 

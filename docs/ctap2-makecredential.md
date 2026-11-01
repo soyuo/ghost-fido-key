@@ -75,7 +75,8 @@ registration approval, then creates the protected key and stores its opaque
 reference, protection metadata, user handle, and optional user labels. It returns
 protocol errors for unsupported options, user rejection, and timeout. If record
 insertion fails after key creation, it deletes the new key. User labels are
-private presentation hints and are redacted from debug output. The caller owns
+private presentation hints and are redacted from credential and management
+projection debug output. The caller owns
 the credential store; persistent storage requires a platform-backed
 `CredentialProtector` before credentials survive app restart.
 
