@@ -6,6 +6,7 @@
 
 use ghost_fido_core::Es256PublicKey;
 use std::{fmt, time::Duration};
+use zeroize::Zeroize;
 
 #[cfg(target_os = "linux")]
 mod linux_uhid;
@@ -388,6 +389,12 @@ impl KeyReference {
     #[must_use]
     pub fn as_provider_reference(&self) -> &str {
         &self.0
+    }
+}
+
+impl Drop for KeyReference {
+    fn drop(&mut self) {
+        self.0.zeroize();
     }
 }
 
