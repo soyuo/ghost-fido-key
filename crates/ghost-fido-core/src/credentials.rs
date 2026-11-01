@@ -16,6 +16,7 @@ use crate::cbor::{CborError, CborLimits, CborValue, decode_with_limits, encode a
 const STORAGE_SCHEMA_VERSION: i64 = 16;
 const PIN_STATE_SCHEMA_VERSION: i64 = 9;
 const CREDENTIAL_RECORD_SCHEMA_VERSION: i64 = 9;
+const CREDENTIAL_RECORD_FORMAT_VERSION: u8 = 9;
 const RESET_JOURNAL_SCHEMA_VERSION: i64 = 9;
 const RESET_METADATA_KEY_CLEANUP_SCHEMA_VERSION: i64 = 11;
 const PROVIDER_KEY_JOURNAL_SCHEMA_VERSION: i64 = 11;
@@ -652,7 +653,7 @@ impl CredentialStore {
                         .map_err(|_| CredentialError::StorageFailure)?;
                     records
                 }
-                4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 => {
+                4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 => {
                     let protected = read_protected_payload(&connection)?;
                     let plaintext = protector
                         .unprotect(&protected, STORAGE_AAD_V4)
@@ -660,6 +661,7 @@ impl CredentialStore {
                     decode_records(
                         &plaintext,
                         match schema_version {
+                            16 => CREDENTIAL_RECORD_FORMAT_VERSION,
                             15 => 9,
                             14 => 8,
                             11 | 12 | 13 => 7,
@@ -1345,6 +1347,7 @@ impl CredentialStore {
                  DROP TABLE pin_state;
                  DROP TABLE IF EXISTS large_blob_state;
                  DROP TABLE reset_journal;
+                 DROP TABLE credential_deletion_journal;
                  DROP TABLE provider_key_journal;",
             )
             .map_err(|_| CredentialError::StorageFailure)?;
@@ -2060,7 +2063,7 @@ impl CredentialStore {
             .protector
             .unprotect(&protected_records, STORAGE_AAD_V4)
             .map_err(|_| CredentialError::ProtectedDataInvalid)?;
-        let current_records = decode_records(&plaintext, 7)?;
+        let current_records = decode_records(&plaintext, CREDENTIAL_RECORD_FORMAT_VERSION)?;
         let handles: Vec<_> = current_records
             .values()
             .map(|record| record.key_handle.clone())
@@ -2195,7 +2198,7 @@ fn read_credential_records(
     let plaintext = protector
         .unprotect(&protected, STORAGE_AAD_V4)
         .map_err(|_| CredentialError::ProtectedDataInvalid)?;
-    decode_records(&plaintext, 7)
+    decode_records(&plaintext, CREDENTIAL_RECORD_FORMAT_VERSION)
 }
 
 fn read_pin_state(
@@ -2979,6 +2982,184 @@ fn validate_protected_payload(payload: &[u8]) -> Result<(), CredentialError> {
         Err(CredentialError::ProtectedDataInvalid)
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod reset_journal_tests {
+    use super::*;
+    use hmac::{Hmac, KeyInit, Mac};
+    use sha2::{Digest, Sha256};
+    use sha2_client_pin::Sha256 as HmacSha256;
+    use std::{
+        fs,
+        sync::Arc,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    struct TestProtector;
+
+    // Test-only authenticated envelope; this does not encrypt and must never be used at runtime.
+    fn test_tag(bytes: &[u8]) -> [u8; 32] {
+        let mut mac = Hmac::<HmacSha256>::new_from_slice(b"ghost-fido-test-protector-key")
+            .expect("HMAC accepts keys of any size");
+        mac.update(bytes);
+        mac.finalize().into_bytes().into()
+    }
+
+    impl CredentialProtector for TestProtector {
+        fn protect(
+            &self,
+            plaintext: &[u8],
+            associated_data: &[u8],
+        ) -> Result<Vec<u8>, CredentialProtectionError> {
+            let aad_len = u32::try_from(associated_data.len())
+                .map_err(|_| CredentialProtectionError::Failed)?;
+            let mut protected =
+                Vec::with_capacity(4 + associated_data.len() + plaintext.len() + 32);
+            protected.extend_from_slice(&aad_len.to_be_bytes());
+            protected.extend_from_slice(associated_data);
+            protected.extend_from_slice(plaintext);
+            let tag = test_tag(&protected);
+            protected.extend_from_slice(&tag);
+            Ok(protected)
+        }
+
+        fn unprotect(
+            &self,
+            ciphertext: &[u8],
+            associated_data: &[u8],
+        ) -> Result<Zeroizing<Vec<u8>>, CredentialProtectionError> {
+            if ciphertext.len() < 4 + 32 {
+                return Err(CredentialProtectionError::Failed);
+            }
+            let aad_len = u32::from_be_bytes(
+                ciphertext[..4]
+                    .try_into()
+                    .map_err(|_| CredentialProtectionError::Failed)?,
+            ) as usize;
+            let payload_start = 4usize
+                .checked_add(aad_len)
+                .ok_or(CredentialProtectionError::Failed)?;
+            let payload_end = ciphertext
+                .len()
+                .checked_sub(32)
+                .ok_or(CredentialProtectionError::Failed)?;
+            if payload_start > payload_end
+                || aad_len != associated_data.len()
+                || &ciphertext[4..payload_start] != associated_data
+            {
+                return Err(CredentialProtectionError::Failed);
+            }
+            let expected_tag = test_tag(&ciphertext[..payload_end]);
+            if expected_tag.as_slice() != &ciphertext[payload_end..] {
+                return Err(CredentialProtectionError::Failed);
+            }
+            Ok(Zeroizing::new(
+                ciphertext[payload_start..payload_end].to_vec(),
+            ))
+        }
+
+        fn erase_key(&self) -> Result<(), CredentialProtectionError> {
+            Ok(())
+        }
+    }
+
+    fn test_path() -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock is after Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "ghost-fido-reset-{}-{nonce}.sqlite",
+            std::process::id()
+        ))
+    }
+
+    fn open_store(path: &Path, context: &str) -> CredentialStore {
+        CredentialStore::open(path, Arc::new(TestProtector)).expect(context)
+    }
+
+    fn test_record(handle: KeyHandle) -> CredentialRecord {
+        CredentialRecord {
+            id: CredentialId::new(vec![1, 2, 3]).expect("non-empty credential id"),
+            rp_id_hash: Sha256::digest(b"example.test").into(),
+            relying_party_id: Some("example.test".to_owned()),
+            user_handle: vec![5, 6],
+            user_name: Some("test-user".to_owned()),
+            user_display_name: Some("Test User".to_owned()),
+            key_handle: handle,
+            public_key: None,
+            hmac_secret: None,
+            large_blob_key: None,
+            cred_blob: None,
+            cred_protect: CredentialProtectionPolicy::UserVerificationOptional,
+            key_metadata: CredentialKeyMetadata {
+                protection: CredentialKeyProtection::Software,
+                exportable: false,
+            },
+            discoverable: true,
+            creation_order: 0,
+            sign_count: 0,
+        }
+    }
+
+    #[test]
+    fn reset_journal_recovers_across_reopens_and_cleans_metadata_key() {
+        let path = test_path();
+        let handle = KeyHandle::new(vec![7, 8, 9]).expect("non-empty key handle");
+
+        let result = (|| {
+            let mut store = open_store(&path, "open initial credential store");
+            store
+                .begin_provider_key_creation(handle.clone())
+                .expect("journal provider key creation");
+            store
+                .register_created_key(test_record(handle.clone()), &handle)
+                .expect("persist credential record");
+            store.begin_reset().expect("begin reset");
+            assert_eq!(
+                store.pending_reset_key_handles(),
+                Some(&[handle.clone()][..])
+            );
+            drop(store);
+
+            let mut store = open_store(&path, "reopen after reset journal");
+            assert_eq!(
+                store.pending_reset_key_handles(),
+                Some(&[handle.clone()][..])
+            );
+            assert!(matches!(
+                store.begin_provider_key_creation(handle.clone()),
+                Err(CredentialError::ProviderKeyCleanupPending)
+            ));
+            store
+                .mark_reset_key_deleted(&handle)
+                .expect("record provider key deletion");
+            drop(store);
+
+            let mut store = open_store(&path, "reopen after provider key deletion");
+            assert_eq!(store.pending_reset_key_handles(), Some(&[][..]));
+            store.finish_reset().expect("finish reset");
+            assert!(store.metadata_key_cleanup_pending());
+            drop(store);
+
+            let mut store = open_store(&path, "reopen before metadata key cleanup");
+            assert!(store.metadata_key_cleanup_pending());
+            store
+                .complete_metadata_key_cleanup()
+                .expect("erase metadata key");
+            drop(store);
+
+            let store = open_store(&path, "reopen after reset cleanup");
+            assert!(!store.reset_is_pending());
+            assert!(!store.metadata_key_cleanup_pending());
+            assert_eq!(store.pending_reset_key_handles(), None);
+            Ok::<(), CredentialError>(())
+        })();
+
+        let _ = fs::remove_file(&path);
+        result.expect("reset recovery lifecycle");
     }
 }
 
