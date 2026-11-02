@@ -81,6 +81,15 @@ platform backend is configured, a virtual HID device attached, a browser
 discovered an authenticator, or a WebAuthn ceremony succeeded. The status view
 reports local prerequisites; `backend ready` is not browser-support evidence.
 
+## V1 user-verification code scope
+
+CTAP ClientPIN is the v1 cryptographic user-verification (UV) path. The
+desktop's explicit approve/deny flow provides user presence (UP); it does not
+set CTAP UV. OS-native verification providers such as Windows Hello are
+optional follow-up work and are not required for v1 code completion. See the
+[ClientPIN implementation notes](ctap2-clientpin.md), [v1 specification](../resources/SPEC.md),
+and [implementation plan](../resources/STEP.md) for the defined scope.
+
 The remaining platform gates are external to an ordinary development launch:
 
 - **Windows:** the UDE development driver package is unsigned, defaults to no
