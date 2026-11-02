@@ -1,7 +1,26 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import {
+  Badge,
+  Button,
+  Card,
+  Heading,
+  ListRow,
+  SegmentedControl,
+  Text,
+  TextField,
+} from "@zaemoru/react";
 import "./App.css";
+
+type Theme = "light" | "dark";
+type FieldElement = HTMLElement & { value: string };
+
+const THEME_STORAGE_KEY = "ghost-fido-theme";
+
+function initialTheme(): Theme {
+  return localStorage.getItem(THEME_STORAGE_KEY) === "dark" ? "dark" : "light";
+}
 
 type PlatformStatus = {
   productName: string;
@@ -68,9 +87,15 @@ function App() {
   const [diagnosticLog, setDiagnosticLog] = useState<string | null>(null);
   const [diagnosticLogError, setDiagnosticLogError] = useState<string | null>(null);
   const [diagnosticLogLoading, setDiagnosticLogLoading] = useState(false);
-  const currentPinRef = useRef<HTMLInputElement>(null);
-  const newPinRef = useRef<HTMLInputElement>(null);
-  const confirmPinRef = useRef<HTMLInputElement>(null);
+  const [theme, setTheme] = useState<Theme>(initialTheme);
+  const currentPinRef = useRef<FieldElement>(null);
+  const newPinRef = useRef<FieldElement>(null);
+  const confirmPinRef = useRef<FieldElement>(null);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
+  }, [theme]);
 
   const refreshStatus = () => invoke<PlatformStatus>("platform_status").then(setStatus);
   const refreshCredentials = () => invoke<CredentialSummary[]>("list_credentials").then(setCredentials);
@@ -212,12 +237,17 @@ function App() {
     }
   };
 
-  const submitClientPin = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+  const submitClientPin = async (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
     setPinError(null);
     setPinMessage(null);
     const newPin = newPinRef.current?.value ?? "";
     const confirmation = confirmPinRef.current?.value ?? "";
+    if ([...newPin].length < 4) {
+      setPinError("새 PIN은 최소 4자 이상이어야 합니다.");
+      newPinRef.current?.focus();
+      return;
+    }
     if (newPin !== confirmation) {
       setPinError("새 PIN과 확인 값이 일치하지 않습니다.");
       confirmPinRef.current?.focus();
@@ -272,188 +302,61 @@ function App() {
     }
   };
 
+  const statusTitle = status?.deviceAttached
+    ? status.virtualHidAvailable ? "연결됨" : "런타임 연결됨 · 지원 검증 대기"
+    : status?.authenticatorRunning
+      ? "연결 중"
+      : status?.virtualHidAvailable && status?.hostPlatform === "Linux"
+        ? "연결 대기"
+        : status?.virtualHidAvailable
+          ? "HID 백엔드 준비됨"
+          : "HID 백엔드 사용 불가";
+  const statusBadge = status?.virtualHidAvailable
+    ? "백엔드 준비"
+    : status?.virtualHidCanStart ? "구성됨 · 검증 대기" : "백엔드 미준비";
+  const details: [string, string][] = [
+    ["운영체제", status?.hostPlatform ?? "확인 중"],
+    ["장치 연결", status?.deviceAttached ? "연결됨" : "연결 안 됨"],
+    ["보안 키 보호", status?.keyStorageStatus ?? "확인 중"],
+    ["요청 승인 방식", status?.desktopApprovalStatus ?? "확인 중"],
+    ["인증기 PIN", status?.clientPinStatus ?? "확인 중"],
+    ["운영체제 사용자 확인", status?.nativeUserVerificationStatus ?? "확인 중"],
+  ];
+  const canStart = isTauri() && !!status && ["Linux", "Windows", "macOS"].includes(status.hostPlatform)
+    && !status.authenticatorRunning && status.virtualHidCanStart && status.credentialStoreAvailable;
+  const showRuntimeActions = isTauri()
+    && (canStart || !!status?.authenticatorRunning || !!status?.credentialStoreAvailable);
+
   return (
-    <main className="app-shell">
+    <div className="app-shell">
       <header className="topbar">
         <a className="brand" href="#home" aria-label="Ghost FIDO Key 홈">
           <span className="brand-mark" aria-hidden="true">G</span>
           <span>Ghost FIDO Key</span>
+          <Badge variant="weak" size="xsmall" color="elephant">초기 개발 버전</Badge>
         </a>
-        <span className="version">초기 개발 버전</span>
+        <SegmentedControl
+          className="theme-toggle"
+          options={[
+            { value: "light", label: "라이트" },
+            { value: "dark", label: "다크" },
+          ]}
+          value={theme}
+          onChange={(value) => setTheme(value === "dark" ? "dark" : "light")}
+        />
       </header>
 
-      <section className="hero" aria-labelledby="page-title">
-        <p className="eyebrow">가상 인증기</p>
-        <h1 id="page-title">보안 키 상태</h1>
-        <p className="intro">가상 FIDO HID 백엔드와 이 컴퓨터의 준비 상태를 확인합니다. 브라우저 WebAuthn 상호운용성은 아직 검증되지 않았으며, 현재 지원이 선언된 OS·브라우저 조합은 없습니다. 검증 현황은 저장소의 docs/support-matrix.md에서 확인할 수 있습니다.</p>
-
-        <div className="status-card" aria-live="polite" aria-busy={!status && !error}>
-          <div className="status-heading">
-            <span className={`status-dot ${status?.virtualHidAvailable ? "is-ready" : "is-pending"}`} aria-hidden="true" />
-            <div>
-              <p className="status-label">가상 인증기</p>
-              <h2>
-                {status?.deviceAttached
-                  ? status.virtualHidAvailable ? "연결됨" : "런타임 연결됨 · 지원 검증 대기"
-                  : status?.authenticatorRunning
-                    ? "연결 중"
-                  : status?.virtualHidAvailable && status?.hostPlatform === "Linux"
-                    ? "연결 대기"
-                    : status?.virtualHidAvailable
-                    ? "HID 백엔드 준비됨"
-                    : "HID 백엔드 사용 불가"}
-              </h2>
-            </div>
-            <span className={`status-pill ${status?.virtualHidAvailable ? "pill-ready" : "pill-pending"}`}>
-              {status?.virtualHidAvailable ? "백엔드 준비" : status?.virtualHidCanStart ? "구성됨 · 검증 대기" : "백엔드 미준비"}
-            </span>
-          </div>
-          <p className="status-message">
-            {error ?? status?.statusMessage ?? "시스템 상태를 확인하고 있습니다…"}
-          </p>
-          {status?.providerKeyCleanupPending && (
-            <p className="status-message" role="alert">
-              서명 키 정리가 완료되지 않아 인증기 작업이 차단되어 있습니다. 다음 인증기 요청에서 정리를 다시 시도하며, 완료되면 이 안내가 사라집니다. 자격 증명 초기화 상태와는 별개입니다.
-            </p>
-          )}
-          {isTauri() && status && ["Linux", "Windows", "macOS"].includes(status.hostPlatform) && !status.authenticatorRunning && status.virtualHidCanStart && status.credentialStoreAvailable && (
-            <div className="runtime-actions">
-              <button type="button" disabled={runtimeAction} onClick={() => void startAuthenticator()}>
-                {runtimeAction ? "시작 중…" : "인증기 시작"}
-              </button>
-            </div>
-          )}
-          {isTauri() && status?.authenticatorRunning && (
-            <div className="runtime-actions">
-              <button type="button" disabled={runtimeAction} onClick={stopAuthenticator}>인증기 중지</button>
-            </div>
-          )}
-          {runtimeError && <p className="status-message" role="alert">{runtimeError}</p>}
-          {status?.authenticatorResetPending && (
-            <p className="status-message" role="alert">
-              인증기 초기화가 완료되지 않았습니다. 정리가 끝날 때까지 인증 요청은 차단됩니다. 다음 인증 요청에서 자동으로 정리를 재개하며, 계속 실패하면 인증기를 중지하고 초기화를 다시 시도하세요.
-            </p>
-          )}
-          {isTauri() && status?.credentialStoreAvailable && (
-            <div className="runtime-actions">
-              <button
-                type="button"
-                disabled={status.authenticatorRunning}
-                onClick={() => setShowCredentials((visible) => !visible)}
-              >
-                {showCredentials ? "자격 증명 숨기기" : "등록된 자격 증명 관리"}
-              </button>
-            </div>
-          )}
-          <div className="card-divider" />
-          <dl className="details">
-            <div>
-              <dt>운영체제</dt>
-              <dd>{status?.hostPlatform ?? "확인 중"}</dd>
-            </div>
-            <div>
-              <dt>장치 연결</dt>
-              <dd>{status?.deviceAttached ? "연결됨" : "연결 안 됨"}</dd>
-            </div>
-            <div>
-              <dt>보안 키 보호</dt>
-              <dd>{status?.keyStorageStatus ?? "확인 중"}</dd>
-            </div>
-            <div>
-              <dt>요청 승인 방식</dt>
-              <dd>{status?.desktopApprovalStatus ?? "확인 중"}</dd>
-            </div>
-            <div>
-              <dt>인증기 PIN</dt>
-              <dd>{status?.clientPinStatus ?? "확인 중"}</dd>
-            </div>
-            <div>
-              <dt>운영체제 사용자 확인</dt>
-              <dd>{status?.nativeUserVerificationStatus ?? "확인 중"}</dd>
-            </div>
-          </dl>
-          <p
-            className="status-message"
-            role="status"
-            aria-label={
-              status?.credentialStoreAvailable
-                ? "Credential storage available"
-                : "Credential storage unavailable"
-            }
-          >
-            {status?.credentialStoreStatus ?? "Credential storage status is unavailable."}
-          </p>
-          {isTauri() && status?.credentialStoreAvailable && !status.authenticatorRunning &&
-            (status.clientPinStatus === "Configured" || status.clientPinStatus === "Not configured") && (
-            <form className="pin-settings" onSubmit={(event) => void submitClientPin(event)}>
-              <h2>{status.clientPinStatus === "Configured" ? "인증기 PIN 변경" : "인증기 PIN 설정"}</h2>
-              {status.clientPinStatus === "Configured" && (
-                <label>
-                  현재 PIN
-                  <input ref={currentPinRef} type="password" autoComplete="off" required disabled={pinAction} />
-                </label>
-              )}
-              <label>
-                새 PIN
-                <input ref={newPinRef} type="password" autoComplete="off" minLength={4} required disabled={pinAction} />
-              </label>
-              <label>
-                새 PIN 확인
-                <input ref={confirmPinRef} type="password" autoComplete="off" minLength={4} required disabled={pinAction} />
-              </label>
-              <p className="pin-policy">최소 4개의 Unicode 코드 포인트, UTF-8 기준 최대 63바이트입니다. 보호된 저장소에 PIN 검증값만 저장됩니다.</p>
-              <div className="runtime-actions">
-                <button type="submit" disabled={pinAction}>{pinAction ? "저장 중…" : "PIN 저장"}</button>
-              </div>
-              {pinError && <p role="alert" className="pin-result is-error">{pinError}</p>}
-              {pinMessage && <p role="status" className="pin-result">{pinMessage}</p>}
-            </form>
-          )}
-        </div>
-
-        {showCredentials && status?.credentialStoreAvailable && (
-          <section className="credential-list" aria-label="등록된 자격 증명">
-            <div className="credential-list-heading">
-              <div>
-                <p className="eyebrow">Credential management</p>
-                <h2>등록된 자격 증명</h2>
-              </div>
-              <div className="credential-list-actions">
-                <button type="button" disabled={status.authenticatorRunning || resetAction} onClick={() => void loadCredentials()}>
-                  새로고침
-                </button>
-                <button type="button" className="credential-reset" disabled={status.authenticatorRunning || resetAction} onClick={() => void resetCredentials()}>
-                  {resetAction ? "초기화 중…" : status.authenticatorResetPending ? "초기화 재시도" : "모든 자격 증명 초기화"}
-                </button>
-              </div>
-            </div>
-            {credentialError && <p className="status-message" role="alert">{credentialError}</p>}
-            {status.authenticatorResetPending ? (
-              <p className="credential-empty">초기화 정리가 완료될 때까지 자격 증명을 사용할 수 없습니다.</p>
-            ) : credentials.length === 0 ? (
-              <p className="credential-empty">등록된 자격 증명이 없습니다.</p>
-            ) : credentials.map((credential) => (
-              <article className="credential-card" key={credential.creationOrder}>
-                <div>
-                  <h3>{credential.relyingPartyId ?? "알 수 없는 사이트 (기존 자격 증명)"}</h3>
-                  {(credential.userDisplayName || credential.userName) && (
-                    <p>{credential.userDisplayName ?? credential.userName}</p>
-                  )}
-                  <p className="credential-meta">
-                    {credential.keyProtection}{credential.exportable ? " · 추출 가능" : " · 추출 불가"}
-                    {credential.discoverable ? " · discoverable" : " · allow-list 전용"}
-                  </p>
-                </div>
-                <button type="button" className="credential-delete" disabled={status.authenticatorRunning} onClick={() => void deleteCredential(credential)}>
-                  삭제
-                </button>
-              </article>
-            ))}
-          </section>
-        )}
+      <main className="content">
+        <section className="hero" aria-labelledby="page-title">
+          <Text size="sm" weight="semibold" tone="primary">가상 인증기</Text>
+          <Heading level="1" size="3xl" id="page-title">보안 키 상태</Heading>
+          <Text tone="subtle" className="intro">
+            가상 FIDO HID 백엔드와 이 컴퓨터의 준비 상태를 확인합니다. 브라우저 WebAuthn 상호운용성은 아직 검증되지 않았으며, 현재 지원이 선언된 OS·브라우저 조합은 없습니다. 검증 현황은 저장소의 docs/support-matrix.md에서 확인할 수 있습니다.
+          </Text>
+        </section>
 
         {approvalRequests.length > 0 && (
-          <section className="approval-list" aria-label="Pending authenticator approvals">
+          <section className="stack" aria-label="Pending authenticator approvals">
             {approvalRequests.map((request) => {
               const responding = respondingRequests.has(request.requestId);
               const secondsRemaining = Math.max(
@@ -461,101 +364,259 @@ function App() {
                 Math.ceil((request.deadlineAt - approvalCountdownNow) / 1000),
               );
               return (
-                <article className="approval-card" key={request.requestId}>
-                <p className="eyebrow">Approval required</p>
-                <h2>{request.action}</h2>
-                <p className="approval-rp">
-                  {request.relyingPartyName ?? request.relyingPartyId}
-                  {request.relyingPartyName && <span> ({request.relyingPartyId})</span>}
-                </p>
-                {request.action === "Use software key" && (
-                  <p className="status-message" role="alert">
-                    The hardware-protected key could not be created. Approving creates this credential with a software-backed key instead, which may be less resistant if this device or account storage is compromised. Denying cancels credential registration.
-                  </p>
-                )}
-                <p className="approval-timeout">
-                  {secondsRemaining > 0
-                    ? `This request expires in ${secondsRemaining} seconds.`
-                    : "This request expired. Waiting for the authenticator to close it."}
-                </p>
-                <p className="approval-timeout">
-                  Approving here opens a native confirmation dialog before signing.
-                </p>
-                <div className="approval-actions">
-                  <button type="button" disabled={responding} onClick={() => respondToApproval(request.requestId, false)}>
-                    Deny
-                  </button>
-                  <button type="button" disabled={responding} onClick={() => respondToApproval(request.requestId, true)}>
-                    {responding ? "Confirming…" : "Approve"}
-                  </button>
-                </div>
-                </article>
+                <Card key={request.requestId} elevation="medium" padding="large" className="approval-card">
+                  <div className="stack">
+                    <div className="card-heading">
+                      <div>
+                        <Text size="sm" weight="semibold" tone="primary">Approval required</Text>
+                        <Heading level="2" size="xl">{request.action}</Heading>
+                      </div>
+                      <Badge variant="fill" size="small" color={secondsRemaining > 0 ? "blue" : "elephant"}>
+                        {secondsRemaining > 0 ? `${secondsRemaining}s` : "만료"}
+                      </Badge>
+                    </div>
+                    <Text weight="medium">
+                      {request.relyingPartyName ?? request.relyingPartyId}
+                      {request.relyingPartyName && <span className="muted"> ({request.relyingPartyId})</span>}
+                    </Text>
+                    {request.action === "Use software key" && (
+                      <p className="callout is-danger" role="alert">
+                        The hardware-protected key could not be created. Approving creates this credential with a software-backed key instead, which may be less resistant if this device or account storage is compromised. Denying cancels credential registration.
+                      </p>
+                    )}
+                    <Text size="sm" tone="muted">
+                      {secondsRemaining > 0
+                        ? `This request expires in ${secondsRemaining} seconds.`
+                        : "This request expired. Waiting for the authenticator to close it."}
+                      {" "}Approving here opens a native confirmation dialog before signing.
+                    </Text>
+                    <div className="actions">
+                      <Button variant="secondary" disabled={responding} onClick={() => respondToApproval(request.requestId, false)}>
+                        Deny
+                      </Button>
+                      <Button variant="primary" loading={responding} disabled={responding} onClick={() => respondToApproval(request.requestId, true)}>
+                        Approve
+                      </Button>
+                    </div>
+                  </div>
+                </Card>
               );
             })}
-            {approvalError && <p className="status-message" role="alert">{approvalError}</p>}
+            {approvalError && <p className="callout is-danger" role="alert">{approvalError}</p>}
           </section>
         )}
 
-        <div className="notice" role="note">
-          <span className="notice-icon" aria-hidden="true">i</span>
-          <p>{status?.authenticatorRunning
+        <Card elevation="low" padding="large">
+          <div className="stack">
+            <div className="stack" aria-live="polite" aria-busy={!status && !error}>
+              <div className="card-heading">
+                <div className="status-heading">
+                  <span className={`status-dot ${status?.virtualHidAvailable ? "is-ready" : "is-pending"}`} aria-hidden="true" />
+                  <div>
+                    <Text size="sm" tone="muted">가상 인증기</Text>
+                    <Heading level="2" size="xl">{statusTitle}</Heading>
+                  </div>
+                </div>
+                <Badge variant="weak" size="small" color={status?.virtualHidAvailable ? "green" : "yellow"}>
+                  {statusBadge}
+                </Badge>
+              </div>
+              <Text tone="subtle">{error ?? status?.statusMessage ?? "시스템 상태를 확인하고 있습니다…"}</Text>
+            </div>
+            {status?.providerKeyCleanupPending && (
+              <p className="callout is-warning" role="alert">
+                서명 키 정리가 완료되지 않아 인증기 작업이 차단되어 있습니다. 다음 인증기 요청에서 정리를 다시 시도하며, 완료되면 이 안내가 사라집니다. 자격 증명 초기화 상태와는 별개입니다.
+              </p>
+            )}
+            {status?.authenticatorResetPending && (
+              <p className="callout is-warning" role="alert">
+                인증기 초기화가 완료되지 않았습니다. 정리가 끝날 때까지 인증 요청은 차단됩니다. 다음 인증 요청에서 자동으로 정리를 재개하며, 계속 실패하면 인증기를 중지하고 초기화를 다시 시도하세요.
+              </p>
+            )}
+            {runtimeError && <p className="callout is-danger" role="alert">{runtimeError}</p>}
+            {showRuntimeActions && (
+              <div className="actions">
+                {canStart && (
+                  <Button variant="primary" loading={runtimeAction} disabled={runtimeAction} onClick={() => void startAuthenticator()}>
+                    인증기 시작
+                  </Button>
+                )}
+                {status?.authenticatorRunning && (
+                  <Button variant="danger" disabled={runtimeAction} onClick={() => void stopAuthenticator()}>
+                    인증기 중지
+                  </Button>
+                )}
+                {status?.credentialStoreAvailable && (
+                  <Button
+                    variant="secondary"
+                    disabled={status.authenticatorRunning}
+                    onClick={() => setShowCredentials((visible) => !visible)}
+                  >
+                    {showCredentials ? "자격 증명 숨기기" : "등록된 자격 증명 관리"}
+                  </Button>
+                )}
+              </div>
+            )}
+
+            <dl className="details">
+              {details.map(([label, value]) => (
+                <div key={label}>
+                  <dt>{label}</dt>
+                  <dd>{value}</dd>
+                </div>
+              ))}
+            </dl>
+            <p
+              className="footnote"
+              role="status"
+              aria-label={
+                status?.credentialStoreAvailable
+                  ? "Credential storage available"
+                  : "Credential storage unavailable"
+              }
+            >
+              {status?.credentialStoreStatus ?? "Credential storage status is unavailable."}
+            </p>
+          </div>
+        </Card>
+
+        {isTauri() && status?.credentialStoreAvailable && !status.authenticatorRunning &&
+          (status.clientPinStatus === "Configured" || status.clientPinStatus === "Not configured") && (
+          <Card elevation="low" padding="large">
+            <form className="stack" onSubmit={(event) => void submitClientPin(event)}>
+              <Heading level="2" size="lg">
+                {status.clientPinStatus === "Configured" ? "인증기 PIN 변경" : "인증기 PIN 설정"}
+              </Heading>
+              {status.clientPinStatus === "Configured" && (
+                <TextField ref={currentPinRef} label="현재 PIN" type="password" autoComplete="off" disabled={pinAction} />
+              )}
+              <TextField ref={newPinRef} label="새 PIN" type="password" autoComplete="off" disabled={pinAction} />
+              <TextField
+                ref={confirmPinRef}
+                label="새 PIN 확인"
+                type="password"
+                autoComplete="off"
+                disabled={pinAction}
+                helperText="최소 4개의 Unicode 코드 포인트, UTF-8 기준 최대 63바이트입니다. 보호된 저장소에 PIN 검증값만 저장됩니다."
+              />
+              <div className="actions">
+                <Button variant="primary" loading={pinAction} disabled={pinAction} onClick={() => void submitClientPin()}>
+                  PIN 저장
+                </Button>
+              </div>
+              {pinError && <p role="alert" className="callout is-danger">{pinError}</p>}
+              {pinMessage && <p role="status" className="callout is-success">{pinMessage}</p>}
+            </form>
+          </Card>
+        )}
+
+        {showCredentials && status?.credentialStoreAvailable && (
+          <Card elevation="low" padding="large">
+            <section className="stack" aria-label="등록된 자격 증명">
+              <div className="card-heading">
+                <div>
+                  <Text size="sm" weight="semibold" tone="primary">Credential management</Text>
+                  <Heading level="2" size="lg">등록된 자격 증명</Heading>
+                </div>
+                <div className="actions">
+                  <Button variant="tertiary" size="small" disabled={status.authenticatorRunning || resetAction} onClick={() => void loadCredentials()}>
+                    새로고침
+                  </Button>
+                  <Button variant="danger" size="small" loading={resetAction} disabled={status.authenticatorRunning || resetAction} onClick={() => void resetCredentials()}>
+                    {status.authenticatorResetPending ? "초기화 재시도" : "모든 자격 증명 초기화"}
+                  </Button>
+                </div>
+              </div>
+              {credentialError && <p className="callout is-danger" role="alert">{credentialError}</p>}
+              {status.authenticatorResetPending ? (
+                <p className="empty">초기화 정리가 완료될 때까지 자격 증명을 사용할 수 없습니다.</p>
+              ) : credentials.length === 0 ? (
+                <p className="empty">등록된 자격 증명이 없습니다.</p>
+              ) : (
+                <div className="list">
+                  {credentials.map((credential) => (
+                    <ListRow
+                      key={credential.creationOrder}
+                      title={credential.relyingPartyId ?? "알 수 없는 사이트 (기존 자격 증명)"}
+                      description={[
+                        credential.userDisplayName ?? credential.userName,
+                        credential.keyProtection,
+                        credential.exportable ? "추출 가능" : "추출 불가",
+                        credential.discoverable ? "discoverable" : "allow-list 전용",
+                      ].filter(Boolean).join(" · ")}
+                      trailing={
+                        <Button variant="danger" size="small" disabled={status.authenticatorRunning} onClick={() => void deleteCredential(credential)}>
+                          삭제
+                        </Button>
+                      }
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+          </Card>
+        )}
+
+        <div className="callout is-info" role="note">
+          {status?.authenticatorRunning
             ? "인증기가 실행 중입니다. 자격 증명 생성과 인증은 각각 사용자 승인이 필요합니다."
             : status?.hostPlatform === "Windows"
               ? "Windows에서는 검증된 UDE 드라이버와 TPM 보호 키 저장소가 준비된 경우에만 인증기를 시작할 수 있습니다."
               : status?.hostPlatform === "macOS"
                 ? "macOS 인증기를 시작하려면 할당된 제품 ID와 Apple의 서명된 HID entitlement가 필요합니다."
-                : "Linux에서 인증기를 시작하려면 세션별 소프트웨어 키 사용 동의가 필요합니다."}</p>
+                : "Linux에서 인증기를 시작하려면 세션별 소프트웨어 키 사용 동의가 필요합니다."}
         </div>
-      </section>
 
-      {isTauri() && (
-        <section className="diagnostic-panel" aria-label="Redacted diagnostic events">
-          <div className="credential-list-heading">
-            <div>
-              <p className="eyebrow">Local diagnostics</p>
-              <h2>Redacted events</h2>
-            </div>
-            <div className="credential-list-actions">
-              <button
-                type="button"
-                onClick={() => {
-                  setShowDiagnosticLog(true);
-                  void loadDiagnosticLog();
-                }}
-              >
-                {showDiagnosticLog ? "Refresh" : "View events"}
-              </button>
+        {isTauri() && (
+          <Card elevation="flat" padding="large">
+            <section className="stack" aria-label="Redacted diagnostic events">
+              <div className="card-heading">
+                <div>
+                  <Text size="sm" weight="semibold" tone="primary">Local diagnostics</Text>
+                  <Heading level="2" size="lg">Redacted events</Heading>
+                </div>
+                <div className="actions">
+                  <Button
+                    variant="secondary"
+                    size="small"
+                    onClick={() => {
+                      setShowDiagnosticLog(true);
+                      void loadDiagnosticLog();
+                    }}
+                  >
+                    {showDiagnosticLog ? "Refresh" : "View events"}
+                  </Button>
+                  {showDiagnosticLog && (
+                    <Button variant="tertiary" size="small" onClick={() => setShowDiagnosticLog(false)}>
+                      Hide
+                    </Button>
+                  )}
+                </div>
+              </div>
               {showDiagnosticLog && (
-                <button type="button" onClick={() => setShowDiagnosticLog(false)}>
-                  Hide
-                </button>
+                <>
+                  <Text size="sm" tone="muted">Fixed event codes and coarse outcomes only. Entries stay on this device.</Text>
+                  {diagnosticLogLoading ? (
+                    <p className="footnote" role="status">Loading diagnostics…</p>
+                  ) : diagnosticLogError ? (
+                    <p className="footnote" role="status">{diagnosticLogError}</p>
+                  ) : (
+                    <pre className="diagnostic-log" aria-live="polite">
+                      {diagnosticLog || "No diagnostic events have been recorded."}
+                    </pre>
+                  )}
+                </>
               )}
-            </div>
-          </div>
-          {showDiagnosticLog && (
-            <>
-              <p className="diagnostic-description">
-                Fixed event codes and coarse outcomes only. Entries stay on this device.
-              </p>
-              {diagnosticLogLoading ? (
-                <p className="status-message" role="status">Loading diagnostics…</p>
-              ) : diagnosticLogError ? (
-                <p className="status-message" role="status">{diagnosticLogError}</p>
-              ) : (
-                <pre className="diagnostic-log" aria-live="polite">
-                  {diagnosticLog || "No diagnostic events have been recorded."}
-                </pre>
-              )}
-            </>
-          )}
-        </section>
-      )}
+            </section>
+          </Card>
+        )}
+      </main>
 
       <footer className="app-footer">
         <span>{status?.productName ?? "Ghost FIDO Key"} {status?.productVersion ?? "0.1.0"}</span>
         <span>로컬 상태만 표시합니다</span>
       </footer>
-    </main>
+    </div>
   );
 }
 
